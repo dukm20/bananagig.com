@@ -1,0 +1,27 @@
+{
+  "name": "@bananagig/api",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "PORT=3211 tsx watch --env-file-if-exists=../../.env.host src/index.ts",
+    "build": "node ../../scripts/bundle.mjs src/index.ts dist/index.js",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@bananagig/config": "workspace:*",
+    "@bananagig/contracts": "workspace:*",
+    "@bananagig/database": "workspace:*",
+    "@bananagig/observability": "workspace:*",
+    "@bananagig/platform": "workspace:*",
+    "@fastify/swagger": "^9.9.1",
+    "fastify": "^5.12.5",
+    "fastify-plugin": "^6.0.0",
+    "prom-client": "^15.1.3",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@bananagig/testing": "workspace:*"
+  }
+}

@@ -1,0 +1,20 @@
+# Development override: publishes dependency ports on 127.0.0.1 so host-run apps (pnpm dev) can reach them.
+# Offset ports avoid clashing with services commonly running on a developer machine (5432, 6379, 3000...).
+# Never use together with a production deployment.
+services:
+  valkey:
+    ports: ["127.0.0.1:16379:6379"]
+  nats:
+    ports: ["127.0.0.1:14222:4222"]
+  seaweedfs:
+    ports: ["127.0.0.1:18333:8333"]
+  flagd:
+    ports: ["127.0.0.1:18013:8013"]
+  mailpit:
+    ports: ["127.0.0.1:11025:1025", "127.0.0.1:18025:8025"]
+  otel-collector:
+    ports: ["127.0.0.1:14318:4318"]
+  opensearch:
+    ports: ["127.0.0.1:19200:9200"]
+  keycloak:
+    ports: ["127.0.0.1:18081:8080"]

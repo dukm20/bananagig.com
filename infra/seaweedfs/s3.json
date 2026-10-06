@@ -1,0 +1,9 @@
+{
+  "identities": [
+    {
+      "name": "bananagig-dev",
+      "credentials": [{ "accessKey": "bananagig_dev_access", "secretKey": "bananagig_dev_only_secret" }],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}

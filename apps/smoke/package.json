@@ -1,0 +1,14 @@
+{
+  "name": "@bananagig/smoke",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "node ../../scripts/bundle.mjs src/index.ts dist/index.js",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@bananagig/contracts": "workspace:*"
+  }
+}

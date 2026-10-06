@@ -1,0 +1,73 @@
+name: ci
+on:
+  push: { branches: [main] }
+  pull_request:
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgis/postgis:17-3.5
+        env: { POSTGRES_DB: bananagig, POSTGRES_USER: bananagig, POSTGRES_PASSWORD: bananagig_dev_only }
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U bananagig" --health-interval 5s --health-timeout 5s --health-retries 20
+      nats:
+        image: nats:2.11-alpine
+        ports: ["14222:4222"]
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 } # governance checks diff against the PR base / previous push
+      - uses: pnpm/action-setup@v4
+        with: { version: 12.9.1 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm format:check
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm deps:check
+      - run: pnpm test
+      - run: pnpm specs:check
+      - run: pnpm openapi:lint
+      - run: pnpm asyncapi:validate
+      - run: pnpm build
+      - name: Integration tests (real Postgres + NATS service containers)
+        run: |
+          cp .env.host.example .env.host
+          node --env-file=.env.host scripts/migrate.mjs
+          pnpm test:integration
+      - run: pnpm audit --prod
+      # ---- repository governance (META-001) ----
+      - name: Governance checks
+        env:
+          DATABASE_URL_HOST: postgres://bananagig:bananagig_dev_only@127.0.0.1:5433/bananagig
+          # PR: compare against the base branch; push: compare against the previous commit (empty on the first push)
+          BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+        run: |
+          BASE_ARG=""
+          if [ -n "$BASE_REF" ] && git rev-parse --verify -q "$BASE_REF" >/dev/null; then BASE_ARG="--base=$BASE_REF"; fi
+          pnpm skills:check
+          pnpm project-state:check $BASE_ARG
+          pnpm data-model:check $BASE_ARG
+  compose-smoke:
+    runs-on: ubuntu-latest
+    needs: verify
+    steps:
+      - uses: actions/checkout@v4
+      - run: cp .env.example .env && echo 'COMPOSE_PROFILES=core,observability,search,devtools' >> .env
+      - run: docker compose up -d --build   # no --wait: the one-shot seaweedfs-init exits, which --wait treats as failure; the smoke test retries until ready
+      - uses: pnpm/action-setup@v4
+        with: { version: 12.9.1 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: pnpm }
+      - run: pnpm install --frozen-lockfile && pnpm migrate
+        env: { DATABASE_URL_HOST: "postgres://bananagig:bananagig_dev_only@127.0.0.1:5433/bananagig" }
+      - run: pnpm smoke
+      - name: Trivy image scan (HIGH/CRITICAL)
+        run: |
+          for i in web api worker; do
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock:ro aquasec/trivy:0.65.0 image --exit-code 1 --severity HIGH,CRITICAL bananagig/$i:dev
+          done
+      - if: failure()
+        run: docker compose --profile '*' logs --tail=200

@@ -1,0 +1,6 @@
+extends:
+  - recommended
+rules:
+  # No authentication exists yet (arrives with the Keycloak/identity checkpoint); all current endpoints are public.
+  # Re-enable this rule when the first protected endpoint is added.
+  security-defined: off

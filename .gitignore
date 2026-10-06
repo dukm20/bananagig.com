@@ -1,0 +1,10 @@
+node_modules
+dist
+.env
+.turbo
+*.log
+.env.host
+.next
+next-env.d.ts
+*.tsbuildinfo
+.checkpoint

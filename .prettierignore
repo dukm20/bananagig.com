@@ -1,0 +1,12 @@
+# Prose and generated artifacts are not auto-formatted
+docs
+skills
+CLAUDE.md
+AGENTS.md
+pnpm-lock.yaml
+**/dist
+**/.next
+**/.turbo
+**/next-env.d.ts
+infra
+.checkpoint

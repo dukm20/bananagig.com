@@ -1,0 +1,47 @@
+{
+	auto_https off
+	admin off
+}
+
+:80 {
+	respond /caddy-health 200
+	@app host app.localhost
+	handle @app {
+		# Same-origin access to the versioned API for browser code
+		@appapi path /api/v1/*
+		reverse_proxy @appapi api:3000
+		reverse_proxy web:3000
+	}
+
+	@api host api.localhost
+	handle @api {
+		# Diagnostics are internal-only
+		@internal path /internal/*
+		respond @internal 404
+		reverse_proxy api:3000
+	}
+
+	@auth host auth.localhost
+	handle @auth {
+		reverse_proxy keycloak:8080
+	}
+
+	@grafana host grafana.localhost
+	handle @grafana {
+		reverse_proxy grafana:3000
+	}
+
+	@mail host mail.localhost
+	handle @mail {
+		reverse_proxy mailpit:8025
+	}
+
+	@prom host prometheus.localhost
+	handle @prom {
+		reverse_proxy prometheus:9090
+	}
+
+	handle {
+		respond "BananaGig local proxy: app|api|auth|grafana|mail|prometheus .localhost" 404
+	}
+}

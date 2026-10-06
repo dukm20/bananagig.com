@@ -1,0 +1,24 @@
+{
+  "name": "@bananagig/worker",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "node ../../scripts/bundle.mjs src/index.ts dist/index.js",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run --passWithNoTests",
+    "dev": "PORT=3212 tsx watch --env-file-if-exists=../../.env.host src/index.ts"
+  },
+  "dependencies": {
+    "@bananagig/platform": "workspace:*",
+    "pg-boss": "^12.36.0",
+    "@bananagig/config": "workspace:*",
+    "@bananagig/contracts": "workspace:*",
+    "@bananagig/database": "workspace:*",
+    "@bananagig/observability": "workspace:*",
+    "nats": "^2.29.3"
+  },
+  "devDependencies": {
+    "@bananagig/testing": "workspace:*"
+  }
+}

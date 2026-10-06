@@ -1,0 +1,14 @@
+:root { --bg: #fffdf5; --fg: #1b1b1b; --accent: #f5c518; --muted: #5a5a5a; }
+@media (prefers-color-scheme: dark) { :root { --bg: #151410; --fg: #f4f1e6; --muted: #b5b0a0; } }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
+.site-header { padding: 0.75rem 1rem; border-bottom: 3px solid var(--accent); }
+.brand { font-weight: 700; letter-spacing: 0.02em; }
+main { max-width: 48rem; margin: 0 auto; padding: 1.5rem 1rem; }
+main:focus { outline: none; }
+a:focus-visible, button:focus-visible { outline: 3px solid var(--fg); outline-offset: 2px; }
+.skip-link { position: absolute; left: -999px; top: 0; background: var(--fg); color: var(--bg); padding: 0.5rem 1rem; }
+.skip-link:focus { left: 0; z-index: 10; }
+.muted { color: var(--muted); }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; }
+dt { font-weight: 600; }

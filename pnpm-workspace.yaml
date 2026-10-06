@@ -1,0 +1,19 @@
+packages:
+  - apps/*
+  - packages/*
+allowBuilds:
+  esbuild: true
+  protobufjs: true
+  # Install scripts deliberately denied (analytics/postinstall of the AsyncAPI CLI toolchain)
+  "@asyncapi/cli": false
+  "@hyperjump/json-pointer": false
+  "@hyperjump/json-schema-core": false
+  "@hyperjump/json-schema": false
+  "@hyperjump/pact": false
+  "@scarf/scarf": false
+  yarn: false
+overrides:
+  # Security: dev-tool transitive dependencies with published fixes (pnpm audit, INF-002)
+  simple-git: ">=4.0.1"
+  "@simple-git/argv-parser": ">=2.0.1"
+  jsonpath-plus: ">=10.3.0"

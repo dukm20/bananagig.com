@@ -1,0 +1,38 @@
+import { loadConfig, redactConfig } from '@bananagig/config';
+import { createDatabase } from '@bananagig/database';
+import { dbQueryObserver, getCorrelationId, initObservability, log, shutdownObservability } from '@bananagig/observability';
+import { NatsClient, closeValkey, createS3, createValkey, runDiagnostics } from '@bananagig/platform';
+import { buildApp } from './app';
+
+const cfg = loadConfig({ service: 'bananagig-api', role: 'api' });
+initObservability(cfg);
+log('info', 'starting', { config: redactConfig(cfg) });
+
+const database = createDatabase(cfg.databaseUrl, { onQuery: dbQueryObserver(), correlationIdProvider: getCorrelationId });
+const valkey = createValkey(cfg);
+const nats = new NatsClient(cfg);
+const s3 = createS3(cfg);
+const adapters = { cfg, database, valkey, nats, s3 };
+
+const app = await buildApp({
+  cfg,
+  // Critical for serving requests: Postgres only. Valkey/NATS/OpenSearch/flagd outages must not take the API down.
+  readiness: async () => ({ postgres: (await database.health()).ok ? 'up' : 'down' }),
+  diagnostics: () => runDiagnostics(adapters),
+});
+
+let stopping = false;
+async function shutdown(signal: string): Promise<void> {
+  if (stopping) return;
+  stopping = true;
+  log('info', 'shutting down', { signal });
+  await app.close(); // stops accepting, drains in-flight requests
+  await Promise.allSettled([database.close(), closeValkey(valkey), nats.close(), Promise.resolve(s3.destroy())]);
+  await shutdownObservability();
+  process.exit(0);
+}
+process.on('SIGTERM', () => void shutdown('SIGTERM'));
+process.on('SIGINT', () => void shutdown('SIGINT'));
+
+await app.listen({ port: cfg.port, host: '0.0.0.0' });
+log('info', 'listening', { port: cfg.port });

@@ -1,0 +1,382 @@
+name: bananagig
+
+# Profiles: core (default via COMPOSE_PROFILES in .env), observability, search, devtools, tools (one-shot smoke test).
+# Only caddy (HTTP proxy) and postgres (migrations/psql) publish ports, both on 127.0.0.1.
+# Healthchecks are omitted for otel-collector and flagd: their images are distroless (no shell). The smoke test verifies them.
+
+x-restart: &restart
+  restart: unless-stopped
+
+services:
+  # ---------------- core: data + platform ----------------
+  postgres:
+    profiles: [core]
+    <<: *restart
+    build: { context: ./infra/postgres }
+    image: bananagig/postgres-postgis:17.6-3
+    container_name: bananagig-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      KEYCLOAK_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+    ports: ["127.0.0.1:${POSTGRES_HOST_PORT:-5433}:5432"]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/01-keycloak.sh:/docker-entrypoint-initdb.d/01-keycloak.sh:ro
+    networks: [bananagig]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  valkey:
+    profiles: [core]
+    <<: *restart
+    image: valkey/valkey:8.1-alpine
+    container_name: bananagig-valkey
+    command: ["valkey-server", "--save", "", "--appendonly", "no", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+    networks: [bananagig]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  nats:
+    profiles: [core]
+    <<: *restart
+    image: nats:2.11-alpine
+    container_name: bananagig-nats
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    volumes: [nats_data:/data]
+    networks: [bananagig]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  seaweedfs:
+    profiles: [core]
+    <<: *restart
+    image: chrislusf/seaweedfs:3.93
+    container_name: bananagig-seaweedfs
+    command: ["server", "-dir=/data", "-master.volumeSizeLimitMB=256", "-filer", "-s3", "-s3.config=/etc/seaweedfs/s3.json", "-ip.bind=0.0.0.0"]
+    volumes:
+      - seaweedfs_data:/data
+      - ./infra/seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro
+    networks: [bananagig]
+    healthcheck:
+      # master and filer must both answer before the S3 gateway is usable
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9333/cluster/status && wget -q -O /dev/null http://127.0.0.1:8888/"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  seaweedfs-init:
+    profiles: [core]
+    image: chrislusf/seaweedfs:3.93
+    container_name: bananagig-seaweedfs-init
+    restart: "no"
+    environment:
+      S3_BUCKET: ${S3_BUCKET}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        for i in $$(seq 1 30); do
+          echo "s3.bucket.create -name $${S3_BUCKET}" | weed shell -master=seaweedfs:9333 -filer=seaweedfs:8888 >/dev/null 2>&1
+          if echo "s3.bucket.list" | weed shell -master=seaweedfs:9333 -filer=seaweedfs:8888 2>&1 | grep -q "$${S3_BUCKET}"; then echo "bucket $${S3_BUCKET} ready"; exit 0; fi
+          sleep 2
+        done
+        echo "bucket creation failed" >&2; exit 1
+    depends_on:
+      seaweedfs: { condition: service_healthy }
+    networks: [bananagig]
+
+  keycloak:
+    profiles: [core]
+    <<: *restart
+    image: quay.io/keycloak/keycloak:26.3
+    container_name: bananagig-keycloak
+    # start-dev is development-only. Production candidate uses `start` with TLS and a real hostname.
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+      KC_HEALTH_ENABLED: "true"
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_HOSTNAME_STRICT: "false"
+    volumes:
+      - ./infra/keycloak/bananagig-dev-realm.json:/opt/keycloak/data/import/bananagig-dev-realm.json:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: [bananagig]
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q '\"status\": \"UP\"' <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+
+  flagd:
+    profiles: [core]
+    <<: *restart
+    image: ghcr.io/open-feature/flagd:v0.17.0
+    container_name: bananagig-flagd
+    command: ["start", "--uri", "file:/etc/flagd/flags.json"]
+    volumes: ["./infra/flagd:/etc/flagd:ro"]
+    networks: [bananagig]
+
+  # ---------------- core: application ----------------
+
+  api:
+    profiles: [core]
+    build: { context: ., target: runtime, args: { APP: api, APP_VERSION: "${APP_VERSION:-0.1.0}", GIT_SHA: "${GIT_SHA:-dev}", BUILD_TIME: "${BUILD_TIME:-unknown}" } }
+    image: bananagig/api:dev
+    container_name: bananagig-api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SERVICE_NAME: bananagig-api
+      PORT: "3000"
+    networks: [bananagig]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 15s
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    depends_on:
+      postgres: { condition: service_healthy }
+      valkey: { condition: service_healthy }
+      nats: { condition: service_healthy }
+      seaweedfs-init: { condition: service_completed_successfully }
+      flagd: { condition: service_started }
+
+  worker:
+    profiles: [core]
+    build: { context: ., target: runtime, args: { APP: worker, APP_VERSION: "${APP_VERSION:-0.1.0}", GIT_SHA: "${GIT_SHA:-dev}", BUILD_TIME: "${BUILD_TIME:-unknown}" } }
+    image: bananagig/worker:dev
+    container_name: bananagig-worker
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SERVICE_NAME: bananagig-worker
+      PORT: "3000"
+    networks: [bananagig]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 15s
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    depends_on:
+      postgres: { condition: service_healthy }
+      valkey: { condition: service_healthy }
+      nats: { condition: service_healthy }
+      seaweedfs-init: { condition: service_completed_successfully }
+      flagd: { condition: service_started }
+
+  web:
+    profiles: [core]
+    build: { context: ., target: runtime-web, args: { APP: web, APP_VERSION: "${APP_VERSION:-0.1.0}", GIT_SHA: "${GIT_SHA:-dev}", BUILD_TIME: "${BUILD_TIME:-unknown}" } }
+    image: bananagig/web:dev
+    container_name: bananagig-web
+    restart: unless-stopped
+    # Deliberately NOT env_file: web must not receive database or infrastructure credentials.
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      SERVICE_NAME: bananagig-web
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+      API_INTERNAL_URL: http://api:3000
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT}
+    networks: [bananagig]
+    read_only: true
+    tmpfs: ["/app/apps/web/.next/cache", "/tmp"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 15s
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  caddy:
+    profiles: [core]
+    <<: *restart
+    image: caddy:2.10-alpine
+    container_name: bananagig-caddy
+    ports: ["127.0.0.1:${PROXY_HTTP_PORT:-8080}:80"]
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      web: { condition: service_healthy }
+      api: { condition: service_healthy }
+    networks: [bananagig]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:80/caddy-health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ---------------- search ----------------
+  opensearch:
+    profiles: [search]
+    <<: *restart
+    image: opensearchproject/opensearch:2.19.3
+    container_name: bananagig-opensearch
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"   # development only
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      OPENSEARCH_JAVA_OPTS: -Xms512m -Xmx512m
+    ulimits: { nofile: { soft: 65536, hard: 65536 } }
+    volumes: [opensearch_data:/usr/share/opensearch/data]
+    networks: [bananagig]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:9200/_cluster/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  # ---------------- observability ----------------
+  otel-collector:
+    profiles: [observability]
+    <<: *restart
+    image: otel/opentelemetry-collector-contrib:0.140.0
+    container_name: bananagig-otel-collector
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes: ["./infra/otel/config.yaml:/etc/otelcol/config.yaml:ro"]
+    depends_on: [tempo, loki]
+    networks: [bananagig]
+
+  prometheus:
+    profiles: [observability]
+    <<: *restart
+    image: prom/prometheus:v3.5.0
+    container_name: bananagig-prometheus
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks: [bananagig]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/healthy"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  loki:
+    profiles: [observability]
+    <<: *restart
+    image: grafana/loki:3.5.0
+    container_name: bananagig-loki
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    volumes:
+      - ./infra/loki/loki.yaml:/etc/loki/loki.yaml:ro
+      - loki_data:/loki
+    networks: [bananagig]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3100/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+
+  tempo:
+    profiles: [observability]
+    <<: *restart
+    image: grafana/tempo:2.8.2
+    container_name: bananagig-tempo
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./infra/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo_data:/var/tempo
+    networks: [bananagig]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3200/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+
+  grafana:
+    profiles: [observability]
+    <<: *restart
+    image: grafana/grafana:12.2.0
+    container_name: bananagig-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    depends_on: [prometheus, loki, tempo]
+    networks: [bananagig]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  # ---------------- devtools ----------------
+  mailpit:
+    profiles: [devtools]
+    <<: *restart
+    image: axllent/mailpit:v1.27
+    container_name: bananagig-mailpit
+    networks: [bananagig]
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  # ---------------- tools: one-shot connectivity smoke test ----------------
+  smoke:
+    profiles: [tools]
+    build: { context: ., target: runtime, args: { APP: smoke } }
+    image: bananagig/smoke:dev
+    container_name: bananagig-smoke
+    env_file: .env
+    environment:
+      SERVICE_NAME: bananagig-smoke
+    networks: [bananagig]
+    read_only: true
+    cap_drop: [ALL]
+
+networks:
+  bananagig:
+    name: bananagig-net
+
+volumes:
+  postgres_data: { name: bananagig_postgres_data }
+  nats_data: { name: bananagig_nats_data }
+  seaweedfs_data: { name: bananagig_seaweedfs_data }
+  opensearch_data: { name: bananagig_opensearch_data }
+  prometheus_data: { name: bananagig_prometheus_data }
+  grafana_data: { name: bananagig_grafana_data }
+  loki_data: { name: bananagig_loki_data }
+  tempo_data: { name: bananagig_tempo_data }
+  caddy_data: { name: bananagig_caddy_data }
