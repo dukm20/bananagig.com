@@ -75,6 +75,8 @@ Any change to `configuration.*` goes through the Data Model Review Gate (normali
 - Overlap prevention is a gist exclusion constraint, so versions need an explicit `effective_to` closure; the trigger allows exactly one such closure.
 - Guards run in `preValidation` so unauthenticated callers get 401 before body validation.
 - Fastify must not strip unknown fields (`removeAdditional: false`), or typos silently succeed.
+- The content registry (ADR-0018) reuses `configuration.scope_levels`, `ConfigCache`, `ValkeyConfigCache`, `MemoryConfigCache`, `contextHash` and the `CONFIG_CACHE_TTL_SECONDS` and `CONFIG_LKG_MAX_AGE_SECONDS` settings. Changing any of them affects both registries, so run both package test suites. Words shown to people belong in content (skill `skills/content/SKILL.md`), not in a STRING parameter.
+- `ValkeyConfigCache` is bounded: `new ValkeyConfigCache(client, { commandTimeoutMs, breakerCooldownMs, now })` (defaults 100 ms per command and a 5 s circuit breaker). Any failure or timeout degrades to a miss or no-op; the breaker is per instance, and the API and worker create one instance per registry (configuration and content) over the same client, so each has its own breaker state. Generation counters have no TTL and can be evicted under `allkeys-lru` pressure and reset to 0; staleness is then bounded by the 30 s cache TTL.
 
 ## Do not
 
@@ -90,4 +92,4 @@ ADR-0016, ADR-0017 (builds on ADR-0001, ADR-0003, ADR-0012)
 
 ## Last reviewed
 
-2026-10-06 (CFG-001A)
+2026-10-06 (CFG-002)

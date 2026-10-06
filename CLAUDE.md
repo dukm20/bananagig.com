@@ -6,7 +6,7 @@ Local help, done fast. This file is the entry point for every Claude Code sessio
 
 1. Read this file.
 2. Read `docs/project/PROJECT_STATE.md` (current truth: what exists, what is next).
-3. Read the relevant skills: `skills/infrastructure/SKILL.md`, `skills/database/SKILL.md`, `skills/api/SKILL.md`, `skills/web/SKILL.md`, `skills/worker/SKILL.md`, `skills/testing/SKILL.md`, `skills/identity/SKILL.md`, `skills/configuration/SKILL.md`.
+3. Read the relevant skills: `skills/infrastructure/SKILL.md`, `skills/database/SKILL.md`, `skills/api/SKILL.md`, `skills/web/SKILL.md`, `skills/worker/SKILL.md`, `skills/testing/SKILL.md`, `skills/identity/SKILL.md`, `skills/configuration/SKILL.md`, `skills/content/SKILL.md`.
 4. Read relevant ADRs in `docs/architecture/` (index by number; the latest is named in PROJECT_STATE).
 5. Read `docs/data/DATA_MODEL.md` (and `DATA_MODEL_GUARDRAILS.md`) before **any** persistence change.
 6. Inspect the existing implementation before coding. Reuse; do not duplicate functionality because a request sounds new.

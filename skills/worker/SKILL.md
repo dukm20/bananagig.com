@@ -65,6 +65,7 @@ pg-boss owns the `pgboss` schema; never query or alter it directly. Handlers tha
 - Stream `BANANAGIG_EVENTS` (subjects `bananagig.>`) is ensured by the worker at startup.
 - Unreachable OTLP endpoint must not delay exit (`shutdownObservability` is bounded to 3 s).
 - `apps/worker/src/jobs/configuration.ts` registers `configuration.activate-due` with a one-minute pg-boss schedule. A job is a safety net: business correctness must not depend on it running on time (ADR-0016). Jobs are registered in `start()` and take the service as an optional dependency.
+- `apps/worker/src/jobs/content.ts` registers `content.activate-due` the same way (cron every minute, `ContentService.activateDue`, `FOR UPDATE SKIP LOCKED`, idempotent). It advances SCHEDULED to PUBLISHED, supersedes, emits events and bumps cache generations; content resolution is timestamp-derived and never waits for it. Its integration test (`apps/worker/src/content.itest.ts`) tolerates the cron firing during the test.
 
 ## Do not
 
@@ -78,4 +79,4 @@ ADR-0002, ADR-0009, ADR-0012
 
 ## Last reviewed
 
-2026-10-05 (CFG-001)
+2026-10-06 (CFG-002)

@@ -3,6 +3,7 @@
 -- Regenerate: pnpm schema:snapshot --write
 
 CREATE SCHEMA configuration;
+CREATE SCHEMA content;
 CREATE SCHEMA integration;
 
 CREATE TABLE configuration.audit_events (
@@ -168,6 +169,161 @@ CREATE TABLE configuration.value_versions (
   CONSTRAINT ck_value_versions__version_positive CHECK ((version > 0))
 );
 CREATE INDEX idx_value_versions__holder_effective ON configuration.value_versions USING btree (parameter_value_id, effective_from DESC);
+
+CREATE TABLE content.audit_events (
+  audit_event_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  occurred_at timestamp with time zone NOT NULL DEFAULT now(),
+  actor text NOT NULL,
+  action text NOT NULL,
+  entry_id uuid,
+  locale text,
+  version_id uuid,
+  previous_version_id uuid,
+  reason text,
+  correlation_id text NOT NULL,
+  CONSTRAINT pk_audit_events PRIMARY KEY (audit_event_id),
+  CONSTRAINT fk_audit_events__entry_id FOREIGN KEY (entry_id) REFERENCES content.entries(entry_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_audit_events__previous_version_entry FOREIGN KEY (previous_version_id, entry_id) REFERENCES content.versions(version_id, entry_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_audit_events__version_entry FOREIGN KEY (version_id, entry_id) REFERENCES content.versions(version_id, entry_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_audit_events__action CHECK ((action = ANY (ARRAY['ENTRY_CREATED'::text, 'ENTRY_ACTIVATED'::text, 'ENTRY_DEACTIVATED'::text, 'LOCALE_REGISTERED'::text, 'LOCALE_ACTIVATED'::text, 'LOCALE_DEACTIVATED'::text, 'VERSION_DRAFTED'::text, 'VERSION_SUBMITTED'::text, 'VERSION_APPROVED'::text, 'VERSION_REJECTED'::text, 'VERSION_CANCELLED'::text, 'VERSION_PUBLISHED'::text, 'VERSION_ACTIVATED'::text, 'VERSION_SUPERSEDED'::text]))),
+  CONSTRAINT ck_audit_events__subject CHECK ((((action ~~ 'LOCALE\_%'::text) AND (locale IS NOT NULL) AND (entry_id IS NULL) AND (version_id IS NULL) AND (previous_version_id IS NULL)) OR ((action ~~ 'ENTRY\_%'::text) AND (locale IS NULL) AND (entry_id IS NOT NULL) AND (version_id IS NULL) AND (previous_version_id IS NULL)) OR ((action ~~ 'VERSION\_%'::text) AND (locale IS NULL) AND (entry_id IS NOT NULL) AND (version_id IS NOT NULL))))
+);
+CREATE INDEX idx_audit_events__entry ON content.audit_events USING btree (entry_id, occurred_at DESC) WHERE (entry_id IS NOT NULL);
+CREATE INDEX idx_audit_events__version ON content.audit_events USING btree (version_id) WHERE (version_id IS NOT NULL);
+
+CREATE TABLE content.entries (
+  entry_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  key text NOT NULL,
+  content_type text NOT NULL,
+  owner_role text NOT NULL,
+  description text NOT NULL,
+  sensitivity text NOT NULL DEFAULT 'PUBLIC'::text,
+  criticality text NOT NULL DEFAULT 'STANDARD'::text,
+  approval_policy text NOT NULL,
+  fallback_policy text NOT NULL DEFAULT 'CHAIN'::text,
+  max_scope_type text NOT NULL DEFAULT 'PLATFORM'::text,
+  is_active boolean NOT NULL DEFAULT true,
+  created_by text NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_entries PRIMARY KEY (entry_id),
+  CONSTRAINT uq_entries__key UNIQUE (key),
+  CONSTRAINT fk_entries__max_scope_type FOREIGN KEY (max_scope_type) REFERENCES configuration.scope_levels(scope_type) ON DELETE RESTRICT,
+  CONSTRAINT ck_entries__approval_policy CHECK ((approval_policy = ANY (ARRAY['NONE'::text, 'OWNER_APPROVAL'::text, 'SECOND_APPROVER'::text]))),
+  CONSTRAINT ck_entries__content_type CHECK ((content_type = ANY (ARRAY['PLAIN_TEXT'::text, 'RICH_TEXT'::text, 'MARKDOWN'::text, 'EMAIL_SUBJECT'::text, 'EMAIL_BODY'::text, 'PUSH_TITLE'::text, 'PUSH_BODY'::text, 'LEGAL'::text, 'HELP_ARTICLE'::text, 'UI_LABEL'::text]))),
+  CONSTRAINT ck_entries__criticality CHECK ((criticality = ANY (ARRAY['STANDARD'::text, 'CRITICAL'::text]))),
+  CONSTRAINT ck_entries__description_not_blank CHECK ((length(btrim(description)) > 0)),
+  CONSTRAINT ck_entries__fallback_policy CHECK ((fallback_policy = ANY (ARRAY['CHAIN'::text, 'LANGUAGE_ONLY'::text, 'EXACT'::text]))),
+  CONSTRAINT ck_entries__key_format CHECK (((key ~ '^[a-z][a-z0-9_]*([.][a-z][a-z0-9_]*)+$'::text) AND (length(key) <= 160))),
+  CONSTRAINT ck_entries__legal_policy CHECK (((content_type <> 'LEGAL'::text) OR ((owner_role = 'LEGAL'::text) AND (approval_policy = 'SECOND_APPROVER'::text) AND (criticality = 'CRITICAL'::text) AND (fallback_policy = 'EXACT'::text)))),
+  CONSTRAINT ck_entries__max_scope_type CHECK ((max_scope_type = ANY (ARRAY['PLATFORM'::text, 'COUNTRY'::text, 'MARKET'::text]))),
+  CONSTRAINT ck_entries__owner_role CHECK ((owner_role = ANY (ARRAY['CONTENT'::text, 'LEGAL'::text, 'SUPPORT'::text, 'MARKETING'::text]))),
+  CONSTRAINT ck_entries__sensitivity CHECK ((sensitivity = ANY (ARRAY['PUBLIC'::text, 'INTERNAL'::text])))
+);
+
+CREATE TABLE content.entry_variables (
+  entry_id uuid NOT NULL,
+  name text NOT NULL,
+  var_type text NOT NULL,
+  is_required boolean NOT NULL DEFAULT true,
+  description text NOT NULL,
+  example_value jsonb NOT NULL,
+  pii_class text NOT NULL DEFAULT 'NONE'::text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_entry_variables PRIMARY KEY (entry_id, name),
+  CONSTRAINT fk_entry_variables__entry_id FOREIGN KEY (entry_id) REFERENCES content.entries(entry_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_entry_variables__description_not_blank CHECK ((length(btrim(description)) > 0)),
+  CONSTRAINT ck_entry_variables__name_format CHECK (((name ~ '^[a-z][a-z0-9_]*$'::text) AND (length(name) <= 60))),
+  CONSTRAINT ck_entry_variables__person_name_is_pii CHECK (((var_type <> 'PERSON_DISPLAY_NAME'::text) OR (pii_class <> 'NONE'::text))),
+  CONSTRAINT ck_entry_variables__pii_class CHECK ((pii_class = ANY (ARRAY['NONE'::text, 'PERSONAL'::text, 'SENSITIVE_PERSONAL'::text]))),
+  CONSTRAINT ck_entry_variables__var_type CHECK ((var_type = ANY (ARRAY['STRING'::text, 'NUMBER'::text, 'MONEY'::text, 'DATE'::text, 'TIME'::text, 'DATETIME'::text, 'URL'::text, 'PERSON_DISPLAY_NAME'::text, 'COUNT'::text])))
+);
+
+CREATE TABLE content.locales (
+  locale text NOT NULL,
+  is_active boolean NOT NULL DEFAULT false,
+  is_platform_default boolean NOT NULL DEFAULT false,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_locales PRIMARY KEY (locale),
+  CONSTRAINT ck_locales__bcp47_format CHECK ((locale ~ '^[a-z]{2,3}(-[A-Z][a-z]{3})?(-([A-Z]{2}|[0-9]{3}))?$'::text)),
+  CONSTRAINT ck_locales__default_is_active CHECK (((NOT is_platform_default) OR is_active))
+);
+CREATE UNIQUE INDEX uq_locales__platform_default ON content.locales USING btree (is_platform_default) WHERE is_platform_default;
+
+CREATE TABLE content.snapshot_items (
+  snapshot_id uuid NOT NULL,
+  entry_id uuid NOT NULL,
+  version_id uuid NOT NULL,
+  CONSTRAINT pk_snapshot_items PRIMARY KEY (snapshot_id, entry_id),
+  CONSTRAINT fk_snapshot_items__entry_version FOREIGN KEY (version_id, entry_id) REFERENCES content.versions(version_id, entry_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_snapshot_items__snapshot_id FOREIGN KEY (snapshot_id) REFERENCES content.snapshots(snapshot_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE content.snapshots (
+  snapshot_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  evaluated_at timestamp with time zone NOT NULL,
+  requested_locale text NOT NULL,
+  context jsonb NOT NULL,
+  purpose text NOT NULL,
+  created_by text NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_snapshots PRIMARY KEY (snapshot_id),
+  CONSTRAINT ck_snapshots__context_object CHECK ((jsonb_typeof(context) = 'object'::text)),
+  CONSTRAINT ck_snapshots__locale_format CHECK ((requested_locale ~ '^[a-z]{2,3}(-[A-Z][a-z]{3})?(-([A-Z]{2}|[0-9]{3}))?$'::text)),
+  CONSTRAINT ck_snapshots__purpose_not_blank CHECK ((length(btrim(purpose)) > 0))
+);
+
+CREATE TABLE content.version_approvals (
+  approval_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  version_id uuid NOT NULL,
+  approver text NOT NULL,
+  decision text NOT NULL,
+  comment text,
+  decided_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_version_approvals PRIMARY KEY (approval_id),
+  CONSTRAINT uq_version_approvals__version_approver UNIQUE (version_id, approver),
+  CONSTRAINT fk_version_approvals__version_id FOREIGN KEY (version_id) REFERENCES content.versions(version_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_version_approvals__decision CHECK ((decision = ANY (ARRAY['APPROVE'::text, 'REJECT'::text])))
+);
+
+CREATE TABLE content.versions (
+  version_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  entry_id uuid NOT NULL,
+  locale text NOT NULL,
+  scope_type text NOT NULL DEFAULT 'PLATFORM'::text,
+  scope_ref text,
+  version integer NOT NULL,
+  body text NOT NULL,
+  body_sha256 text NOT NULL DEFAULT ''::text,
+  status text NOT NULL DEFAULT 'DRAFT'::text,
+  approval_policy text NOT NULL,
+  effective_from timestamp with time zone NOT NULL,
+  effective_to timestamp with time zone,
+  reason text NOT NULL,
+  created_by text NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_versions PRIMARY KEY (version_id),
+  CONSTRAINT uq_versions__holder_version UNIQUE NULLS NOT DISTINCT (entry_id, locale, scope_type, scope_ref, version),
+  CONSTRAINT uq_versions__version_entry UNIQUE (version_id, entry_id),
+  CONSTRAINT fk_versions__entry_id FOREIGN KEY (entry_id) REFERENCES content.entries(entry_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_versions__locale FOREIGN KEY (locale) REFERENCES content.locales(locale) ON DELETE RESTRICT,
+  CONSTRAINT fk_versions__scope_type FOREIGN KEY (scope_type) REFERENCES configuration.scope_levels(scope_type) ON DELETE RESTRICT,
+  CONSTRAINT ck_versions__approval_policy CHECK ((approval_policy = ANY (ARRAY['NONE'::text, 'OWNER_APPROVAL'::text, 'SECOND_APPROVER'::text]))),
+  CONSTRAINT ck_versions__body_length CHECK (((length(body) >= 1) AND (length(body) <= 200000))),
+  CONSTRAINT ck_versions__effective_range CHECK (((effective_to IS NULL) OR (effective_to > effective_from))),
+  CONSTRAINT ck_versions__platform_has_no_ref CHECK (((scope_type = 'PLATFORM'::text) = (scope_ref IS NULL))),
+  CONSTRAINT ck_versions__reason_not_blank CHECK ((length(btrim(reason)) > 0)),
+  CONSTRAINT ck_versions__scope_ref_format CHECK (((scope_ref IS NULL) OR (scope_ref ~ '^[A-Za-z0-9._:-]{1,200}$'::text))),
+  CONSTRAINT ck_versions__scope_type CHECK ((scope_type = ANY (ARRAY['PLATFORM'::text, 'COUNTRY'::text, 'MARKET'::text]))),
+  CONSTRAINT ck_versions__status CHECK ((status = ANY (ARRAY['DRAFT'::text, 'IN_REVIEW'::text, 'APPROVED'::text, 'SCHEDULED'::text, 'PUBLISHED'::text, 'SUPERSEDED'::text, 'REJECTED'::text, 'CANCELLED'::text]))),
+  CONSTRAINT ck_versions__version_positive CHECK ((version > 0))
+);
+CREATE INDEX idx_versions__entry ON content.versions USING btree (entry_id, created_at DESC);
+CREATE INDEX idx_versions__in_review ON content.versions USING btree (created_at) WHERE (status = 'IN_REVIEW'::text);
+CREATE INDEX idx_versions__resolution ON content.versions USING btree (entry_id, locale, scope_type, effective_from DESC) WHERE (status = ANY (ARRAY['SCHEDULED'::text, 'PUBLISHED'::text, 'SUPERSEDED'::text]));
+CREATE INDEX idx_versions__scheduled ON content.versions USING btree (effective_from) WHERE (status = 'SCHEDULED'::text);
 
 CREATE TABLE integration.outbox_events (
   outbox_event_id uuid NOT NULL DEFAULT gen_random_uuid(),

@@ -23,20 +23,92 @@ interface ValkeyLike {
   incr(k: string): Promise<unknown>;
 }
 
-/** Valkey adapter. Every failure degrades to a miss/no-op: a cache outage can slow reads, never change their result. */
+export interface ValkeyCacheOptions {
+  /** Upper bound for every cache command. A command that has not answered by then degrades to a miss/no-op. Default 100 ms. */
+  commandTimeoutMs?: number;
+  /** After one failure or timeout every command short-circuits for this long, then a single probe command is let through. Default 5000 ms. */
+  breakerCooldownMs?: number;
+  /** Clock for the breaker (tests). Default Date.now. */
+  now?: () => number;
+}
+export const DEFAULT_CACHE_COMMAND_TIMEOUT_MS = 100;
+export const DEFAULT_CACHE_BREAKER_COOLDOWN_MS = 5000;
+
+/**
+ * Valkey adapter. Every failure degrades to a miss/no-op: a cache outage can never change a result, and it is bounded so it cannot slow one either.
+ *  - Every command is raced against a timeout (a hung or unreachable server cannot hold a request).
+ *  - A circuit breaker opens after one failure or timeout: for the cooldown all commands return the degraded result immediately (no I/O), then ONE
+ *    probe command is let through; its success closes the breaker, its failure re-opens it. Concurrent commands during the probe short-circuit.
+ */
 export class ValkeyConfigCache implements ConfigCache {
-  constructor(private readonly client: ValkeyLike) {}
+  private readonly timeoutMs: number;
+  private readonly cooldownMs: number;
+  private readonly now: () => number;
+  /** 0 = closed. Otherwise the breaker is open until this instant, after which the next command is the probe. */
+  private openUntil = 0;
+  private probing = false;
+
+  constructor(
+    private readonly client: ValkeyLike,
+    options: ValkeyCacheOptions = {},
+  ) {
+    this.timeoutMs = options.commandTimeoutMs ?? DEFAULT_CACHE_COMMAND_TIMEOUT_MS;
+    this.cooldownMs = options.breakerCooldownMs ?? DEFAULT_CACHE_BREAKER_COOLDOWN_MS;
+    this.now = options.now ?? Date.now;
+  }
+
+  private async guarded<T>(run: () => Promise<T>, degraded: () => T): Promise<T> {
+    const t = this.now();
+    let probe = false;
+    if (this.openUntil !== 0) {
+      if (t < this.openUntil || this.probing) return degraded();
+      this.probing = probe = true;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let pending: Promise<T> | undefined;
+    try {
+      pending = run();
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('cache command timed out')), this.timeoutMs);
+      });
+      const result = await Promise.race([pending, timeout]);
+      this.openUntil = 0;
+      return result;
+    } catch {
+      // A command that lost the race may still reject later; it must never surface as an unhandled rejection.
+      pending?.catch(() => undefined);
+      this.openUntil = this.now() + this.cooldownMs;
+      return degraded();
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (probe) this.probing = false;
+    }
+  }
+
   async get(key: string): Promise<string | null> {
-    return this.client.get(key).catch(() => null);
+    return this.guarded(
+      () => this.client.get(key),
+      () => null,
+    );
   }
   async mget(keys: string[]): Promise<(string | null)[]> {
-    return keys.length ? this.client.mget(...keys).catch(() => keys.map(() => null)) : [];
+    if (!keys.length) return [];
+    return this.guarded(
+      () => this.client.mget(...keys),
+      () => keys.map(() => null),
+    );
   }
   async set(key: string, value: string, ttlSeconds: number): Promise<void> {
-    await this.client.set(key, value, 'EX', Math.max(1, Math.floor(ttlSeconds))).catch(() => undefined);
+    await this.guarded(
+      () => this.client.set(key, value, 'EX', Math.max(1, Math.floor(ttlSeconds))),
+      () => undefined,
+    );
   }
   async incr(key: string): Promise<void> {
-    await this.client.incr(key).catch(() => undefined);
+    await this.guarded(
+      () => this.client.incr(key),
+      () => undefined,
+    );
   }
 }
 

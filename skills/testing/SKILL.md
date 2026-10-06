@@ -64,6 +64,9 @@ Schema changes also need constraint-violation and rollback tests, and the data-m
 - Vitest 5 is required; vitest 3 pulled critical `tinypool` advisories (`docs/security/SCAN_RESULTS.md`).
 - Governance scripts are tested against scratch git repositories in `scripts/governance.test.mjs`.
 - Tests that copy the real migrations must derive numbering from the directory, not hardcode the latest version. Use isolated databases for anything that mutates shared timelines (activation, concurrency). Use `devtest.*` parameter keys, which exist only when `allowTestKeys` is on. The real-Valkey cache test self-skips when Valkey is unreachable; say so in reports.
+- Content tests: count database queries with the `onQuery` hook of `createIsolatedDatabase` (a batch resolve must stay at 3 queries), prove time-derived resolution with a short real delay and `at`, force races with deterministic interleavings, and use `devtest.*` entry keys. Web tests use `apps/web/src/testing/content-stub.ts`, which validates requests and responses with the contracts schemas. Keep an XSS vector corpus (`packages/content/src/markup.test.ts`) and add every new vector to it.
+
+- Concurrent integration runs collide through the global setup that drops idle test databases; run `pnpm test:integration` alone or use a private config without `globalSetup` for parallel runs (LRN-0022). Cache outage tests need a hanging or slow-failing client and a real client on a dead port, not only an instant-failure fake (LRN-0019).
 
 ## Do not
 
@@ -77,4 +80,4 @@ ADR-0004, ADR-0006
 
 ## Last reviewed
 
-2026-10-05 (CFG-001)
+2026-10-06 (CFG-002)

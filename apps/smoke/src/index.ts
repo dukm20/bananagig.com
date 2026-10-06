@@ -467,6 +467,95 @@ await check('Configuration Registry', async () => {
   return `second-approver workflow, market override beat platform (${base + 1} vs ${base}), snapshot kept ${base + 1} after change to ${base + 2}`;
 });
 
+await check('Content Registry', async () => {
+  // DEV/TEST-only entry (devtest.* keys are refused in production), unique per run. Real administrator PKCE login, real HTTP.
+  const login = await authorizationCodeLogin(kc, { clientId: 'bananagig-admin', redirectUri: ADMIN_REDIRECT_URI, ...DEV_USERS.admin });
+  const admin = (
+    await exchangeAuthorizationCode({
+      tokenEndpoint: ep.token,
+      clientId: 'bananagig-admin',
+      redirectUri: ADMIN_REDIRECT_URI,
+      code: login.code,
+      codeVerifier: login.verifier,
+    })
+  ).accessToken;
+  const call = async (token: string | null, method: 'GET' | 'POST', path: string, body?: unknown, okStatuses = [200, 201]) => {
+    const r = await get(`${api}/api/v1/content${path}`, {
+      method,
+      headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    const json = (await r.json().catch(() => ({}))) as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    if (!okStatuses.includes(r.status)) throw new Error(`${method} ${path} -> ${r.status} ${json?.error?.code ?? ''}`);
+    return { status: r.status, json };
+  };
+  type Resolved = { value: string; version: number; versionId: string; resolvedLocale: string; fallback: { applied: boolean; chain: string[] } };
+  const resolve = async (token: string | null, key: string, locale = 'en-US', at?: string): Promise<Resolved> =>
+    (await call(token, 'POST', '/resolve', { key, locale, context: {}, ...(at ? { at } : {}) })).json.data as Resolved;
+
+  // (a) anonymous resolve of the seeded shell copy
+  const name = await resolve(null, 'brand.name');
+  const tagline = await resolve(null, 'brand.tagline');
+  if (name.value !== 'BananaGig' || tagline.value !== 'Local help. Done fast.')
+    throw new Error(`seeded copy not resolved (brand.name=${JSON.stringify(name.value)}, brand.tagline=${JSON.stringify(tagline.value)})`);
+
+  // (b) locale fallback: no Spanish copy exists, so es-MX resolves to the platform default and says so
+  const es = await resolve(null, 'brand.name', 'es-MX');
+  if (es.resolvedLocale !== 'en-US' || es.fallback.applied !== true || es.value !== 'BananaGig')
+    throw new Error(`es-MX should fall back to en-US (resolved ${es.resolvedLocale}, applied ${es.fallback.applied})`);
+
+  // (c) a unique plain entry with policy NONE, version 1 published
+  const runId = `r${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  const key = `devtest.smoke.${runId}`;
+  const v1Text = `Smoke v1 ${runId}`;
+  const v2Text = `Smoke v2 ${runId}`;
+  await call(admin, 'POST', '/entries', {
+    key,
+    contentType: 'UI_LABEL',
+    ownerRole: 'CONTENT',
+    description: 'DEV/TEST ONLY smoke entry',
+    approvalPolicy: 'NONE',
+  });
+  const author = async (body: string, effectiveFrom?: string): Promise<{ versionId: string; status: string }> => {
+    const v = (
+      await call(admin, 'POST', `/entries/${key}/versions`, { locale: 'en-US', body, reason: 'smoke test', ...(effectiveFrom ? { effectiveFrom } : {}) })
+    ).json.data;
+    await call(admin, 'POST', `/versions/${v.versionId}/submit`, {});
+    return (await call(admin, 'POST', `/versions/${v.versionId}/publish`, {})).json.data;
+  };
+  const v1 = await author(v1Text);
+  if (v1.status !== 'PUBLISHED') throw new Error(`version 1 should be PUBLISHED (got ${v1.status})`);
+  const first = await resolve(null, key);
+  if (first.value !== v1Text || first.version !== 1) throw new Error('published version 1 did not resolve anonymously');
+
+  // (d) snapshot of the entry while version 1 is effective
+  const snap = (await call(admin, 'POST', '/snapshots', { keys: [key], locale: 'en-US', context: {}, purpose: 'smoke test' })).json.data;
+
+  // (e) version 2 scheduled a few seconds ahead: invisible before the instant, derived from time (not from the job) after it
+  const instant = new Date(Date.now() + 8000);
+  const v2 = await author(v2Text, instant.toISOString());
+  if (v2.status !== 'SCHEDULED') throw new Error(`version 2 should be SCHEDULED (got ${v2.status}; the start must still be in the future)`);
+  if (Date.now() >= instant.getTime()) throw new Error('too slow to observe the scheduled state before its instant');
+  const before = await resolve(null, key);
+  if (before.value !== v1Text || before.version !== 1) throw new Error('scheduled version resolved before its effective instant');
+  const preview = await resolve(admin, key, 'en-US', new Date(instant.getTime() + 1000).toISOString());
+  if (preview.value !== v2Text || preview.version !== 2) throw new Error('at= after the instant should preview version 2 for a content-read caller');
+  await sleep(Math.max(0, instant.getTime() + 1200 - Date.now()));
+  const after = await resolve(null, key);
+  if (after.value !== v2Text || after.version !== 2) throw new Error('version 2 did not resolve after its effective instant');
+
+  // (f) the earlier snapshot still reproduces version 1
+  const again = (await call(admin, 'GET', `/snapshots/${snap.snapshotId}`)).json.data;
+  const item = again.items[0];
+  if (again.items.length !== 1 || item.version !== 1 || item.versionId !== v1.versionId || item.body !== v1Text)
+    throw new Error('snapshot changed after a newer version became effective');
+
+  // access control: the public resolve needs no token, management routes do
+  const anon = await get(`${api}/api/v1/content/entries`);
+  if (anon.status !== 401) throw new Error(`content management API must require authentication (got ${anon.status})`);
+  return `seeded copy + es-MX fallback to en-US, scheduled v2 invisible before and effective after its instant, snapshot kept v1 (${key})`;
+});
+
 // Caddy routes are exercised exactly as a browser would reach them (Host header), from inside the network.
 const proxy = (host: string, path: string, method = 'GET'): Promise<{ status: number; body: string }> =>
   new Promise((resolve, reject) => {
@@ -528,6 +617,7 @@ const order = [
   'Web App session',
   'Caddy Proxy auth routes',
   'Configuration Registry',
+  'Content Registry',
   'NATS Events',
   'JetStream',
   'SeaweedFS Storage',

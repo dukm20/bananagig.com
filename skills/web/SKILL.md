@@ -63,6 +63,7 @@ The web app has no database access and no data-model impact. Needing data means 
 - The web container deliberately receives no database credentials.
 - Dev ports: web 3210 (3000 and 3101 are often taken by other projects, LRN-0009).
 - PWA is manifest-only so far (DEBT-0003).
+- User-visible copy comes from the content registry through the API only, via `getContent`, `getContentMany` and `renderContent` in `apps/web/src/lib/content.ts` (ADR-0020). When the registry cannot serve a key the helper returns `undefined` and the page omits the element; never write `?? 'literal'` for managed copy. The only static copy is `BOOTSTRAP_COPY` (wordmark, `Sign in`, `Sign out`) plus the error, not-found and loading shells. Tests use the contract-validating stub `apps/web/src/testing/content-stub.ts`, and `apps/web/src/boundaries.test.ts` scans for forbidden imports.
 
 ## Do not
 
@@ -77,4 +78,4 @@ ADR-0006, ADR-0007, ADR-0014
 
 ## Last reviewed
 
-2026-10-05 (INF-004)
+2026-10-06 (CFG-002)

@@ -43,8 +43,34 @@ describe('identity realm (infra/keycloak/bananagig-realm.json)', () => {
       'configuration-approve',
       'configuration-read',
       'configuration-write',
+      'content-approve',
+      'content-legal',
+      'content-read',
+      'content-write',
     ]);
     expect(r.roles.realm.map((x) => x.name).sort()).toEqual(['customer', 'provider']);
+  });
+  it('defines the content-* roles as client roles of bananagig-admin only (never realm roles, never on another client)', () => {
+    const r = dev();
+    const names = ['content-read', 'content-write', 'content-approve', 'content-legal'];
+    const adminRoles = r.roles.client['bananagig-admin'].map((x) => x.name);
+    for (const n of names) {
+      expect(adminRoles).toContain(n);
+      expect(r.roles.realm.map((x) => x.name)).not.toContain(n);
+    }
+    expect(Object.keys(r.roles.client)).toEqual(['bananagig-admin']);
+    for (const [clientId, roles] of Object.entries(r.roles.client))
+      if (clientId !== 'bananagig-admin') expect(roles.map((x) => x.name).filter((n) => n.startsWith('content-'))).toEqual([]);
+    // the admin client's tokens carry them (scope mapping), and the web/dev-test clients are never mapped to them
+    expect(r.clientScopeMappings['bananagig-admin'][0].roles).toEqual(expect.arrayContaining(names));
+    expect(JSON.stringify(r.scopeMappings)).not.toMatch(/content-/);
+    // both dev administrators hold them, so a requester and a different approver exist; the customer and provider hold none
+    for (const u of r.users) {
+      const held = u.clientRoles?.['bananagig-admin'] ?? [];
+      if (/^admin2?\.dev$/.test(u.username)) expect(held).toEqual(expect.arrayContaining(names));
+      else expect(held.filter((n) => n.startsWith('content-'))).toEqual([]);
+    }
+    expect(r.users.map((u) => u.username).sort()).toEqual(['admin.dev', 'admin2.dev', 'customer.dev', 'provider.dev']);
   });
   it('is MFA-capable: TOTP policy, admin flow with OTP step, ACR/LoA map for step-up', () => {
     const r = dev();
@@ -107,6 +133,13 @@ describe('production realm build', () => {
     const otp = prod.authenticationFlows.find((f) => f.alias === 'bananagig-admin-browser-otp');
     expect(otp.authenticationExecutions.map((e) => e.authenticator)).toEqual(['auth-otp-form']);
     expect(lintRealm(prod, { production: true })).toEqual([]);
+  });
+  it('keeps the content-* role definitions in production but creates no users to hold them', () => {
+    const prod = buildProductionRealm(dev(), ORIGINS);
+    const adminRoles = prod.roles.client['bananagig-admin'].map((x) => x.name);
+    for (const n of ['content-read', 'content-write', 'content-approve', 'content-legal']) expect(adminRoles).toContain(n);
+    expect(prod.roles.realm.map((x) => x.name).sort()).toEqual(['customer', 'provider']);
+    expect(prod.users).toEqual([]);
   });
   it('refuses to build without https origins', () => {
     expect(() => buildProductionRealm(dev(), {})).toThrow(/requires/);

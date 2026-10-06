@@ -179,3 +179,154 @@ Append-only audit trail of every configuration mutation. Values are reached thro
 | `new_version_id` | uuid | yes | none | Version published or activated | yes |
 | `reason` | text | yes | none | Reason or comment | yes |
 | `correlation_id` | text | no | none | Correlation id of the originating request/job | yes |
+
+### content.locales
+
+Registry of locales (CFG-002). Structural reference data: authoring a version requires the locale to exist (foreign key); serving requires `is_active`. Rows are never deleted. Seeded by migration 0005 with `en-US` only (active, platform default); no translations are invented.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `locale` | text | no | none | Primary key `pk_locales`; canonical BCP 47 subset `language[-Script][-REGION]` (for example `en-US`, `es-MX`, `zh-Hant-TW`); no variants or extensions; format enforced by `ck_locales__bcp47_format` | yes |
+| `is_active` | boolean | no | `false` | Whether the locale may be served. Inactive locales can be authored for but are skipped by the resolver | no |
+| `is_platform_default` | boolean | no | `false` | Marks the single last-resort locale of every fallback chain; `ck_locales__default_is_active` requires it to be active; `uq_locales__platform_default` (partial unique index) allows at most one and `trg_locales__guard` refuses any UPDATE that unsets it, so exactly one default always exists (a migration that moves the default disables the guard for its own transaction) | no (never unset) |
+| `created_at` | timestamptz | no | `now()` | Registration time | yes |
+| `updated_at` | timestamptz | no | `now()` | Last activation change | no |
+
+Triggers: `trg_locales__guard` (`content.guard_locales`) forbids delete, any change to `locale` or `created_at`, and unsetting `is_platform_default`.
+
+### content.entries
+
+Stable semantic identity of one piece of managed content and its governance policy. Immutable except `is_active` (and `updated_at`): a different policy is a different entry.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `entry_id` | uuid | no | `gen_random_uuid()` | Primary key `pk_entries` | yes |
+| `key` | text | no | none | Unique (`uq_entries__key`) dotted lower-case key, for example `home.tagline`; at least two segments, `<= 160` chars (`ck_entries__key_format`). Never encodes a locale or the displayed text | yes |
+| `content_type` | text | no | none | `PLAIN_TEXT, RICH_TEXT, MARKDOWN, EMAIL_SUBJECT, EMAIL_BODY, PUSH_TITLE, PUSH_BODY, LEGAL, HELP_ARTICLE, UI_LABEL`; drives validation and rendering (markup types render to sanitized HTML) | yes |
+| `owner_role` | text | no | none | `CONTENT, LEGAL, SUPPORT, MARKETING`; the accountable function. `LEGAL` entries additionally require the `content-legal` client role for authoring and approval | yes |
+| `description` | text | no | none | What the copy is for and where it appears; not blank | yes |
+| `sensitivity` | text | no | `PUBLIC` | `PUBLIC, INTERNAL`; PUBLIC entries resolve anonymously, INTERNAL only for authorized callers (anonymous callers see ENTRY_NOT_FOUND) | yes |
+| `criticality` | text | no | `STANDARD` | `STANDARD, CRITICAL`; CRITICAL is never cached and never served from last-known-good | yes |
+| `approval_policy` | text | no | none | `NONE, OWNER_APPROVAL, SECOND_APPROVER`; copied onto each version at creation | yes |
+| `fallback_policy` | text | no | `CHAIN` | `CHAIN` (requested locale, its language, market default, platform default), `LANGUAGE_ONLY`, `EXACT` (requested locale only) | yes |
+| `max_scope_type` | text | no | `PLATFORM` | Most specific scope at which the entry may be overridden: `PLATFORM, COUNTRY, MARKET`. Foreign key to `configuration.scope_levels` (`fk_entries__max_scope_type`) plus `ck_entries__max_scope_type` | yes |
+| `is_active` | boolean | no | `true` | Deactivated entries do not resolve and accept no new versions; rows are never deleted | no |
+| `created_by` | text | no | none | Identity subject of the creator | yes |
+| `created_at` | timestamptz | no | `now()` | Creation time | yes |
+| `updated_at` | timestamptz | no | `now()` | Last `is_active` change | no |
+
+Other constraints: `ck_entries__content_type`, `__owner_role`, `__sensitivity`, `__criticality`, `__approval_policy`, `__fallback_policy`, `__description_not_blank`; `ck_entries__legal_policy` (a LEGAL entry must have owner LEGAL, SECOND_APPROVER, CRITICAL and EXACT).
+
+Triggers: `trg_entries__guard` (`content.guard_entries`) forbids delete and any change to a column other than `is_active` and `updated_at`.
+
+### content.entry_variables
+
+Typed placeholders of an entry: the variable contract shared by every locale and version. Immutable.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `entry_id` | uuid | no | none | Part of primary key `pk_entry_variables`; foreign key to `content.entries` (restrict) | yes |
+| `name` | text | no | none | Part of primary key; `^[a-z][a-z0-9_]*$`, `<= 60` chars (`ck_entry_variables__name_format`) | yes |
+| `var_type` | text | no | none | `STRING, NUMBER, MONEY, DATE, TIME, DATETIME, URL, PERSON_DISPLAY_NAME, COUNT`; selects the formatter | yes |
+| `is_required` | boolean | no | `true` | Whether a render must supply a value when the template references it | yes |
+| `description` | text | no | none | What the variable carries; not blank | yes |
+| `example_value` | jsonb | no | none | Example in the canonical encoding of `var_type` (JSON scalar, or `{amount_minor, currency}` for MONEY); used to dry-render drafts | yes |
+| `pii_class` | text | no | `NONE` | `NONE, PERSONAL, SENSITIVE_PERSONAL`; `ck_entry_variables__person_name_is_pii` forbids `NONE` for `PERSON_DISPLAY_NAME` | yes |
+| `created_at` | timestamptz | no | `now()` | Creation time | yes |
+
+Triggers: `trg_entry_variables__immutable` (`content.forbid_mutation`) blocks update and delete; `trg_entry_variables__no_late_required` (`content.guard_entry_variables`) rejects inserting a required variable once the entry has versions.
+
+### content.versions
+
+One row per (entry, locale, scope type, scope reference, version number): the template body and its own lifecycle. The body is immutable from creation.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `version_id` | uuid | no | `gen_random_uuid()` | Primary key `pk_versions`; referenced by approvals, snapshots, audit and (future) acceptance records. Unique with `entry_id` (`uq_versions__version_entry`, target of the snapshot composite foreign key) | yes |
+| `entry_id` | uuid | no | none | Foreign key to `content.entries` (restrict) | yes |
+| `locale` | text | no | none | Foreign key to `content.locales` (restrict) | yes |
+| `scope_type` | text | no | `PLATFORM` | `PLATFORM, COUNTRY, MARKET`; foreign key to `configuration.scope_levels` plus `ck_versions__scope_type`; the guard trigger rejects a scope more specific (higher rank) than the entry's `max_scope_type` | yes |
+| `scope_ref` | text | yes | none | Opaque domain reference (country or market code/id) with NO foreign key by design; NULL exactly when `scope_type = PLATFORM` (`ck_versions__platform_has_no_ref`); format `^[A-Za-z0-9._:-]{1,200}$` | yes |
+| `version` | integer | no | none | Per-holder sequence number `> 0`, assigned at draft creation as max+1 per (entry, locale, scope_type, scope_ref); `uq_versions__holder_version` (NULLS NOT DISTINCT) is the arbiter | yes |
+| `body` | text | no | none | Template source in the restricted template syntax; 1 to 200000 characters; plain text, not JSON | yes |
+| `body_sha256` | text | no | `''` | SHA-256 (hex) of the UTF-8 body; computed by the insert trigger, a caller value is overwritten. Lets consent and audit records bind to the exact text | yes |
+| `status` | text | no | `DRAFT` | `DRAFT, IN_REVIEW, APPROVED, SCHEDULED, PUBLISHED, SUPERSEDED, REJECTED, CANCELLED`; transitions guarded by trigger. SCHEDULED, PUBLISHED and SUPERSEDED are the published markers (only these resolve). A version must be inserted as `DRAFT` | no |
+| `approval_policy` | text | no | none | `NONE, OWNER_APPROVAL, SECOND_APPROVER`; deliberate copy of the entry policy at creation (trigger requires equality) | yes |
+| `effective_from` | timestamptz | no | none | Start of validity (inclusive). Proposed start while unpublished; raised exactly once at publication to `max(proposed, now)` | no (raised once at publication) |
+| `effective_to` | timestamptz | yes | none | End of validity (exclusive); NULL while open-ended; `> effective_from`; may be closed once on a SCHEDULED or PUBLISHED version | no (closed once) |
+| `reason` | text | no | none | Business reason for this version; not blank | yes |
+| `created_by` | text | no | none | Author subject (the author cannot approve under SECOND_APPROVER) | yes |
+| `created_at` | timestamptz | no | `now()` | Creation time | yes |
+| `updated_at` | timestamptz | no | `now()` | Last transition time | no |
+
+Other constraints: `ck_versions__version_positive`, `__body_length`, `__status`, `__approval_policy`, `__effective_range`, `__reason_not_blank`, `__scope_ref_format`; `ex_versions__no_overlap` (gist exclusion on `entry_id`, `locale`, `scope_type`, `coalesce(scope_ref, '')`, `tstzrange(effective_from, effective_to, '[)')`, only where `status IN ('SCHEDULED','PUBLISHED','SUPERSEDED')`).
+
+Indexes: `idx_versions__resolution (entry_id, locale, scope_type, effective_from DESC)` partial on published statuses, used by the effective_from branch of the resolver's next-boundary query (the candidate rows are read through `idx_versions__entry` or the exclusion index, then filtered by time); `idx_versions__in_review (created_at)` partial on `IN_REVIEW`; `idx_versions__scheduled (effective_from)` partial on `SCHEDULED`; `idx_versions__entry (entry_id, created_at DESC)`.
+
+Triggers: `trg_versions__guard` (`content.guard_versions`): no delete; on insert, entry must be active, status `DRAFT`, policy equal to the entry, scope not above `max_scope_type`, and `body_sha256` is computed; on update identity and text are frozen, status follows the state machine (DRAFT -> IN_REVIEW/APPROVED/CANCELLED; IN_REVIEW -> APPROVED/REJECTED/CANCELLED; APPROVED -> SCHEDULED/PUBLISHED/CANCELLED; SCHEDULED -> PUBLISHED/SUPERSEDED; PUBLISHED -> SUPERSEDED), DRAFT -> APPROVED only when policy is NONE, approval needs a recorded APPROVE decision and rejection a REJECT decision, `effective_from` may only be raised during `APPROVED -> SCHEDULED/PUBLISHED`, `effective_to` may only be closed once and only at or after the start of the closing transaction (history is never rewritten).
+
+### content.version_approvals
+
+Immutable review decisions; one per approver per version.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `approval_id` | uuid | no | `gen_random_uuid()` | Primary key `pk_version_approvals` | yes |
+| `version_id` | uuid | no | none | Foreign key to `content.versions` (restrict); unique with `approver` (`uq_version_approvals__version_approver`) | yes |
+| `approver` | text | no | none | Approver subject | yes |
+| `decision` | text | no | none | `APPROVE` or `REJECT` (`ck_version_approvals__decision`) | yes |
+| `comment` | text | yes | none | Optional comment | yes |
+| `decided_at` | timestamptz | no | `now()` | Decision time | yes |
+
+Triggers: `trg_version_approvals__immutable` (`content.forbid_mutation`) blocks update and delete; `trg_version_approvals__guard` (`content.guard_version_approvals`) requires the version to be `IN_REVIEW` and forbids the author approving their own version under SECOND_APPROVER.
+
+### content.snapshots
+
+Immutable record of a resolution: the requested locale, context and evaluation time that were used. Created only for copy that must be reproducible later; routine UI labels are never snapshotted.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `snapshot_id` | uuid | no | `gen_random_uuid()` | Primary key `pk_snapshots`; the handle callers store | yes |
+| `evaluated_at` | timestamptz | no | none | The instant content was resolved at | yes |
+| `requested_locale` | text | no | none | Locale the caller asked for (BCP 47 subset, `ck_snapshots__locale_format`); not a foreign key (the request may name a locale that was later deactivated or never registered) | yes |
+| `context` | jsonb | no | none | Resolution context (scope references); must be an object (`ck_snapshots__context_object`); read back whole | yes |
+| `purpose` | text | no | none | Why the snapshot was taken; not blank | yes |
+| `created_by` | text | no | none | Subject that requested the snapshot | yes |
+| `created_at` | timestamptz | no | `now()` | Creation time | yes |
+
+Triggers: `trg_snapshots__immutable` (`content.forbid_mutation`).
+
+### content.snapshot_items
+
+The exact immutable version of each resolved entry in a snapshot. The pointer fixes the body, hash, locale, scope, version number and start of the version (none can change, and the version can never be deleted); it does NOT fix `versions.effective_to`, which is closed once when a successor is published, so snapshot reads (service, API and contract) expose no end of period and a read-back is byte-stable. The table comment in migration 0005 says the same thing in its own words (the only later change to the version is closing an open `effective_to` once, so the applied text is fixed); it is an applied migration and is not edited.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `snapshot_id` | uuid | no | none | Part of primary key `pk_snapshot_items`; foreign key to `content.snapshots` (restrict) | yes |
+| `entry_id` | uuid | no | none | Part of primary key (one version per entry per snapshot); repeats `versions.entry_id`, kept consistent by the composite foreign key | yes |
+| `version_id` | uuid | no | none | Composite foreign key `(version_id, entry_id)` to `content.versions (version_id, entry_id)` (`fk_snapshot_items__entry_version`); points at the immutable version that won resolution | yes |
+
+Triggers: `trg_snapshot_items__immutable` (`content.forbid_mutation`).
+
+### content.audit_events
+
+Append-only audit trail of every content mutation. Bodies are never copied; they are reached through version ids.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `audit_event_id` | uuid | no | `gen_random_uuid()` | Primary key `pk_audit_events` | yes |
+| `occurred_at` | timestamptz | no | `now()` | When the action committed | yes |
+| `actor` | text | no | none | Subject of the actor; system actors for job-driven changes | yes |
+| `action` | text | no | none | `ENTRY_CREATED, ENTRY_ACTIVATED, ENTRY_DEACTIVATED, LOCALE_REGISTERED, LOCALE_ACTIVATED, LOCALE_DEACTIVATED, VERSION_DRAFTED, VERSION_SUBMITTED, VERSION_APPROVED, VERSION_REJECTED, VERSION_CANCELLED, VERSION_PUBLISHED, VERSION_ACTIVATED, VERSION_SUPERSEDED` (`ck_audit_events__action`) | yes |
+| `entry_id` | uuid | yes | none | Foreign key to `content.entries`; NULL for locale actions; also the entry of every version named in the row (composite foreign keys below) | yes |
+| `locale` | text | yes | none | Set ONLY for locale actions; `ck_audit_events__subject` requires NULL for entry and version actions (the locale of a version event is reached through the immutable version, never repeated here). No foreign key is declared (the locale registry never deletes rows) | yes |
+| `version_id` | uuid | yes | none | Set for version actions. Composite foreign key `fk_audit_events__version_entry (version_id, entry_id)` to `content.versions (version_id, entry_id)`: the version must belong to the entry of the same row | yes |
+| `previous_version_id` | uuid | yes | none | The version replaced or closed; only on version actions. Composite foreign key `fk_audit_events__previous_version_entry (previous_version_id, entry_id)` to `content.versions (version_id, entry_id)` (same entry) | yes |
+| `reason` | text | yes | none | Reason or comment | yes |
+| `correlation_id` | text | no | none | Correlation id of the originating request or job | yes |
+
+Subject shape (`ck_audit_events__subject`): `LOCALE_*` actions carry a locale and no entry, version or previous version; `ENTRY_*` actions carry an entry only (no locale, version or previous version); `VERSION_*` actions carry an entry and a version of that entry (no locale; optionally the previous version). Foreign keys are composite and MATCH SIMPLE, so rows without a version are not checked.
+
+Indexes: `idx_audit_events__entry (entry_id, occurred_at DESC)` partial where `entry_id IS NOT NULL`; `idx_audit_events__version (version_id)` partial where `version_id IS NOT NULL`.
+
+Triggers: `trg_audit_events__immutable` (`content.forbid_mutation`).

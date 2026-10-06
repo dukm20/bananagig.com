@@ -143,6 +143,10 @@ describe('Authorization Code + PKCE end to end', () => {
       'configuration-approve',
       'configuration-read',
       'configuration-write',
+      'content-approve',
+      'content-legal',
+      'content-read',
+      'content-write',
     ]);
     expect(p.expiresAt - p.issuedAt).toBeLessThanOrEqual(180);
     expect(tokens.expiresIn).toBeLessThanOrEqual(180);

@@ -5,7 +5,15 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { stringify } from 'yaml';
 import { z } from 'zod';
 import { loadConfig } from '@bananagig/config';
-import { CONFIGURATION_EVENTS, ConfigurationEventPayload, EventEnvelope, INFRA_PING_EVENT_TYPE } from '@bananagig/contracts';
+import {
+  CONFIGURATION_EVENTS,
+  CONTENT_EVENTS,
+  ConfigurationEventPayload,
+  ContentEventPayload,
+  EventEnvelope,
+  INFRA_PING_EVENT_TYPE,
+  LegalDocumentPublishedPayload,
+} from '@bananagig/contracts';
 import { createTokenVerifier } from '@bananagig/identity';
 import { buildApp } from '../apps/api/src/app.ts';
 
@@ -21,7 +29,7 @@ const verifier = createTokenVerifier({
     throw new Error('not used');
   },
 });
-const app = await buildApp({ cfg, verifier, configuration: {}, readiness: async () => ({}) });
+const app = await buildApp({ cfg, verifier, configuration: {}, content: {}, readiness: async () => ({}) });
 await app.ready();
 const openapi = app.swagger();
 await app.close();
@@ -38,6 +46,20 @@ const CONFIG_MESSAGES = {
   changeRejected: ['ConfigurationChangeRejected', 'A configuration change was rejected.'],
   scheduled: ['ConfigurationScheduled', 'An approved change was published with a future effective time.'],
   activated: ['ConfigurationActivated', 'A configuration change became effective.'],
+};
+const CONTENT_MESSAGES = {
+  versionApproved: ['ContentVersionApproved', 'A content version was approved (or auto-approved by policy NONE).', ContentEventPayload],
+  versionScheduled: ['ContentVersionScheduled', 'An approved content version was published with a future effective time.', ContentEventPayload],
+  versionPublished: [
+    'ContentVersionPublished',
+    'A content version became effective (immediately at publication or through the activation job); previousVersionId names the version it replaces.',
+    ContentEventPayload,
+  ],
+  legalDocumentPublished: [
+    'ContentLegalDocumentPublished',
+    'A legal document version became effective (emitted in addition to ContentVersionPublished); bodySha256 lets consent records bind to the exact text.',
+    LegalDocumentPublishedPayload,
+  ],
 };
 const channels = {
   infraPing: {
@@ -72,13 +94,29 @@ for (const [k, [name, summary]] of Object.entries(CONFIG_MESSAGES)) {
   };
   schemas[name] = typedEnvelope(type, ConfigurationEventPayload);
 }
+for (const [k, [name, summary, payload]] of Object.entries(CONTENT_MESSAGES)) {
+  const type = CONTENT_EVENTS[k];
+  channels[`content_${k}`] = {
+    address: type,
+    description: `${summary} Published through the transactional outbox (aggregate content_version); payload carries identifiers and metadata only, never copy text.`,
+    messages: { [name]: { $ref: `#/components/messages/${name}` } },
+  };
+  operations[`send${name}`] = { action: 'send', channel: { $ref: `#/channels/content_${k}` }, summary };
+  messages[name] = {
+    name,
+    title: summary,
+    headers: { type: 'object', properties: { 'x-correlation-id': { type: 'string' } } },
+    payload: { $ref: `#/components/schemas/${name}` },
+  };
+  schemas[name] = typedEnvelope(type, payload);
+}
 const asyncapi = {
   asyncapi: '3.0.0',
   info: {
     title: 'BananaGig Events',
     version: '1.0.0',
     description:
-      'Event contract. The generic envelope, the infrastructure self-test event and the configuration registry events exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.',
+      'Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events and the content registry events exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.',
   },
   defaultContentType: 'application/json',
   channels,

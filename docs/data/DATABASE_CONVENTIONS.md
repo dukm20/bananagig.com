@@ -10,9 +10,9 @@ The binding conventions every migration and database-touching feature follows. `
 | **INFRASTRUCTURE OWNED** | `pgboss.*` (pg-boss), the whole `keycloak` database | Never altered by our migrations; accessed only through the owning library or product |
 | **EXTENSION OWNED** | PostGIS: `public.spatial_ref_sys`, `geometry_columns`, `geography_columns`, PostGIS functions and types | Never altered or dropped; excluded from the schema snapshot |
 
-**Schemas created now:** `integration` only, because it is used today (outbox). Per ADR-0008 every other domain schema is created by the migration of the first feature that needs it, so empty namespaces are not created speculatively.
+**Schemas created now:** `integration` (outbox), `configuration` (CFG-001) and `content` (CFG-002), because each is used today. Per ADR-0008 every other domain schema is created by the migration of the first feature that needs it, so empty namespaces are not created speculatively.
 
-**Deferred schemas (not created):** `identity`, `configuration`, `geography`, `catalog`, `provider`, `capacity`, `search`, `booking`, `finance`, `banana_credit`, `subscription`, `tax`, `messaging`, `trust`, `admin`, `audit`. Their names are reserved by this list; a different name needs an ADR. `public` holds infrastructure only, never product tables.
+**Deferred schemas (not created):** `identity`, `geography`, `catalog`, `provider`, `capacity`, `search`, `booking`, `finance`, `banana_credit`, `subscription`, `tax`, `messaging`, `trust`, `admin`, `audit`. Their names are reserved by this list; a different name needs an ADR. `configuration` and `content` are no longer deferred: they exist (CFG-001, CFG-002). `public` holds infrastructure only, never product tables.
 
 Future migrations must not alter infrastructure- or extension-owned objects. Need something from pg-boss or PostGIS? Use their APIs, or create our own object in an application schema.
 

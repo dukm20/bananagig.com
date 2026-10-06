@@ -68,6 +68,7 @@ Services never write SQL in routes. Persistence changes go through the database 
 - Correlation id: header `x-correlation-id`, accepted only if it matches `^[A-Za-z0-9._-]{8,128}$`.
 - OpenAPI `security-defined` lint is off until the first protected endpoint exists (`redocly.yaml`).
 - Put authorization guards in `preValidation` so 401 precedes 400 (LRN-0017), keep `removeAdditional: false` so unknown fields are rejected (LRN-0016), and map domain errors through a module `toAppError`. Configuration permissions use `requireConfigurationPermission(read|write|approve)`.
+- Content permissions use `requireContentPermission(read|write|approve)` plus `assertContentLegal` for LEGAL-owned entries (looked up from the stored entry, never from the request). The content resolve routes and active-locale list are public (`security: []`) behind `optionalAuthenticated()`: no Authorization header means anonymous, a presented token must be valid (401 otherwise), and a valid token without `content-read` is still anonymous. Anonymous callers get PUBLIC entries only and never `at` or the template. Batch endpoints omit keys they cannot serve instead of failing the batch (see `docs/engineering/CONTENT.md`).
 
 ## Do not
 
@@ -83,4 +84,4 @@ ADR-0006, ADR-0004, ADR-0013
 
 ## Last reviewed
 
-2026-10-05 (CFG-001)
+2026-10-06 (CFG-002)

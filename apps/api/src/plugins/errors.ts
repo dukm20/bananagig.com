@@ -1,12 +1,27 @@
 import fp from 'fastify-plugin';
-import type { FastifyError, FastifyInstance } from 'fastify';
-import { ERROR_STATUS, type ErrorCategory, type ErrorResponse } from '@bananagig/contracts';
-import { log } from '@bananagig/observability';
+import type { FastifyError, FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { CORRELATION_HEADER, ERROR_STATUS, type ErrorCategory, type ErrorResponse } from '@bananagig/contracts';
+import { log, resolveCorrelationId } from '@bananagig/observability';
 import { AppError } from '../errors';
 
 const body = (req: { correlationId: string }, category: ErrorCategory, code: string, message: string, details?: Record<string, unknown>): ErrorResponse => ({
   error: { code, category, message, correlationId: req.correlationId, ...(details ? { details } : {}) },
 });
+
+/**
+ * Fastify `frameworkErrors` handler: failures raised by the ROUTER before any hook runs (a malformed URL component, a path parameter longer
+ * than maxParamLength). Without it Fastify answers with its own non-standard JSON body. No onRequest hook has run yet, so the correlation id is
+ * resolved here the same way the correlation plugin does.
+ */
+export const frameworkErrors = (err: FastifyError, req: FastifyRequest, reply: FastifyReply): void => {
+  const correlationId = resolveCorrelationId(req.headers[CORRELATION_HEADER]);
+  const code = err.code === 'FST_ERR_MAX_PARAM_LENGTH' ? 'PATH_PARAMETER_TOO_LONG' : 'BAD_URL';
+  const message = code === 'BAD_URL' ? 'The request URL is not valid' : 'A path parameter exceeds the maximum allowed length';
+  void reply
+    .header(CORRELATION_HEADER, correlationId)
+    .status(ERROR_STATUS.VALIDATION)
+    .send(body({ correlationId }, 'VALIDATION', code, message));
+};
 
 /** Maps every failure to the standard error envelope. Stack traces are logged, never returned. */
 export const errorPlugin = fp(async (app: FastifyInstance): Promise<void> => {

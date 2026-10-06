@@ -3,6 +3,7 @@ import { headers } from 'next/headers';
 import { ApiError } from '../../lib/api-client';
 import { getSession } from '../../lib/auth/handlers';
 import { authDeps } from '../../lib/auth/runtime';
+import { BOOTSTRAP_COPY, getContentMany, renderContent } from '../../lib/content';
 import { serverApi } from '../../lib/server';
 
 export const metadata: Metadata = { title: 'Session' };
@@ -12,18 +13,31 @@ export const dynamic = 'force-dynamic';
 export default async function SessionPage({ searchParams }: { searchParams: Promise<{ error?: string }> }) {
   const { error } = await searchParams;
   const session = await getSession((await headers()).get('cookie'), authDeps());
+  // Managed copy comes from the registry only; when it is unavailable the element is omitted (no hardcoded replacement), EXCEPT the
+  // two authentication controls, which fall back to the bootstrap labels so login/logout still work when the registry is down.
   if (!session) {
+    const copy = await getContentMany([
+      'session.status.signed_out',
+      'common.action.sign_in',
+      ...(error === 'login_failed' ? ['session.error.login_failed'] : []),
+    ]);
+    const failure = error === 'login_failed' ? renderContent(copy['session.error.login_failed']) : null;
+    const status = renderContent(copy['session.status.signed_out']);
+    const signIn = renderContent(copy['common.action.sign_in']) ?? BOOTSTRAP_COPY.signIn;
     return (
       <>
         <h1>Session</h1>
-        {error === 'login_failed' ? <p role="alert">Sign-in could not be completed. Please try again.</p> : null}
-        <p role="status">Not signed in</p>
+        {failure ? <p role="alert">{failure}</p> : null}
+        {status ? <p role="status">{status}</p> : null}
         <p>
-          <a href="/auth/login?returnTo=/session">Sign in</a>
+          <a href="/auth/login?returnTo=/session">{signIn}</a>
         </p>
       </>
     );
   }
+  const copy = await getContentMany(['session.status.signed_in', 'common.action.sign_out']);
+  const status = renderContent(copy['session.status.signed_in']);
+  const signOut = renderContent(copy['common.action.sign_out']) ?? BOOTSTRAP_COPY.signOut;
   let apiView: { authContext: string; clientId: string } | undefined;
   let apiError: string | undefined;
   try {
@@ -34,7 +48,7 @@ export default async function SessionPage({ searchParams }: { searchParams: Prom
   return (
     <>
       <h1>Session</h1>
-      <p role="status">Signed in</p>
+      {status ? <p role="status">{status}</p> : null}
       <dl>
         <dt>subject</dt>
         <dd>{session.record.subject}</dd>
@@ -45,7 +59,7 @@ export default async function SessionPage({ searchParams }: { searchParams: Prom
       </dl>
       {/* POST + same-origin check; there is deliberately no GET logout link (CSRF). */}
       <form method="post" action="/auth/logout">
-        <button type="submit">Sign out</button>
+        <button type="submit">{signOut}</button>
       </form>
     </>
   );

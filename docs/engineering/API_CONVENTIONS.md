@@ -34,7 +34,11 @@ Every non-2xx response has this shape (`ErrorResponse` in `@bananagig/contracts`
 | DEPENDENCY | 503 | A required downstream is unavailable |
 | INTERNAL | 500 | Unexpected failure |
 
-`code` is a stable machine-readable string. Only generic codes exist today (`ROUTE_NOT_FOUND`, `VALIDATION_FAILED`, `BAD_REQUEST`, `RATE_LIMITED`, `INTERNAL_ERROR`); business codes are added with their features. Throw `AppError(category, code, message, details?)` from services. Unexpected exceptions become `INTERNAL_ERROR` with a generic message; **stack traces and internal messages are logged, never returned**.
+`code` is a stable machine-readable string. Generic codes: `ROUTE_NOT_FOUND`, `VALIDATION_FAILED`, `BAD_REQUEST`, `RATE_LIMITED`, `INTERNAL_ERROR`, and the two router-level codes `PATH_PARAMETER_TOO_LONG` and `BAD_URL` (below). Business codes are added with their features: the content registry uses `CONTENT_<code>` (`CONTENT_ENTRY_NOT_FOUND`, `CONTENT_NO_CONTENT`, `CONTENT_VALIDATION_FAILED`, `CONTENT_TEMPLATE_ERROR`, `CONTENT_UNAVAILABLE`, and so on; the list is in `docs/engineering/CONTENT.md`) plus `CONTENT_RESPONSE_TOO_LARGE` (400, VALIDATION: `POST /api/v1/content/resolve-many` would serve more than 500000 characters of template source; applies to all callers and is checked before rendering). Note that `RATE_LIMITED` is defined but no rate limiting exists in the API yet.
+
+### Router-level failures and path parameters
+
+Path parameters are limited to 192 characters by the router (`maxParamLength` in `apps/api/src/app.ts`; content keys are at most 160 characters, so every valid key fits). Failures raised by the router before any hook runs (a path parameter over the limit, a malformed URL component) use the standard error envelope and carry the correlation id: 400 `PATH_PARAMETER_TOO_LONG` or `BAD_URL`, category VALIDATION. (Fastify's own non-standard body with status 414 or 400 is no longer returned; `frameworkErrors` in `apps/api/src/plugins/errors.ts` handles it.) Throw `AppError(category, code, message, details?)` from services. Unexpected exceptions become `INTERNAL_ERROR` with a generic message; **stack traces and internal messages are logged, never returned**.
 
 ## Correlation
 

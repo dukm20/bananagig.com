@@ -17,8 +17,20 @@ export default tseslint.config(
         {
           patterns: [
             {
-              group: ['@bananagig/database', '@bananagig/database/*', '@bananagig/platform', '@bananagig/platform/*', 'pg', 'kysely', 'pg-boss'],
-              message: 'web must not access the database or infrastructure adapters; call the API.',
+              group: [
+                '@bananagig/database',
+                '@bananagig/database/*',
+                '@bananagig/platform',
+                '@bananagig/platform/*',
+                '@bananagig/content',
+                '@bananagig/content/*',
+                '@bananagig/configuration',
+                '@bananagig/configuration/*',
+                'pg',
+                'kysely',
+                'pg-boss',
+              ],
+              message: 'web must not access the database, infrastructure adapters or the server-side content/configuration registries; call the API.',
             },
             { group: ['@bananagig/identity/testing'], message: 'identity test helpers are DEV/TEST ONLY.' },
           ],
@@ -34,8 +46,20 @@ export default tseslint.config(
         {
           patterns: [
             {
-              group: ['@bananagig/database', '@bananagig/database/*', '@bananagig/platform', '@bananagig/platform/*', 'pg', 'kysely', 'pg-boss'],
-              message: 'web must not access the database or infrastructure adapters.',
+              group: [
+                '@bananagig/database',
+                '@bananagig/database/*',
+                '@bananagig/platform',
+                '@bananagig/platform/*',
+                '@bananagig/content',
+                '@bananagig/content/*',
+                '@bananagig/configuration',
+                '@bananagig/configuration/*',
+                'pg',
+                'kysely',
+                'pg-boss',
+              ],
+              message: 'web must not access the database, infrastructure adapters or the server-side content/configuration registries.',
             },
           ],
         },

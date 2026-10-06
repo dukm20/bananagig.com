@@ -5,12 +5,12 @@ Every knowingly postponed item is recorded here, not buried in completion report
 ## DEBT-0001 — CI workflow never executed
 
 Status: IN_PROGRESS
-Severity: MEDIUM
+Severity: LOW
 Introduced by: INF-001
 Owner/domain: infrastructure
-Description: `.github/workflows/ci.yml` (verify, integration, compose-smoke, Trivy, governance) was written in INF-001 and first executed on 2026-10-06 (UTC) when the owner pushed `main` to github.com/dukm20/bananagig.com. Run #1 (commit 17b6b8d) failed at `pnpm audit --prod`, which skipped the governance checks and the compose-smoke job; every step before it passed, including the integration tests. CI-001 fixed the cause. The governance and compose-smoke jobs had not yet run at the time CI-001 was committed, so they remain unverified remotely until a green run exists.
+Description: `.github/workflows/ci.yml` (verify, integration, compose-smoke, Trivy, governance) was written in INF-001 and first executed on 2026-10-06 (UTC) when the owner pushed `main` to github.com/dukm20/bananagig.com. Run #1 (commit 17b6b8d) failed at `pnpm audit --prod`, which skipped the governance checks and the compose-smoke job. CI-001 fixed the cause and run #2 (commit 14db38d) passed every job: verify (including governance) and compose-smoke. The remaining gap is that nothing enforces CI before merging.
 Why deferred: pushing is a separate explicit human decision; checkpoint tooling never pushes.
-Exit criteria: a green run of every job (verify with governance, compose-smoke) on the remote, and branch protection requiring it.
+Exit criteria: branch protection on `main` requiring the `verify` and `compose-smoke` jobs (a repository setting the owner must apply; the checkpoint tooling cannot).
 Target checkpoint: first checkpoint after a remote is configured
 
 ## DEBT-0002 — Transactional outbox not implemented
@@ -250,9 +250,10 @@ Severity: LOW
 Introduced by: CFG-001
 Owner/domain: configuration / worker
 Description: The activation job runs every minute, so the `SCHEDULED -> ACTIVE` marker, its event and the predecessor supersession can lag by up to about 60 seconds. Resolution is unaffected (it uses timestamps). Cache invalidation relies on the shared generation counter in Valkey and a 30 s TTL; there is no push to other instances and no event consumers yet.
+CFG-002 content registry (same pattern): the `content.activate-due` marker lags by up to about 60 seconds; cache generation bumps happen after commit and are not retried, so if Valkey is down while a version is published, entries cached before the outage stay stale until their validity boundary or the TTL (at most 30 s) after Valkey returns; and content records no resolution or error metrics (CFG-001 records `recordConfigResolution` and `recordConfigError`). Valkey runs with `allkeys-lru` under a 128 MB cap, so under memory pressure the per-entry generation counters can be evicted and reset to 0, letting a stale generation-0 entry be served after a publish; staleness is bounded by the TTL (30 s). The Valkey circuit breaker is per `ValkeyConfigCache` instance (the API and worker create one for configuration and one for content over a shared client), so each learns about an outage separately.
 Why deferred: No consumer needs sub-minute notification.
-Exit criteria: A consumer with a documented latency need, then a tighter schedule or database-driven wake-up.
-Target checkpoint: first consumer of `configuration.activated.v1`
+Exit criteria: A consumer with a documented latency need, then a tighter schedule or database-driven wake-up; content metrics added to the observability package alongside the first content consumer dashboard.
+Target checkpoint: first consumer of `configuration.activated.v1` or `content.version-published.v1`
 
 ## DEBT-0023 — No configuration admin UI, bulk import or export
 
@@ -271,9 +272,9 @@ Status: OPEN
 Severity: MEDIUM
 Introduced by: CFG-001
 Owner/domain: configuration / each owning domain
-Description: `scope_ref` is an opaque string with no foreign key, so a value can be set for a market, category or provider that does not exist or is later removed. The scope level is enforced; the entity is not.
+Description: `scope_ref` is an opaque string with no foreign key, so a value can be set for a market, category or provider that does not exist or is later removed. The scope level is enforced; the entity is not. `content.versions.scope_ref` (CFG-002, COUNTRY and MARKET scopes) has the same limitation.
 Why deferred: The domain tables do not exist yet and the registry must not depend on them.
-Exit criteria: A scope-reference validator port implemented by each owning domain and called on change-request creation and publish, with a test per scope level.
+Exit criteria: A scope-reference validator port implemented by each owning domain and called on change-request creation and publish and on content version creation, with a test per scope level.
 Target checkpoint: first checkpoint that creates a domain table used as a scope (geography/market, catalog/category, provider)
 
 ## DEBT-0025 — Snapshot and audit retention undefined
@@ -286,3 +287,59 @@ Description: Snapshots, snapshot items, audit events and value versions are reta
 Why deferred: No volume data; retention rules depend on legal and finance requirements.
 Exit criteria: Documented retention per table, archival or partitioning where justified, and a restore test.
 Target checkpoint: before the first booking checkpoint goes live
+
+## DEBT-0026 — No translation workflow, provider or machine translation
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: CFG-002
+Owner/domain: content / localization
+Description: The content registry stores and serves localized versions, but there is no process to request, review or import translations, no translation provider and no machine translation. Only en-US copy exists, and no translation was invented. Entries have no stored "required locales" list; completeness is not reported.
+Why deferred: The launch locale is en-US only and the provider, review and budget decisions are product decisions, not platform plumbing.
+Exit criteria: A documented translation workflow (request, translate, review, publish) with a coverage report per active locale, and a decision on providers and machine translation.
+Target checkpoint: first checkpoint that activates a second locale (with GEO-001 locale configuration)
+
+## DEBT-0027 — No content admin UI, rich editor, media library or help-center authoring
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: CFG-002
+Owner/domain: content / admin
+Description: Content is managed through the protected API only. There is no Global Admin screen, no WYSIWYG or live preview editor, no media or image library (the markup subset has no images) and no help-center authoring flow (HELP_ARTICLE exists as a content type only).
+Why deferred: The admin console and media storage are separate checkpoints; this one builds the platform.
+Exit criteria: Admin screens for entries, drafts, review and scheduling built on the content API, an image policy with the storage service, and help-center authoring.
+Target checkpoint: first admin console checkpoint
+
+## DEBT-0028 — Temporary content permissions and unenforced owner roles
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: CFG-002
+Owner/domain: content / identity
+Description: Content management uses the same temporary model as configuration (DEBT-0021): the admin identity context plus client roles `content-read`, `content-write`, `content-approve` and `content-legal`. Only LEGAL-owned entries are gated by an owner-specific role. `owner_role` CONTENT, SUPPORT and MARKETING is metadata and does not restrict who may edit. Locale registration and activation require only `content-write`, so deactivating a locale makes EXACT-policy LEGAL text for that locale unavailable without `content-legal`; resolve by requiring `content-legal` for locale deactivation, or by a per-locale legal flag, when the temporary permission model is replaced.
+Why deferred: Application roles and permissions do not exist yet.
+Exit criteria: Role-based permissions per owner role in the application RBAC, replacing `requireContentPermission`.
+Target checkpoint: application RBAC checkpoint (with DEBT-0021)
+
+## DEBT-0029 — Content registry covers product shell copy only; other text channels are unmanaged
+
+Status: OPEN
+Severity: LOW
+Introduced by: CFG-002
+Owner/domain: content / api / identity / notifications
+Description: Only a small shell set of strings was migrated (home and session pages; 8 keys). API error `message` texts, Keycloak login and account screens (built-in English), the PWA manifest, the error, not-found and loading shells, and email and push delivery are not registry-backed. Entries and their variables are also immutable after creation (no edit-metadata or add-variable endpoint), and locale management is limited to registering and activating locales; market default locales come from the caller until geography exists.
+Why deferred: Those screens, the notification delivery engine (NOTIF-001), the Keycloak theme (DEBT-0019) and geography (GEO-001) do not exist yet.
+Exit criteria: Each channel migrated by its owning checkpoint following the migration strategy in `docs/content/CONTENT_OWNERSHIP.md`; a decision on localizing API error messages.
+Target checkpoint: owning checkpoints (NOTIF-001, GEO-001, the first customer screens)
+
+## DEBT-0030 — No rate limiting on any public API endpoint
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: INF-002 (surfaced by the CFG-002 security review)
+Owner/domain: api / infrastructure
+Description: The API has no rate limiting, request-cost budgets or abuse controls on any route. The public content resolve endpoints (`/api/v1/content/resolve`, `/resolve-many`, public `/locales`) are unauthenticated, perform database reads and server-side rendering, and can be called repeatedly. CFG-002 added bounds that limit the cost of one call (at most 100 keys, a 500,000-character total template budget per call, no caching or last-known-good for unknown locales and contexts) but cannot limit the call rate.
+Why deferred: Rate limiting belongs at the edge or in a shared plugin and needs a policy (limits per client, per route class, behind which proxy headers); that is a platform decision, not content logic.
+Exit criteria: A documented rate-limit policy enforced at Caddy or by an API plugin (with trusted client IP handling), tests, and per-route classes (public read, authenticated read, admin write).
+Target checkpoint: before the first public customer screen goes live
+

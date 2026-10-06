@@ -3,13 +3,18 @@ import swagger from '@fastify/swagger';
 import type { AppConfig } from '@bananagig/config';
 import { API_PREFIX } from '@bananagig/contracts';
 import type { ConfigurationService } from '@bananagig/configuration';
+import type { ContentService } from '@bananagig/content';
 import type { TokenVerifier } from '@bananagig/identity';
 import { metrics } from '@bananagig/observability';
 import { authPlugin } from './plugins/auth';
 import { correlationPlugin } from './plugins/correlation';
-import { errorPlugin } from './plugins/errors';
+import { errorPlugin, frameworkErrors } from './plugins/errors';
 import { configurationRoutes } from './modules/configuration/routes';
+import { contentRoutes } from './modules/content/routes';
 import { systemAuthRoutes, systemRootRoutes, systemV1Routes } from './modules/system/routes';
+
+/** Longest path parameter the router accepts: above the 160-character content key limit; longer values are rejected with the standard 400. */
+export const MAX_PATH_PARAM_LENGTH = 192;
 
 export interface AppDeps {
   cfg: AppConfig;
@@ -21,11 +26,24 @@ export interface AppDeps {
   verifier: TokenVerifier;
   /** Product configuration registry (internal/admin API). */
   configuration: ConfigurationService;
+  /**
+   * Content and localization registry (management routes are internal/admin; resolve and active locales are public). Optional only so the
+   * pre-existing test harnesses that build the app without it keep compiling; index.ts and the spec generator always pass it.
+   */
+  content?: ContentService;
 }
 
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   // removeAdditional=false: unknown request properties are REJECTED (400) instead of silently stripped.
-  const app = Fastify({ logger: false, trustProxy: true, ajv: { customOptions: { removeAdditional: false } } });
+  // maxParamLength: Fastify's default (100) is shorter than a content key (160) and than the longest :id/:locale, which would orphan a created
+  // entry. frameworkErrors routes router-level failures (over-long params, malformed URLs) through the standard error envelope.
+  const app = Fastify({
+    logger: false,
+    trustProxy: true,
+    ajv: { customOptions: { removeAdditional: false } },
+    routerOptions: { maxParamLength: MAX_PATH_PARAM_LENGTH },
+    frameworkErrors,
+  });
   const sys = { cfg: deps.cfg, startedAt: Date.now() };
 
   await app.register(swagger, {
@@ -41,6 +59,11 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       tags: [
         { name: 'system', description: 'Operational and system information' },
         { name: 'configuration', description: 'Product configuration registry: internal/admin only (admin identity context plus a configuration permission)' },
+        {
+          name: 'content',
+          description:
+            'Content and localization registry: management is internal/admin only (admin identity context plus a content permission); resolve and the active locale list are public with visibility rules',
+        },
       ],
       components: {
         securitySchemes: {
@@ -63,6 +86,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   await app.register(systemV1Routes, { ...sys, prefix: API_PREFIX });
   await app.register(systemAuthRoutes, { prefix: API_PREFIX });
   await app.register(configurationRoutes, { prefix: `${API_PREFIX}/configuration`, configuration: deps.configuration });
+  if (deps.content) await app.register(contentRoutes, { prefix: `${API_PREFIX}/content`, content: deps.content });
 
   app.get('/metrics', { schema: { hide: true } }, async (_req, reply) => reply.type(metrics.contentType).send(await metrics.metrics()));
   if (deps.diagnostics) {

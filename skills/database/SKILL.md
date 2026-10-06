@@ -79,6 +79,7 @@ This skill is the data-model process: see the review gate above, `DATABASE_CONVE
 - PostgreSQL 17 has no `uuidv7()`; revisit the key default on PostgreSQL 18 (ADR-0011).
 - Local dev runs the app as the Postgres superuser (DEV ONLY, DEBT-0012); the target least-privilege role model is in `DATABASE_CONVENTIONS.md`.
 - For history that must be immutable and non-overlapping, store a half-open range, add a gist exclusion constraint (`btree_gist`), and allow exactly one closure of the open end through a guard trigger (LRN-0015, ADR-0016). Reference tables for structural enums (for example `configuration.scope_levels`) are seeded by migration; business values are never seeded.
+- When the unit of history is a document, keep one versions table that carries its own lifecycle and a guard trigger for the state machine (content, ADR-0018). Compute integrity hashes in an insert trigger (`content.versions.body_sha256`), use `UNIQUE NULLS NOT DISTINCT` for holder keys with a nullable scope reference, and seed product text through the real lifecycle inside a `DO` block so guards, audit and the exclusion constraint all apply (migration `0006`); never insert PUBLISHED rows directly or disable triggers.
 
 ## Do not
 
@@ -95,4 +96,4 @@ ADR-0001, ADR-0004, ADR-0008, ADR-0009, ADR-0010, ADR-0011, ADR-0012
 
 ## Last reviewed
 
-2026-10-05 (CFG-001)
+2026-10-06 (CFG-002)

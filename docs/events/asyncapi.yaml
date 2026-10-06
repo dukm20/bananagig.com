@@ -3,7 +3,7 @@ asyncapi: 3.0.0
 info:
   title: BananaGig Events
   version: 1.0.0
-  description: Event contract. The generic envelope, the infrastructure self-test event and the configuration registry events exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.
+  description: Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events and the content registry events exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.
 defaultContentType: application/json
 channels:
   infraPing:
@@ -42,6 +42,30 @@ channels:
     messages:
       ConfigurationActivated:
         $ref: "#/components/messages/ConfigurationActivated"
+  content_versionApproved:
+    address: bananagig.content.version-approved.v1
+    description: A content version was approved (or auto-approved by policy NONE). Published through the transactional outbox (aggregate content_version); payload carries identifiers and metadata only, never copy text.
+    messages:
+      ContentVersionApproved:
+        $ref: "#/components/messages/ContentVersionApproved"
+  content_versionScheduled:
+    address: bananagig.content.version-scheduled.v1
+    description: An approved content version was published with a future effective time. Published through the transactional outbox (aggregate content_version); payload carries identifiers and metadata only, never copy text.
+    messages:
+      ContentVersionScheduled:
+        $ref: "#/components/messages/ContentVersionScheduled"
+  content_versionPublished:
+    address: bananagig.content.version-published.v1
+    description: A content version became effective (immediately at publication or through the activation job); previousVersionId names the version it replaces. Published through the transactional outbox (aggregate content_version); payload carries identifiers and metadata only, never copy text.
+    messages:
+      ContentVersionPublished:
+        $ref: "#/components/messages/ContentVersionPublished"
+  content_legalDocumentPublished:
+    address: bananagig.content.legal-document-published.v1
+    description: A legal document version became effective (emitted in addition to ContentVersionPublished); bodySha256 lets consent records bind to the exact text. Published through the transactional outbox (aggregate content_version); payload carries identifiers and metadata only, never copy text.
+    messages:
+      ContentLegalDocumentPublished:
+        $ref: "#/components/messages/ContentLegalDocumentPublished"
 operations:
   receiveInfraPing:
     action: receive
@@ -73,6 +97,26 @@ operations:
     channel:
       $ref: "#/channels/configuration_activated"
     summary: A configuration change became effective.
+  sendContentVersionApproved:
+    action: send
+    channel:
+      $ref: "#/channels/content_versionApproved"
+    summary: A content version was approved (or auto-approved by policy NONE).
+  sendContentVersionScheduled:
+    action: send
+    channel:
+      $ref: "#/channels/content_versionScheduled"
+    summary: An approved content version was published with a future effective time.
+  sendContentVersionPublished:
+    action: send
+    channel:
+      $ref: "#/channels/content_versionPublished"
+    summary: A content version became effective (immediately at publication or through the activation job); previousVersionId names the version it replaces.
+  sendContentLegalDocumentPublished:
+    action: send
+    channel:
+      $ref: "#/channels/content_legalDocumentPublished"
+    summary: A legal document version became effective (emitted in addition to ContentVersionPublished); bodySha256 lets consent records bind to the exact text.
 components:
   messages:
     EventEnvelope:
@@ -135,6 +179,46 @@ components:
             type: string
       payload:
         $ref: "#/components/schemas/ConfigurationActivated"
+    ContentVersionApproved:
+      name: ContentVersionApproved
+      title: A content version was approved (or auto-approved by policy NONE).
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/ContentVersionApproved"
+    ContentVersionScheduled:
+      name: ContentVersionScheduled
+      title: An approved content version was published with a future effective time.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/ContentVersionScheduled"
+    ContentVersionPublished:
+      name: ContentVersionPublished
+      title: A content version became effective (immediately at publication or through the activation job); previousVersionId names the version it replaces.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/ContentVersionPublished"
+    ContentLegalDocumentPublished:
+      name: ContentLegalDocumentPublished
+      title: A legal document version became effective (emitted in addition to ContentVersionPublished); bodySha256 lets consent records bind to the exact text.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/ContentLegalDocumentPublished"
   schemas:
     EventEnvelope:
       type: object
@@ -645,6 +729,389 @@ components:
             - scopeType
             - scopeRef
             - effectiveFrom
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    ContentVersionApproved:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.content.version-approved.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            versionId:
+              type: string
+            entryKey:
+              type: string
+            locale:
+              type: string
+            scopeType:
+              type: string
+              enum:
+                - PLATFORM
+                - COUNTRY
+                - MARKET
+            scopeRef:
+              type:
+                - string
+                - "null"
+            version:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
+            effectiveFrom:
+              type: string
+            previousVersionId:
+              type:
+                - string
+                - "null"
+          required:
+            - versionId
+            - entryKey
+            - locale
+            - scopeType
+            - scopeRef
+            - version
+            - effectiveFrom
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    ContentVersionScheduled:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.content.version-scheduled.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            versionId:
+              type: string
+            entryKey:
+              type: string
+            locale:
+              type: string
+            scopeType:
+              type: string
+              enum:
+                - PLATFORM
+                - COUNTRY
+                - MARKET
+            scopeRef:
+              type:
+                - string
+                - "null"
+            version:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
+            effectiveFrom:
+              type: string
+            previousVersionId:
+              type:
+                - string
+                - "null"
+          required:
+            - versionId
+            - entryKey
+            - locale
+            - scopeType
+            - scopeRef
+            - version
+            - effectiveFrom
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    ContentVersionPublished:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.content.version-published.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            versionId:
+              type: string
+            entryKey:
+              type: string
+            locale:
+              type: string
+            scopeType:
+              type: string
+              enum:
+                - PLATFORM
+                - COUNTRY
+                - MARKET
+            scopeRef:
+              type:
+                - string
+                - "null"
+            version:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
+            effectiveFrom:
+              type: string
+            previousVersionId:
+              type:
+                - string
+                - "null"
+          required:
+            - versionId
+            - entryKey
+            - locale
+            - scopeType
+            - scopeRef
+            - version
+            - effectiveFrom
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    ContentLegalDocumentPublished:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.content.legal-document-published.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            versionId:
+              type: string
+            entryKey:
+              type: string
+            locale:
+              type: string
+            scopeType:
+              type: string
+              enum:
+                - PLATFORM
+                - COUNTRY
+                - MARKET
+            scopeRef:
+              type:
+                - string
+                - "null"
+            version:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
+            effectiveFrom:
+              type: string
+            previousVersionId:
+              type:
+                - string
+                - "null"
+            bodySha256:
+              type: string
+          required:
+            - versionId
+            - entryKey
+            - locale
+            - scopeType
+            - scopeRef
+            - version
+            - effectiveFrom
+            - bodySha256
           additionalProperties: false
       required:
         - eventId

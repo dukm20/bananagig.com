@@ -458,3 +458,103 @@ Run each CI gate locally and check its exit code, not just its summary. Use scop
 
 ### Evidence
 `pnpm-workspace.yaml` (overrides), `docs/security/SCAN_RESULTS.md` (CI-001 section).
+
+## LRN-0019 — A cache outage test with an instantly failing fake hides the real failure mode: slow, serial Valkey failures
+
+Date: 2026-10-06
+Checkpoint: CFG-002
+Domain: configuration / content
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0020
+Related skill: skills/content/SKILL.md
+
+### Context
+The first content cache passed its "Valkey outage degrades to database reads" tests, which used `MemoryConfigCache` with a `fail` flag that errors instantly. Against a real `iovalkey` client pointed at a closed port, with the production options (`maxRetriesPerRequest: 2`, `lazyConnect`), each failed command took 0.2 to 1.9 s and the costs grew across successive awaited commands: resolving 1 key took 3 s, 3 keys 28 s, 8 keys 88 s, although PostgreSQL was healthy. The same flaw existed in the CFG-001 adapter.
+
+### Learning
+Every cache command must be bounded (a per-command timeout) and protected by a circuit breaker, writes must not be awaited one after another, and outage tests must use clients that hang or fail slowly and a real client on a dead port, not only an instant-failure fake.
+
+### Why it matters
+"A cache failure never changes the result" is only true if it also never makes the request take a minute; a slow outage turns an optional dependency into a page-load outage.
+
+### Reuse rule
+Wrap any new cache or optional-dependency adapter with the same timeout and breaker (`ValkeyConfigCache` options `commandTimeoutMs`, `breakerCooldownMs`), and add one outage test with a hanging client and one with a real client on a closed port, asserting a latency bound.
+
+### Evidence
+`packages/configuration/src/cache.ts`, `packages/configuration/src/cache.test.ts`, `packages/content/src/cache.ts`, `packages/content/src/content.itest.ts` (outage tests).
+
+## LRN-0020 — An authorization filter applied only to the success path leaves an existence oracle on the error path
+
+Date: 2026-10-06
+Checkpoint: CFG-002
+Domain: api / content
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0020
+Related skill: skills/content/SKILL.md
+
+### Context
+Anonymous callers must not learn that an INTERNAL content entry exists. The first version hid INTERNAL entries only when they resolved to content. An INTERNAL entry with no live version (unpublished, or only future-scheduled) fell into the "no content" bucket and returned `CONTENT_NO_CONTENT`, while a nonexistent key returned `CONTENT_ENTRY_NOT_FOUND`, so keys could be enumerated.
+
+### Learning
+Every outcome category for a protected resource (found, not found, no value yet, expired) must carry the resource's sensitivity so the same filter applies to all of them. For callers below the required privilege, protected-and-missing must be indistinguishable from nonexistent in code, message and details.
+
+### Why it matters
+Existence leaks expose unannounced keys and drafts even when the content itself never leaks.
+
+### Reuse rule
+When adding an access filter, write one test that compares the responses for a nonexistent key and a protected key in each state (unpublished, scheduled, live) and requires identical output.
+
+### Evidence
+`packages/content/src/service.ts` (`resolveMany` with `includeInternal`), `packages/content/src/resolver.ts` (`MissingEntry.sensitivity`), `packages/content/src/content.itest.ts`.
+
+## LRN-0021 — Caller-controlled values in cache keys give an anonymous caller an unbounded key space
+
+Date: 2026-10-06
+Checkpoint: CFG-002
+Domain: content / cache
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0020
+Related skill: skills/content/SKILL.md
+
+### Context
+Resolution and last-known-good keys included the requested locale and the scope context. Both are free-form for anonymous callers (any well-formed locale tag, any scope reference), so 1000 requests produced 2000 new keys, 1000 of them with a 24-hour TTL, and the web app forwards the visitor's `Accept-Language`. With a 128 MB `allkeys-lru` Valkey this evicts hot entries and can evict the generation counters.
+
+### Learning
+Only cache requests whose key components normalize to values that exist: an ACTIVE requested locale and context references that matched a published version. Everything else is served from PostgreSQL every time and never written to the cache or to last-known-good.
+
+### Why it matters
+Cache pollution by an unauthenticated caller is a denial-of-service and a correctness risk (evicted generation counters).
+
+### Reuse rule
+For every component that goes into a cache key, state where its values come from and bound the set; add a test that sends 1000 distinct unknown values and asserts that the cache gained no keys.
+
+### Evidence
+`packages/content/src/resolver.ts` (`BatchResult.cacheable`), `packages/content/src/cache.ts`, `packages/content/src/service.test.ts`, `packages/content/src/content.itest.ts`.
+
+## LRN-0022 — Concurrent integration runs collide through the shared global setup that drops idle test databases
+
+Date: 2026-10-06
+Checkpoint: CFG-002
+Domain: testing
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/testing/SKILL.md
+
+### Context
+`vitest.integration.setup.ts` drops every stale `bananagig_t_*` database at the start of a run. When several people, agents or runs execute integration tests at the same time, one run's global setup drops the other's idle databases and the other run fails with "database does not exist" (36 tests failed in one review run).
+
+### Learning
+Concurrent integration runs must not share that cleanup. Use a copy of the integration config without the global setup (same include globs, `fileParallelism: false`) for the second and later runs; the normal `pnpm test:integration` stays the single authoritative run.
+
+### Why it matters
+The failure looks like a product bug and wastes time diagnosing.
+
+### Reuse rule
+Run `pnpm test:integration` alone, or point parallel runs at a private config without `globalSetup`; never run two default-config runs simultaneously.
+
+### Evidence
+`vitest.integration.config.ts`, `vitest.integration.setup.ts`, `packages/testing/src/index.ts` (`dropStaleTestDatabases`).

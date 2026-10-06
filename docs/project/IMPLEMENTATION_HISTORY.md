@@ -296,3 +296,43 @@ None required.
 
 ### Known follow-up
 None.
+
+
+## CFG-002 — 2026-10-06
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(CFG-002)"`.
+Summary: Content and localization registry. Managed product copy lives in the database as stable keys with localized, effective-dated, immutable versions, a deterministic locale fallback, a restricted non-executable template language, a sanitized Markdown-subset renderer, legal documents with a hash for future consent records, immutable snapshots, audit, transactional-outbox events, a cached batch resolver with last-known-good for non-critical entries, a protected management API, a worker activation job and a web utility. Only 8 shell strings were seeded and moved (en-US); no business defaults, prices, policies, legal text or invented translations.
+
+### Delivered
+- Migration `0005_content_registry.sql`: schema `content`, 8 tables (`locales`, `entries`, `entry_variables`, `versions`, `version_approvals`, `snapshots`, `snapshot_items`, `audit_events`), a lifecycle state machine and immutability enforced by guard triggers, an exclusion constraint against overlapping published versions per (entry, locale, scope), legal policy CHECK (LEGAL entries are owner LEGAL, SECOND_APPROVER, CRITICAL, EXACT), reuse of `configuration.scope_levels`
+- Migration `0006_content_seed_shell_copy.sql`: seeds 8 shell entries (brand name and tagline, sign-in and sign-out labels, session status and sign-in error, home confirmation) through the real lifecycle with five audit rows each; emits no outbox events
+- `packages/content` (new): locale canonicalization and fallback, formatter for 9 variable types (BigInt money, Intl), restricted template language with plural, zero-dependency markup renderer with link allow-list and an allow-list HTML verifier, resolver (3 queries per batch), cache and last-known-good, service with the full lifecycle, snapshots and activation
+- `packages/configuration`: `ValkeyConfigCache` gained a per-command timeout and a circuit breaker (also protects the configuration registry)
+- `packages/contracts`: content contracts, `canonicalizeLocale`, four events
+- API module `/api/v1/content` (15 endpoints), `requireContentPermission`, `content-legal` gating, public resolve with visibility rules, router-level errors in the standard envelope, `maxParamLength` 192
+- Worker job `content.activate-due` (cron, every minute, idempotent, `SKIP LOCKED`)
+- Keycloak: client roles `content-read`, `content-write`, `content-approve`, `content-legal` on `bananagig-admin`, mapped to both dev admins
+- Web: content utility with locale negotiation against the active locales, home and session pages registry-backed, bootstrap policy `BOOTSTRAP_COPY`
+- Smoke: "Content Registry" scenario (29 checks)
+- Docs: `docs/engineering/CONTENT.md`, `docs/content/CONTENT_OWNERSHIP.md`, data-model documents, ADR-0018 to ADR-0020, skill `skills/content`
+- Quality process: four independent adversarial reviews (security, database and concurrency, compliance, API/cache/web); every verified finding was fixed with a regression test, including a Valkey-outage slowness, an INTERNAL-entry existence leak, unbounded anonymous cache keys, a missing activation event for due scheduled predecessors, quadratic authoring validation and several lows (see LRN-0019 to LRN-0022)
+- Also: a corrective `CFG-001A` commit (separate) tightened configuration error mapping before this checkpoint
+
+### Schema
+New schema `content` (8 tables); see `docs/data/DATA_MODEL_CHANGELOG.md` and `NORMALIZATION_LOG.md` (CFG-002), including the recorded BCNF exceptions (policy copy, trigger-computed hash, repeated entry id enforced by composite keys) and the index review. No existing table changed. `docs/design/` (brand kit) is excluded from tooling through `.git/info/exclude` and is not part of this checkpoint.
+
+### Contracts
+OpenAPI: 15 content operations (15 warnings remain on system and configuration paths, none on content). AsyncAPI: `bananagig.content.version-approved|version-scheduled|version-published|legal-document-published.v1`.
+
+### Tests
+Unit 1035 (content 725, contracts 88, api 82, web 67, configuration 35, identity 20, worker 10, config 6, observability 2), root script tests 61, integration 236 in 14 files, smoke 29 checks. The real-Valkey integration tests ran (Valkey was reachable).
+
+### Skills updated
+New `skills/content`; updated `configuration`, `web`, `api`, `database`, `worker`, `testing`; CLAUDE.md reading list.
+
+### ADRs
+ADR-0018 (content registry model and the `content` schema), ADR-0019 (restricted template formatter and markup renderer), ADR-0020 (locale fallback, cache, last-known-good and bootstrap).
+
+### Known follow-up
+DEBT-0026 to DEBT-0030 and extensions to DEBT-0022 and DEBT-0024. LRN-0019 to LRN-0022. GEO-001 supplies the market default locale that callers currently pass in the resolution context.

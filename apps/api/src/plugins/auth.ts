@@ -116,3 +116,43 @@ export function requireConfigurationPermission(action: keyof typeof CONFIGURATIO
     if (p.authContext !== 'admin' || !p.clientRoles[p.clientId]?.includes(CONFIGURATION_PERMISSIONS[action])) throw forbidden();
   };
 }
+
+/**
+ * TEMPORARY permission strategy for the content registry (CFG-002), the same model as the configuration registry (DEBT-0021): admin-console
+ * identity context plus client roles on `bananagig-admin`. `content-legal` is an additional role required to author, review or publish
+ * entries owned by LEGAL (legal documents); it never replaces the ordinary permission.
+ */
+export const CONTENT_PERMISSIONS = { read: 'content-read', write: 'content-write', approve: 'content-approve' } as const;
+export const CONTENT_LEGAL_ROLE = 'content-legal';
+
+/** True when the principal comes from the admin identity context and holds the client role (never true for web/other tokens). */
+export const hasAdminClientRole = (principal: Principal | undefined, role: string): boolean =>
+  !!principal && principal.authContext === 'admin' && !!principal.clientRoles[principal.clientId]?.includes(role);
+export const hasContentPermission = (principal: Principal | undefined, action: keyof typeof CONTENT_PERMISSIONS): boolean =>
+  hasAdminClientRole(principal, CONTENT_PERMISSIONS[action]);
+
+export function requireContentPermission(action: keyof typeof CONTENT_PERMISSIONS): preHandlerAsyncHookHandler {
+  const authenticate = requireAuthenticated();
+  return async function guard(request, reply) {
+    await authenticate.call(request.server, request, reply);
+    if (!hasContentPermission(request.principal, action)) throw forbidden();
+  };
+}
+
+/** Handler-level check for entries owned by LEGAL: the caller must also hold `content-legal` (AUTHORIZATION 403 otherwise). */
+export function assertContentLegal(principal: Principal | undefined): void {
+  if (!hasAdminClientRole(principal, CONTENT_LEGAL_ROLE)) throw forbidden();
+}
+
+/**
+ * For PUBLIC routes that serve more to privileged callers: no Authorization header means anonymous (no principal); a header that is present
+ * must be a valid token (401 otherwise, RFC 6750), so a broken client credential is never silently downgraded. Authorization of the
+ * principal is decided by the route (for example hasContentPermission).
+ */
+export function optionalAuthenticated(): preHandlerAsyncHookHandler {
+  const authenticate = requireAuthenticated();
+  return async function maybeAuthenticate(request, reply) {
+    if (request.headers.authorization === undefined) return;
+    await authenticate.call(request.server, request, reply);
+  };
+}

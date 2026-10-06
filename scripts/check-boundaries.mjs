@@ -10,10 +10,11 @@ const ALLOWED = {
   '@bananagig/platform': ['config', 'contracts', 'database', 'observability'],
   '@bananagig/identity': [],
   '@bananagig/configuration': ['contracts', 'database', 'observability', 'platform', 'testing'],
+  '@bananagig/content': ['contracts', 'database', 'observability', 'platform', 'configuration', 'testing'],
   '@bananagig/testing': ['config', 'database'],
   '@bananagig/web': ['config', 'contracts', 'identity', 'observability', 'testing'],
-  '@bananagig/api': ['config', 'contracts', 'database', 'configuration', 'identity', 'observability', 'platform', 'testing'],
-  '@bananagig/worker': ['config', 'contracts', 'configuration', 'database', 'observability', 'platform', 'testing'],
+  '@bananagig/api': ['config', 'contracts', 'database', 'configuration', 'content', 'identity', 'observability', 'platform', 'testing'],
+  '@bananagig/worker': ['config', 'contracts', 'configuration', 'content', 'database', 'observability', 'platform', 'testing'],
   '@bananagig/smoke': ['contracts', 'identity'],
 };
 

@@ -69,6 +69,22 @@
         {
           "name": "configuration-approve",
           "description": "TEMPORARY infrastructure permission: approve or reject configuration changes. To be mapped to application permissions."
+        },
+        {
+          "name": "content-read",
+          "description": "TEMPORARY infrastructure permission: read the content registry, resolve internal copy and preview with at= (internal API). To be mapped to application permissions."
+        },
+        {
+          "name": "content-write",
+          "description": "TEMPORARY infrastructure permission: create content entries, versions and locales, submit, cancel and publish. To be mapped to application permissions."
+        },
+        {
+          "name": "content-approve",
+          "description": "TEMPORARY infrastructure permission: approve or reject content versions. To be mapped to application permissions."
+        },
+        {
+          "name": "content-legal",
+          "description": "TEMPORARY infrastructure permission: additionally required to author, review and publish legal documents (entries owned by LEGAL). To be mapped to application permissions."
         }
       ]
     }
@@ -97,7 +113,11 @@
           "admin-console-access",
           "configuration-read",
           "configuration-write",
-          "configuration-approve"
+          "configuration-approve",
+          "content-read",
+          "content-write",
+          "content-approve",
+          "content-legal"
         ]
       }
     ]
@@ -495,7 +515,11 @@
           "admin-console-access",
           "configuration-read",
           "configuration-write",
-          "configuration-approve"
+          "configuration-approve",
+          "content-read",
+          "content-write",
+          "content-approve",
+          "content-legal"
         ]
       },
       "credentials": [
@@ -523,7 +547,11 @@
           "admin-console-access",
           "configuration-read",
           "configuration-write",
-          "configuration-approve"
+          "configuration-approve",
+          "content-read",
+          "content-write",
+          "content-approve",
+          "content-legal"
         ]
       },
       "credentials": [
