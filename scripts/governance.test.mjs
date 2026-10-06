@@ -300,6 +300,11 @@ describe('checkpoint:start', () => {
     expect(node(r, 'checkpoint-start.mjs').code).toBe(1);
     expect(node(r, 'checkpoint-start.mjs', ['nope']).out).toContain('invalid checkpoint id');
   });
+  it('accepts letter-suffixed checkpoint ids such as INF-002A', () => {
+    const r = repo(minimal);
+    expect(node(r, 'checkpoint-start.mjs', ['INF-002A']).code).toBe(0);
+    expect(node(r, 'checkpoint-start.mjs', ['INF-002AB']).out).toContain('invalid checkpoint id');
+  });
   it('refuses a dirty working tree and lists the files', () => {
     const r = repo(minimal);
     write(r, 'stray.txt', 'x');

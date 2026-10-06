@@ -11,7 +11,7 @@ import pg from 'pg';
 import { HEADER_FIELDS, runMigrations } from './lib/migrator.mjs';
 import { snapshotDatabase } from './lib/snapshot.mjs';
 
-const container = process.env.POSTGRES_CONTAINER || 'bananagig-postgres';
+const container = process.env.POSTGRES_CONTAINER || 'bananagig-postgres-db';
 const adminUrl = process.env.DATABASE_URL_HOST || process.env.DATABASE_URL || 'postgres://bananagig:bananagig_dev_only@127.0.0.1:5433/bananagig';
 const user = new URL(adminUrl).username;
 const suffix = `${process.pid}`;

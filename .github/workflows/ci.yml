@@ -6,13 +6,13 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     services:
-      postgres:
+      postgres-db:
         image: postgis/postgis:17-3.5
         env: { POSTGRES_DB: bananagig, POSTGRES_USER: bananagig, POSTGRES_PASSWORD: bananagig_dev_only }
         ports: ["5433:5432"]
         options: >-
           --health-cmd "pg_isready -U bananagig" --health-interval 5s --health-timeout 5s --health-retries 20
-      nats:
+      nats-events:
         image: nats:2.11-alpine
         ports: ["14222:4222"]
     steps:

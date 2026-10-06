@@ -129,3 +129,35 @@ ADR-0010 forward-only migrations, ADR-0011 core data conventions, ADR-0012 trans
 ### Known follow-up
 DEBT-0012 (runtime roles), DEBT-0013 (idempotency records), DEBT-0014 (non-transactional migrations), DEBT-0015 (backup is a dev check). DEBT-0002 and DEBT-0010 resolved.
 
+## INF-002A — 2026-10-05
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(INF-002A)"`.
+Summary: Naming-only cleanup: Compose service keys now describe roles (`postgres-db`, `api-service`, `caddy-proxy`, ...), containers are `bananagig-<service key>`, and every internal DNS reference, config, script, smoke label and document uses the new names. No technology, port or behavior changed.
+
+### Delivered
+- All 18 long-running services renamed (plus `seaweedfs-storage-init`); `otel-collector` and `smoke` keep their names
+- Internal DNS updated: `postgres-db:5432`, `valkey-cache:6379`, `nats-events:4222`, `seaweedfs-storage:8333`, `opensearch-search:9200`, `keycloak-auth:8080`, `api-service:3000`, `mailpit-email`, `flagd-flags`, `prometheus-metrics`, `loki-logs`, `tempo-traces`, `grafana-dashboard`
+- Caddy upstreams, Prometheus targets and job names, Grafana datasource URLs, OTel exporters, CI service containers, `scripts/dev.mjs`, `scripts/db-backup-test.mjs`
+- Smoke output uses friendly names (Postgres DB, Valkey Cache, ..., Worker Service); "available" for PostGIS and JetStream
+- Docs: container architecture (naming convention and service table), local development, open-source stack (service column), application architecture diagram
+- Checkpoint scripts accept letter-suffixed ids (`INF-002A`)
+
+### Schema
+No schema change (data model review gate: NOT_REQUIRED, naming-only).
+
+### Contracts
+None.
+
+### Tests
+Unit 29, governance 35, integration 55, smoke 23 checks (all passing after the rename).
+
+### Skills updated
+`skills/infrastructure`: naming convention rule.
+
+### ADRs
+None (convention, not an architecture decision).
+
+### Known follow-up
+Telemetry `service.name` values (`bananagig-api`, `bananagig-worker`, `bananagig-web`) and named volumes keep their original names by design; rename them only with a deliberate log/dashboard migration.
+

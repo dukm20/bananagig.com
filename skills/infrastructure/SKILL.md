@@ -19,7 +19,8 @@ Operate and extend the local container platform: services, profiles, ports, heal
 
 ## Architecture rules
 
-- One concern per container; explicit image tags; container names `bananagig-<service>`; one network `bananagig-net`.
+- One concern per container; explicit image tags; one network `bananagig-net`.
+- Compose service keys are descriptive role names, container names use `bananagig-<role>`, and technology identity remains documented separately (`docs/engineering/CONTAINER_ARCHITECTURE.md`, `docs/engineering/OPEN_SOURCE_STACK.md`). Internal addressing uses the service key (`postgres-db:5432`, `nats-events:4222`), never `container_name`. Volumes and telemetry `service.name` values are not renamed with roles.
 - Profiles: `core` (default), `observability`, `search`, `devtools`, `tools` (smoke). Put a service in the narrowest profile that fits.
 - Publish host ports only on `127.0.0.1`. Production-like containers publish none; Caddy is the single entry. Dev-only ports go in `compose.dev.yaml`.
 - Apps run non-root, read-only root filesystem, `cap_drop: ALL`, `no-new-privileges`. The web container gets an explicit minimal environment, never `env_file`.
@@ -42,7 +43,7 @@ pnpm stack:up          # core profile          pnpm stack:all   # every profile
 pnpm stack:down        # keep volumes          pnpm stack:reset # destroy volumes
 pnpm stack:ps | pnpm stack:logs
 pnpm smoke             # runs inside the network, 22 checks
-docker compose up -d --force-recreate <svc>   # after editing a bind-mounted file
+docker compose up -d --force-recreate <service-key>   # after editing a bind-mounted file
 ```
 
 ## Testing requirements
@@ -83,4 +84,4 @@ ADR-0001, ADR-0003, ADR-0005, ADR-0007
 
 ## Last reviewed
 
-2026-10-05 (META-001)
+2026-10-05 (INF-002A)

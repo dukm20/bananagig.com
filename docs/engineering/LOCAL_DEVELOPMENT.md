@@ -40,9 +40,9 @@ Equivalent raw commands: `docker compose up -d --build`, or add `--profile obser
 
 | URL | Service |
 |---|---|
-| http://app.localhost:8080 | web (`/`, `/system`, `/health`; `/api/v1/*` is proxied to the API) |
-| http://api.localhost:8080/healthz | api (`/readyz`, `/metrics` too; `/internal/*` is blocked at the proxy) |
-| http://auth.localhost:8080 | Keycloak (admin / `KEYCLOAK_ADMIN_PASSWORD`, realm `bananagig-dev`) |
+| http://app.localhost:8080 | web-app (`/`, `/system`, `/health`; `/api/v1/*` is proxied to the API) |
+| http://api.localhost:8080/healthz | api-service (`/readyz`, `/metrics` too; `/internal/*` is blocked at the proxy) |
+| http://auth.localhost:8080 | keycloak-auth (admin / `KEYCLOAK_ADMIN_PASSWORD`, realm `bananagig-dev`) |
 | http://grafana.localhost:8080 | Grafana (`GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD`) |
 | http://mail.localhost:8080 | Mailpit inbox |
 | http://prometheus.localhost:8080 | Prometheus |
@@ -54,9 +54,9 @@ Equivalent raw commands: `docker compose up -d --build`, or add `--profile obser
 
 ```bash
 pnpm stack:down                                   # stop and remove containers, keep volumes
-docker compose restart api worker                 # restart specific services
+docker compose restart api-service worker-service   # restart specific services (use the Compose service keys)
 pnpm stack:logs                                   # follow all logs
-docker compose logs -f --tail=100 api             # one service
+docker compose logs -f --tail=100 api-service     # one service
 pnpm stack:ps                                     # status and health
 ```
 
@@ -93,7 +93,7 @@ pnpm openapi:lint && pnpm asyncapi:validate
 
 ## Smoke test
 
-Runs inside the Compose network and verifies real connectivity: Postgres and PostGIS queries, Valkey set/get, NATS and JetStream, an S3 put/get/delete, OpenSearch health, a flag evaluation through OpenFeature, a test email received by Mailpit, a pg-boss job and NATS event round-trip in the worker, the API contract with a correlation id that is then found in Loki, the web `/system` page rendering API data, a trace from api and from the worker found in Tempo, app logs found in Loki, Prometheus targets up, Grafana datasources provisioned, Keycloak realm, and web/api/worker `/healthz` + `/readyz`.
+Runs inside the Compose network (services addressed by their service keys, e.g. `postgres-db`) and verifies real connectivity. Output rows use friendly names: Postgres DB, PostGIS, Valkey Cache, Keycloak Auth, NATS Events, JetStream, SeaweedFS Storage, OpenSearch Search, Feature Flags, OTel Collector, Prometheus Metrics, Grafana Dashboard, Loki Logs, Tempo Traces, Mailpit Email, Web App, API Service, Worker Service. It checks: Postgres and PostGIS queries, Valkey set/get, NATS and JetStream, an S3 put/get/delete, OpenSearch health, a flag evaluation through OpenFeature, a test email received by Mailpit, a pg-boss job and NATS event round-trip in the worker, the API contract with a correlation id that is then found in Loki, the web `/system` page rendering API data, a trace from api and from the worker found in Tempo, app logs found in Loki, Prometheus targets up, Grafana datasources provisioned, Keycloak realm, and `/healthz` + `/readyz` of Web App, API Service and Worker Service.
 
 ```bash
 pnpm stack:all && pnpm migrate     # if not already running
@@ -106,7 +106,7 @@ pnpm smoke                         # exit code 0 = all checks passed
 pnpm db:backup-test    # scratch DB from migrations -> pg_dump -> pg_restore into a clean DB -> verify data, PostGIS, snapshot equality, checksum-clean rerun, and that a new migration still applies
 ```
 
-This is a development validation, not production disaster recovery (DEBT-0015). Manual commands: `docker exec bananagig-postgres pg_dump -U bananagig -Fc -d bananagig -f /tmp/x.dump` and `pg_restore -U bananagig -d <empty db> --no-owner /tmp/x.dump`.
+This is a development validation, not production disaster recovery (DEBT-0015). Manual commands: `docker exec bananagig-postgres-db pg_dump -U bananagig -Fc -d bananagig -f /tmp/x.dump` and `pg_restore -U bananagig -d <empty db> --no-owner /tmp/x.dump`.
 
 ## Full reset / clean volumes
 

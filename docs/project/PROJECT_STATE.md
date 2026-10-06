@@ -2,8 +2,8 @@
 
 Current truth only. History lives in `IMPLEMENTATION_HISTORY.md`; decisions in `docs/architecture/`.
 
-Current checkpoint: INF-003
-Last completed checkpoint: INF-003
+Current checkpoint: INF-002A
+Last completed checkpoint: INF-002A
 Next approved checkpoint: INF-004 — Keycloak Identity Baseline
 Latest migration: 0003_integration_outbox.sql
 Latest ADR: ADR-0012
@@ -17,16 +17,16 @@ Modular monolith in a pnpm/Turborepo workspace. PostgreSQL (with PostGIS) is aut
 
 | App | State |
 |---|---|
-| `apps/web` | Next.js 16 App Router shell. Infrastructure pages only: `/`, `/health`, `/system`; `/healthz`, `/readyz`, `/metrics`. Typed API client with `getSystemInfo()` |
-| `apps/api` | Fastify 5. `GET /healthz`, `/readyz`, `/version`, `/api/v1/system/info`. System module only. Standard error model and correlation ids |
-| `apps/worker` | pg-boss + NATS host with health server and the transactional-outbox relay (publishes to JetStream stream `BANANAGIG_EVENTS`). Only the infrastructure `infra.ping` job and `bananagig.infra.ping.v1` event |
+| `apps/web` (container `web-app`) | Next.js 16 App Router shell. Infrastructure pages only: `/`, `/health`, `/system`; `/healthz`, `/readyz`, `/metrics`. Typed API client with `getSystemInfo()` |
+| `apps/api` (container `api-service`) | Fastify 5. `GET /healthz`, `/readyz`, `/version`, `/api/v1/system/info`. System module only. Standard error model and correlation ids |
+| `apps/worker` (container `worker-service`) | pg-boss + NATS host with health server and the transactional-outbox relay (publishes to JetStream stream `BANANAGIG_EVENTS`). Only the infrastructure `infra.ping` job and `bananagig.infra.ping.v1` event |
 | `apps/smoke` | 23-check connectivity test (`pnpm smoke`) |
 
 Packages: `contracts`, `config`, `observability` (incl. DB telemetry), `database` (Kysely + pg, pool policies, transaction options, lock helpers), `platform` (adapters, outbox store), `testing` (isolated migrated test databases).
 
 ## Infrastructure
 
-Compose profiles: `core` (postgres, valkey, nats, seaweedfs, keycloak, flagd, api, worker, web, caddy), `observability` (otel-collector, prometheus, grafana, loki, tempo), `search` (opensearch), `devtools` (mailpit), `tools` (smoke). Local entry point: Caddy on 127.0.0.1:8080 (`*.localhost`). Dev mode: `pnpm dev` runs apps on the host (web 3210, api 3211, worker 3212) with dependency containers via `compose.dev.yaml`.
+Compose service keys are descriptive role names and containers are `bananagig-<service key>` (convention in `docs/engineering/CONTAINER_ARCHITECTURE.md`). Profiles: `core` (postgres-db, valkey-cache, nats-events, seaweedfs-storage, seaweedfs-storage-init, keycloak-auth, flagd-flags, api-service, worker-service, web-app, caddy-proxy), `observability` (otel-collector, prometheus-metrics, grafana-dashboard, loki-logs, tempo-traces), `search` (opensearch-search), `devtools` (mailpit-email), `tools` (smoke). Local entry point: caddy-proxy on 127.0.0.1:8080 (`*.localhost`). Dev mode: `pnpm dev` runs apps on the host (web 3210, api 3211, worker 3212) with dependency containers via `compose.dev.yaml`.
 
 ## Database schemas
 

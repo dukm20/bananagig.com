@@ -11,7 +11,7 @@ const die = (m) => {
   console.error(`checkpoint:finalize: ${m}`);
   process.exit(1);
 };
-if (!id || !/^[A-Z]{2,5}-\d{3}$/.test(id)) die('usage: pnpm checkpoint:finalize <CHECKPOINT_ID> --skill-update=UPDATED|NOT_REQUIRED');
+if (!id || !/^[A-Z]{2,5}-\d{3}[A-Z]?$/.test(id)) die('usage: pnpm checkpoint:finalize <CHECKPOINT_ID> --skill-update=UPDATED|NOT_REQUIRED');
 if (!['UPDATED', 'NOT_REQUIRED'].includes(skillUpdate))
   die('--skill-update=UPDATED|NOT_REQUIRED is required: state explicitly whether this checkpoint created reusable knowledge (SKILL_UPDATE)');
 if (!isGitRepo()) die('not a git repository');

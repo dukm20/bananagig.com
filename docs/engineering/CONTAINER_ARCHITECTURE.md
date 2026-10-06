@@ -1,15 +1,44 @@
 # Container Architecture
 
-Docker Compose project `bananagig`, one bridge network `bananagig-net`, one primary concern per container, predictable names `bananagig-<service>`.
+Docker Compose project `bananagig`, one bridge network `bananagig-net`, one primary concern per container.
+
+## Naming convention
+
+- **Compose service keys are descriptive role names** (`postgres-db`, `api-service`, `caddy-proxy`). The key is also the DNS name other containers use (`postgres-db:5432`, `nats-events:4222`, `keycloak-auth:8080`).
+- **Container names are `bananagig-<service key>`** (`bananagig-postgres-db`). Internal addressing always uses the service key, never `container_name`.
+- **Technology identity is documented separately** in the table below and in `OPEN_SOURCE_STACK.md`, so a technology can be swapped without renaming the role.
+- Unchanged by design: named volumes (`bananagig_postgres_data`, ... they identify data), telemetry `service.name` values (`bananagig-api`, `bananagig-worker`, `bananagig-web`: application identity used in logs and traces), workspace and image names (`apps/api`, `bananagig/api:dev`).
+
+| Service key (DNS name) | Container | Technology | Role |
+|---|---|---|---|
+| `postgres-db` | `bananagig-postgres-db` | PostgreSQL 17 + PostGIS | authoritative database |
+| `valkey-cache` | `bananagig-valkey-cache` | Valkey | cache |
+| `nats-events` | `bananagig-nats-events` | NATS + JetStream | events |
+| `seaweedfs-storage` | `bananagig-seaweedfs-storage` | SeaweedFS (S3) | object storage |
+| `seaweedfs-storage-init` | `bananagig-seaweedfs-storage-init` | SeaweedFS shell | one-shot bucket creation |
+| `keycloak-auth` | `bananagig-keycloak-auth` | Keycloak | identity |
+| `flagd-flags` | `bananagig-flagd-flags` | flagd | feature flags |
+| `api-service` | `bananagig-api-service` | Fastify app | HTTP API |
+| `worker-service` | `bananagig-worker-service` | Node worker (pg-boss, NATS) | background work |
+| `web-app` | `bananagig-web-app` | Next.js app | web UI |
+| `caddy-proxy` | `bananagig-caddy-proxy` | Caddy | reverse proxy |
+| `opensearch-search` | `bananagig-opensearch-search` | OpenSearch | search projection |
+| `otel-collector` | `bananagig-otel-collector` | OpenTelemetry Collector | telemetry ingest |
+| `prometheus-metrics` | `bananagig-prometheus-metrics` | Prometheus | metrics |
+| `loki-logs` | `bananagig-loki-logs` | Loki | logs |
+| `tempo-traces` | `bananagig-tempo-traces` | Tempo | traces |
+| `grafana-dashboard` | `bananagig-grafana-dashboard` | Grafana | dashboards |
+| `mailpit-email` | `bananagig-mailpit-email` | Mailpit | email sink |
+| `smoke` | `bananagig-smoke` | Node app | one-shot connectivity test |
 
 ## Profiles
 
 | Profile | Services | Started by |
 |---|---|---|
-| `core` | postgres, valkey, nats, seaweedfs, seaweedfs-init, keycloak, flagd, api, worker, web, caddy | `docker compose up -d` (`COMPOSE_PROFILES=core` in `.env`) |
-| `observability` | otel-collector, prometheus, grafana, loki, tempo | `--profile observability` |
-| `search` | opensearch | `--profile search` |
-| `devtools` | mailpit | `--profile devtools` |
+| `core` | postgres-db, valkey-cache, nats-events, seaweedfs-storage, seaweedfs-storage-init, keycloak-auth, flagd-flags, api-service, worker-service, web-app, caddy-proxy | `docker compose up -d` (`COMPOSE_PROFILES=core` in `.env`) |
+| `observability` | otel-collector, prometheus-metrics, grafana-dashboard, loki-logs, tempo-traces | `--profile observability` |
+| `search` | opensearch-search | `--profile search` |
+| `devtools` | mailpit-email | `--profile devtools` |
 | `tools` | smoke (one-shot) | `pnpm smoke` |
 
 `pnpm stack:all` enables all four long-running profiles. The smoke test needs all of them.
@@ -17,36 +46,37 @@ Docker Compose project `bananagig`, one bridge network `bananagig-net`, one prim
 ## Topology
 
 ```
-host:8080 -> caddy -> web | api | keycloak | grafana | mailpit | prometheus     (Host header routing)
-host:5433 -> postgres (127.0.0.1 only, for migrations and psql)
+host:8080 -> caddy-proxy -> web-app | api-service | keycloak-auth | grafana-dashboard | mailpit-email | prometheus-metrics     (Host header routing)
+host:5433 -> postgres-db (127.0.0.1 only, for migrations and psql)
 
-api, worker -> postgres, valkey, nats(JetStream), seaweedfs(S3), opensearch, flagd, mailpit(SMTP)
-web, api, worker -> otel-collector (OTLP/HTTP :4318) -> tempo (traces), loki (logs)
-prometheus -> web, api, worker  /metrics
-grafana -> prometheus, loki, tempo
-keycloak -> postgres (own `keycloak` database and role)
+api-service, worker-service -> postgres-db, valkey-cache, nats-events (JetStream), seaweedfs-storage (S3), opensearch-search, flagd-flags, mailpit-email (SMTP)
+web-app -> api-service (server-side API calls)
+web-app, api-service, worker-service -> otel-collector (OTLP/HTTP :4318) -> tempo-traces (traces), loki-logs (logs)
+prometheus-metrics -> web-app, api-service, worker-service  /metrics
+grafana-dashboard -> prometheus-metrics, loki-logs, tempo-traces
+keycloak-auth -> postgres-db (own `keycloak` database and role)
 ```
 
 ## Application containers
 
 Built from the one root `Dockerfile` (`--build-arg APP=<app>`), multi-stage: `fetch` (pnpm store cached until the lockfile changes) -> `build` -> runtime.
 
-- **api, worker, smoke** (`--target runtime`): esbuild bundles each app into one `index.js`; the image is `node:24-alpine` plus that file.
-- **web** (`--target runtime-web`): Next.js `standalone` output (server, traced `node_modules`, static assets).
+- **api-service, worker-service, smoke** (`--target runtime`): esbuild bundles each app into one `index.js`; the image is `node:24-alpine` plus that file.
+- **web-app** (`--target runtime-web`): Next.js `standalone` output (server, traced `node_modules`, static assets).
 - npm, corepack and yarn are removed from runtime images (not needed; they carried the base image's only HIGH findings).
 - Non-root `node` user, `read_only` root filesystem (web gets `tmpfs` for `.next/cache` and `/tmp`), `cap_drop: ALL`, `no-new-privileges`.
 - Build args `APP_VERSION`, `GIT_SHA`, `BUILD_TIME` populate `/version`.
 - Healthchecks hit `/readyz` on port 3000. Compose publishes none of these ports; Caddy is the only entry.
-- `web` gets an explicit minimal environment (no `env_file`), so it never holds database or infrastructure credentials.
-- Graceful shutdown: api and worker handle SIGTERM (stop accepting, drain, close DB/NATS/Valkey, flush telemetry bounded to 3 s) and exit 0 in well under a second. The web container exits via SIGTERM default (143): the Next standalone server has no drain hook (DEBT, stateless).
-- `/internal/diagnostics` (api, worker) runs connectivity checks, is not routed by Caddy and is excluded from OpenAPI.
+- `web-app` gets an explicit minimal environment (no `env_file`), so it never holds database or infrastructure credentials.
+- Graceful shutdown: api-service and worker-service handle SIGTERM (stop accepting, drain, close DB/NATS/Valkey, flush telemetry bounded to 3 s) and exit 0 in well under a second. The web-app container exits via SIGTERM default (143): the Next standalone server has no drain hook (DEBT, stateless).
+- `/internal/diagnostics` (api-service, worker-service) runs connectivity checks, is not routed by Caddy and is excluded from OpenAPI.
 
 ## Ports published to the host (all bound to 127.0.0.1)
 
 | Host | Container | Purpose |
 |---|---|---|
-| 8080 (`PROXY_HTTP_PORT`) | caddy:80 | All HTTP entry points |
-| 5433 (`POSTGRES_HOST_PORT`) | postgres:5432 | Migrations and psql. 5433 avoids clashing with a host Postgres on 5432 |
+| 8080 (`PROXY_HTTP_PORT`) | caddy-proxy:80 | All HTTP entry points |
+| 5433 (`POSTGRES_HOST_PORT`) | postgres-db:5432 | Migrations and psql. 5433 avoids clashing with a host Postgres on 5432 |
 
 ## Volumes
 

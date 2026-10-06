@@ -70,7 +70,7 @@ Related skill: skills/infrastructure/SKILL.md
 A clean start intermittently failed because the bucket-creation init container ran when the master answered but the filer was not up.
 
 ### Learning
-The healthcheck must require both master (9333) and filer (8888); `weed shell` needs `-filer=seaweedfs:8888`; the init container retries until the bucket is listed.
+The healthcheck must require both master (9333) and filer (8888); `weed shell` needs `-filer=seaweedfs-storage:8888`; the init container retries until the bucket is listed.
 
 ### Why it matters
 The failure only appears on a cold start (empty volumes), exactly the case a new developer or CI hits first.
@@ -79,7 +79,7 @@ The failure only appears on a cold start (empty volumes), exactly the case a new
 Test infrastructure changes with `pnpm stack:reset` followed by a full start, not only by restarting a warm stack.
 
 ### Evidence
-`compose.yaml` seaweedfs and seaweedfs-init services; reproduced and fixed during the INF-001 full-reset test.
+`compose.yaml` `seaweedfs-storage` and `seaweedfs-storage-init` services (named `seaweedfs` and `seaweedfs-init` when the lesson was learned); reproduced and fixed during the INF-001 full-reset test.
 
 ## LRN-0004 — `docker compose up --wait` fails on one-shot init containers
 
@@ -92,7 +92,7 @@ Related ADR: none
 Related skill: skills/infrastructure/SKILL.md
 
 ### Context
-`--wait` treats a service that exits (even with code 0), such as `seaweedfs-init`, as a failure.
+`--wait` treats a service that exits (even with code 0), such as `seaweedfs-storage-init`, as a failure.
 
 ### Learning
 Start with `up -d` and poll container health yourself (`scripts/dev.mjs`); CI uses `up -d` and lets the smoke test retry.

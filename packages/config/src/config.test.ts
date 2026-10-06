@@ -17,8 +17,8 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ service: 't', env: { NODE_ENV: 'production' } })).toThrow(/DATABASE_URL: required in production/);
   });
   it('requires only the role-specific settings in production', () => {
-    const web = { NODE_ENV: 'production', API_INTERNAL_URL: 'http://api:3000', OTEL_EXPORTER_OTLP_ENDPOINT: 'http://otel:4318' };
-    expect(loadConfig({ service: 'w', role: 'web', env: web }).apiInternalUrl).toBe('http://api:3000');
+    const web = { NODE_ENV: 'production', API_INTERNAL_URL: 'http://api-service:3000', OTEL_EXPORTER_OTLP_ENDPOINT: 'http://otel:4318' };
+    expect(loadConfig({ service: 'w', role: 'web', env: web }).apiInternalUrl).toBe('http://api-service:3000');
     expect(() => loadConfig({ service: 'a', role: 'api', env: web })).toThrow(/DATABASE_URL/);
   });
   it('redacts secrets and URL credentials', () => {

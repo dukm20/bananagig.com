@@ -6,15 +6,15 @@ import { spawnSync, spawn } from 'node:child_process';
 if (!existsSync('.env')) copyFileSync('.env.example', '.env');
 if (!existsSync('.env.host')) copyFileSync('.env.host.example', '.env.host');
 
-const deps = ['postgres', 'valkey', 'nats', 'seaweedfs', 'seaweedfs-init', 'flagd', 'mailpit'];
+const deps = ['postgres-db', 'valkey-cache', 'nats-events', 'seaweedfs-storage', 'seaweedfs-storage-init', 'flagd-flags', 'mailpit-email'];
 const compose = ['compose', '-f', 'compose.yaml', '-f', 'compose.dev.yaml', '--profile', 'core', '--profile', 'devtools'];
 const up = spawnSync('docker', [...compose, 'up', '-d', ...deps], { stdio: 'inherit' });
 if (up.status !== 0) {
   console.error('Failed to start dependency containers.');
   process.exit(up.status ?? 1);
 }
-// `up --wait` treats the one-shot seaweedfs-init (exits 0) as a failure, so poll health ourselves.
-const longRunning = deps.filter((d) => d !== 'seaweedfs-init' && d !== 'flagd'); // flagd image has no healthcheck
+// `up --wait` treats the one-shot seaweedfs-storage-init (exits 0) as a failure, so poll health ourselves.
+const longRunning = deps.filter((d) => d !== 'seaweedfs-storage-init' && d !== 'flagd-flags'); // flagd-flags image has no healthcheck
 const deadline = Date.now() + 180_000;
 for (;;) {
   const states = longRunning.map((d) =>

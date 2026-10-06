@@ -72,16 +72,16 @@ Only `system` exists. Folders for future domains (identity, catalog, booking, ..
 
 ```mermaid
 flowchart LR
-  Browser --> Caddy
-  Caddy -->|app.localhost| Web
-  Caddy -->|api.localhost, /api/v1| Api
-  Web -->|SSR, API_INTERNAL_URL| Api
-  Api --> Postgres[(PostgreSQL + PostGIS)]
-  Worker --> Postgres
-  Worker --> NATS[(NATS JetStream)]
-  Api -.diagnostics only.-> Valkey & S3 & OpenSearch & flagd
-  Web & Api & Worker -->|OTLP| Collector --> Tempo & Loki
-  Prometheus -->|/metrics| Web & Api & Worker
+  Browser --> caddy-proxy
+  caddy-proxy -->|app.localhost| web-app
+  caddy-proxy -->|api.localhost, /api/v1| api-service
+  web-app -->|SSR, API_INTERNAL_URL| api-service
+  api-service --> postgres-db[(postgres-db: PostgreSQL + PostGIS)]
+  worker-service --> postgres-db
+  worker-service --> nats-events[(nats-events: NATS JetStream)]
+  api-service -.diagnostics only.-> valkey-cache & seaweedfs-storage & opensearch-search & flagd-flags
+  web-app & api-service & worker-service -->|OTLP| otel-collector --> tempo-traces & loki-logs
+  prometheus-metrics -->|/metrics| web-app & api-service & worker-service
 ```
 
 ## Configuration

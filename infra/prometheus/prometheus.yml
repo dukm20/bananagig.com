@@ -1,11 +1,11 @@
 global:
   scrape_interval: 15s
 scrape_configs:
-  - job_name: prometheus
+  - job_name: prometheus-metrics
     static_configs: [{ targets: ['localhost:9090'] }]
-  - job_name: web
-    static_configs: [{ targets: ['web:3000'] }]
-  - job_name: api
-    static_configs: [{ targets: ['api:3000'] }]
-  - job_name: worker
-    static_configs: [{ targets: ['worker:3000'] }]
+  - job_name: web-app
+    static_configs: [{ targets: ['web-app:3000'] }]
+  - job_name: api-service
+    static_configs: [{ targets: ['api-service:3000'] }]
+  - job_name: worker-service
+    static_configs: [{ targets: ['worker-service:3000'] }]

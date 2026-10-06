@@ -11,7 +11,7 @@ const die = (m) => {
   process.exit(1);
 };
 if (!id) die('usage: pnpm checkpoint:start <CHECKPOINT_ID>   (e.g. BAN-001)');
-if (!/^[A-Z]{2,5}-\d{3}$/.test(id)) die(`invalid checkpoint id "${id}" (expected like INF-003, BAN-001)`);
+if (!/^[A-Z]{2,5}-\d{3}[A-Z]?$/.test(id)) die(`invalid checkpoint id "${id}" (expected like INF-003, BAN-001)`);
 if (!isGitRepo()) die('not a git repository');
 
 const baseline = !hasHead();
