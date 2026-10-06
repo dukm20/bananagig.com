@@ -42,13 +42,25 @@ Equivalent raw commands: `docker compose up -d --build`, or add `--profile obser
 |---|---|
 | http://app.localhost:8080 | web-app (`/`, `/system`, `/health`; `/api/v1/*` is proxied to the API) |
 | http://api.localhost:8080/healthz | api-service (`/readyz`, `/metrics` too; `/internal/*` is blocked at the proxy) |
-| http://auth.localhost:8080 | keycloak-auth (admin / `KEYCLOAK_ADMIN_PASSWORD`, realm `bananagig-dev`) |
+| http://auth.localhost:8080/realms/bananagig | keycloak-auth public identity host (realm endpoints only; the admin console is NOT served here) |
+| http://keycloak-admin.localhost:8080/admin/master/console/ | Keycloak admin console, **DEV ONLY** (login `KEYCLOAK_ADMIN` / `KEYCLOAK_ADMIN_PASSWORD`) |
+| http://app.localhost:8080/session | Sign in / out and session status (infrastructure page) |
 | http://grafana.localhost:8080 | Grafana (`GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD`) |
 | http://mail.localhost:8080 | Mailpit inbox |
 | http://prometheus.localhost:8080 | Prometheus |
 | 127.0.0.1:5433 | Postgres (`psql postgres://bananagig:bananagig_dev_only@127.0.0.1:5433/bananagig`) |
 
 `*.localhost` resolves to loopback in modern browsers and curl. If yours does not, send a `Host:` header.
+
+## Identity (Keycloak)
+
+Realm `bananagig` is imported from `infra/keycloak/bananagig-realm.json` on first start. Full guide: `docs/engineering/IDENTITY.md`.
+
+- Dev-only users: `customer.dev`, `provider.dev`, `admin.dev` with passwords `dev_only_customer_password`, `dev_only_provider_password`, `dev_only_admin_password` (they do not exist in production realm builds).
+- Browser login needs the container stack: `pnpm stack:all`, then open `http://app.localhost:8080/session` and use Sign in. `pnpm dev` (host apps) supports bearer-token calls to the API only (DEBT-0020).
+- Edited the realm file? `pnpm identity:check`, then `pnpm identity:sync` (DEV ONLY re-import into the running dev Keycloak) or `pnpm stack:reset`.
+- Production realm build: `pnpm identity:build-prod -- --web-url https://app.example.com --admin-url https://admin.example.com --out realm.json`.
+- Get a token for manual API calls (dev only): `curl -s -d grant_type=password -d client_id=bananagig-dev-test -d username=customer.dev -d password=dev_only_customer_password http://127.0.0.1:18081/realms/bananagig/protocol/openid-connect/token` (port 18081 is published by `compose.dev.yaml`), then call `GET /api/v1/system/whoami` with `Authorization: Bearer <access_token>`.
 
 ## Stop / restart / logs
 
@@ -93,7 +105,7 @@ pnpm openapi:lint && pnpm asyncapi:validate
 
 ## Smoke test
 
-Runs inside the Compose network (services addressed by their service keys, e.g. `postgres-db`) and verifies real connectivity. Output rows use friendly names: Postgres DB, PostGIS, Valkey Cache, Keycloak Auth, NATS Events, JetStream, SeaweedFS Storage, OpenSearch Search, Feature Flags, OTel Collector, Prometheus Metrics, Grafana Dashboard, Loki Logs, Tempo Traces, Mailpit Email, Web App, API Service, Worker Service. It checks: Postgres and PostGIS queries, Valkey set/get, NATS and JetStream, an S3 put/get/delete, OpenSearch health, a flag evaluation through OpenFeature, a test email received by Mailpit, a pg-boss job and NATS event round-trip in the worker, the API contract with a correlation id that is then found in Loki, the web `/system` page rendering API data, a trace from api and from the worker found in Tempo, app logs found in Loki, Prometheus targets up, Grafana datasources provisioned, Keycloak realm, and `/healthz` + `/readyz` of Web App, API Service and Worker Service.
+Runs inside the Compose network (services addressed by their service keys, e.g. `postgres-db`) and verifies real connectivity. Output rows use friendly names: Postgres DB, PostGIS, Valkey Cache, Keycloak Auth, NATS Events, JetStream, SeaweedFS Storage, OpenSearch Search, Feature Flags, OTel Collector, Prometheus Metrics, Grafana Dashboard, Loki Logs, Tempo Traces, Mailpit Email, Web App, API Service, Worker Service. It checks: Postgres and PostGIS queries, Valkey set/get, NATS and JetStream, an S3 put/get/delete, OpenSearch health, a flag evaluation through OpenFeature, a test email received by Mailpit, a pg-boss job and NATS event round-trip in the worker, the API contract with a correlation id that is then found in Loki, the web `/system` page rendering API data, a trace from api and from the worker found in Tempo, Keycloak discovery/JWKS/client policy, real PKCE logins for web and admin contexts, API acceptance of valid tokens and rejection of missing/invalid/tampered ones, a full web session (login, opaque HttpOnly cookie, API call with the session token, CSRF-safe logout), Caddy auth-route restrictions, app logs found in Loki, Prometheus targets up, Grafana datasources provisioned, Keycloak realm, and `/healthz` + `/readyz` of Web App, API Service and Worker Service.
 
 ```bash
 pnpm stack:all && pnpm migrate     # if not already running

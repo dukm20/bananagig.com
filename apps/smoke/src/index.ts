@@ -1,6 +1,17 @@
 // Connectivity smoke test. Runs inside the Compose network (pnpm smoke) and verifies real
 // round-trips, not just container status. Exits non-zero if any check fails.
-import { CORRELATION_HEADER, SystemInfoResponse } from '@bananagig/contracts';
+import http from 'node:http';
+import { CORRELATION_HEADER, ErrorResponse, SystemInfoResponse, WhoAmIResponse } from '@bananagig/contracts';
+import { createTokenVerifier, exchangeAuthorizationCode, oidcEndpoints } from '@bananagig/identity';
+import {
+  ADMIN_REDIRECT_URI,
+  authorizationCodeLogin,
+  completeLogin,
+  DEV_USERS,
+  devAccessToken,
+  WEB_REDIRECT_URI,
+  type KeycloakTarget,
+} from '@bananagig/identity/testing';
 
 type Result = { name: string; ok: boolean; note: string; label?: string };
 type Diag = Record<string, { ok: boolean; detail?: any; error?: string }>; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -201,6 +212,12 @@ await check('Grafana Dashboard', async () => {
   for (const t of ['prometheus', 'loki', 'tempo']) if (!types.includes(t)) throw new Error(`datasource ${t} missing`);
   return 'datasources: prometheus, loki, tempo';
 });
+// ---------------------------------------------------------------- identity (Keycloak, API auth, web session, Caddy auth routes)
+const kcUrl = env('KEYCLOAK_URL', 'http://keycloak-auth:8080');
+const kc: KeycloakTarget = { keycloakUrl: kcUrl, publicUrl: env('KEYCLOAK_PUBLIC_URL', 'http://auth.localhost:8080') };
+const webPublic = env('WEB_PUBLIC_URL', 'http://app.localhost:8080');
+const ep = oidcEndpoints({ publicUrl: kc.publicUrl!, internalUrl: kcUrl, realm: 'bananagig' });
+
 await check('Keycloak Auth', async () => {
   await retry(
     async () => {
@@ -209,8 +226,199 @@ await check('Keycloak Auth', async () => {
     30,
     3000,
   );
-  await expectOk(`${env('KEYCLOAK_URL', 'http://keycloak-auth:8080')}/realms/bananagig-dev/.well-known/openid-configuration`);
-  return `realm bananagig-dev loaded`;
+  const disc = (await (await expectOk(`${kcUrl}/realms/bananagig/.well-known/openid-configuration`)).json()) as {
+    issuer: string;
+    code_challenge_methods_supported: string[];
+  };
+  if (disc.issuer !== ep.issuer) throw new Error(`issuer ${disc.issuer} != ${ep.issuer}`);
+  if (!disc.code_challenge_methods_supported.includes('S256')) throw new Error('S256 not supported');
+  const jwks = (await (await expectOk(ep.jwks)).json()) as { keys: unknown[] };
+  if (!jwks.keys.length) throw new Error('JWKS is empty');
+  // Client configuration (admin REST with the dev admin credentials)
+  const tokenRes = await expectOk(`${kcUrl}/realms/master/protocol/openid-connect/token`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'password',
+      client_id: 'admin-cli',
+      username: env('KEYCLOAK_ADMIN', 'admin'),
+      password: env('KEYCLOAK_ADMIN_PASSWORD', 'admin_dev_only'),
+    }),
+  });
+  const adminToken = ((await tokenRes.json()) as { access_token: string }).access_token;
+  const clients = (await (await expectOk(`${kcUrl}/admin/realms/bananagig/clients`, { headers: { authorization: `Bearer ${adminToken}` } })).json()) as {
+    clientId: string;
+    publicClient: boolean;
+    implicitFlowEnabled: boolean;
+    directAccessGrantsEnabled: boolean;
+    attributes: Record<string, string>;
+  }[];
+  const by = (id: string) => clients.find((c) => c.clientId === id);
+  for (const id of ['bananagig-web', 'bananagig-api', 'bananagig-admin']) if (!by(id)) throw new Error(`client ${id} missing`);
+  for (const id of ['bananagig-web', 'bananagig-admin']) {
+    const c = by(id)!;
+    if (!c.publicClient || c.implicitFlowEnabled || c.directAccessGrantsEnabled || c.attributes['pkce.code.challenge.method'] !== 'S256')
+      throw new Error(`client ${id} violates the PKCE/public-client policy`);
+  }
+  const grantClients = clients.filter((c) => c.directAccessGrantsEnabled && c.attributes['bananagig.devOnly'] !== 'true');
+  if (grantClients.length) throw new Error(`password grant enabled on ${grantClients.map((c) => c.clientId).join(', ')}`);
+  return 'realm bananagig: discovery, JWKS and web/api/admin clients configured';
+});
+
+const verifier = createTokenVerifier({
+  issuer: ep.issuer,
+  apiAudience: 'bananagig-api',
+  jwks: { url: ep.jwks },
+  webClientId: 'bananagig-web',
+  adminClientId: 'bananagig-admin',
+});
+let customerToken = '';
+await check('Keycloak Auth token flow', async () => {
+  customerToken = await devAccessToken(kc, 'customer'); // DEV/TEST-only client
+  const login = await authorizationCodeLogin(kc, { clientId: 'bananagig-web', redirectUri: WEB_REDIRECT_URI, ...DEV_USERS.provider });
+  const tokens = await exchangeAuthorizationCode({
+    tokenEndpoint: ep.token,
+    clientId: 'bananagig-web',
+    redirectUri: WEB_REDIRECT_URI,
+    code: login.code,
+    codeVerifier: login.verifier,
+  });
+  const p = await verifier.verifyAccessToken(tokens.accessToken);
+  const adminLogin = await authorizationCodeLogin(kc, { clientId: 'bananagig-admin', redirectUri: ADMIN_REDIRECT_URI, ...DEV_USERS.admin });
+  const adminTokens = await exchangeAuthorizationCode({
+    tokenEndpoint: ep.token,
+    clientId: 'bananagig-admin',
+    redirectUri: ADMIN_REDIRECT_URI,
+    code: adminLogin.code,
+    codeVerifier: adminLogin.verifier,
+  });
+  const ap = await verifier.verifyAccessToken(adminTokens.accessToken);
+  if (p.authContext !== 'web' || ap.authContext !== 'admin') throw new Error('identity contexts not separated');
+  return `PKCE code flow ok (web: ${p.realmRoles.join(',')}; admin context separate)`;
+});
+
+await check('API Service auth', async () => {
+  const who = WhoAmIResponse.parse(
+    await (
+      await expectOk(`${api}/api/v1/system/whoami`, { headers: { authorization: `Bearer ${customerToken}`, [CORRELATION_HEADER]: 'smoke-auth-correlation' } })
+    ).json(),
+  );
+  if (who.meta.correlationId !== 'smoke-auth-correlation' || !who.data.realmRoles.includes('customer')) throw new Error('whoami returned unexpected identity');
+  for (const [label, headers] of [
+    ['no token', {}],
+    ['invalid token', { authorization: 'Bearer not.a.token' }],
+    ['tampered token', { authorization: `Bearer ${customerToken}x` }],
+  ] as const) {
+    const r = await get(`${api}/api/v1/system/whoami`, { headers });
+    if (r.status !== 401) throw new Error(`${label}: expected 401, got ${r.status}`);
+    ErrorResponse.parse(await r.json());
+  }
+  // Auth telemetry: counted by category, no token material in the metric labels.
+  const metricsText = await (await expectOk(`${api}/metrics`)).text();
+  for (const m of [
+    'auth_token_validations_total{result="success"}',
+    'auth_token_validation_failures_total{category="missing"}',
+    'auth_token_validation_failures_total{category="malformed"}',
+  ])
+    if (!metricsText.includes(m)) throw new Error(`api /metrics is missing ${m}`);
+  if (/eyJ/.test(metricsText)) throw new Error('token material found in /metrics');
+  return 'valid token accepted; missing, invalid and tampered tokens rejected with 401; auth metrics exposed';
+});
+
+await check('Web App session', async () => {
+  const cookieJar = new Map<string, string>();
+  const absorb = (res: Response) => {
+    for (const line of res.headers.getSetCookie()) {
+      const [pair] = line.split(';');
+      const i = pair!.indexOf('=');
+      const name = pair!.slice(0, i);
+      const value = pair!.slice(i + 1);
+      if (!value || /max-age=0/i.test(line)) cookieJar.delete(name);
+      else cookieJar.set(name, value);
+    }
+  };
+  const cookieHeader = () => [...cookieJar].map(([k, v]) => `${k}=${v}`).join('; ');
+  // 1. start login: redirect to Keycloak with PKCE S256, opaque HttpOnly transaction cookie
+  const start = await get(`${web}/auth/login?returnTo=/session`, { redirect: 'manual' });
+  absorb(start);
+  const authorizeUrl = start.headers.get('location') ?? '';
+  const txCookie = start.headers.getSetCookie().find((c) => c.startsWith('bg_auth_tx='));
+  if (start.status !== 302 || !authorizeUrl.includes('code_challenge_method=S256') || !txCookie || !/HttpOnly/.test(txCookie) || !/SameSite=Lax/.test(txCookie))
+    throw new Error('login did not start a PKCE flow with a bound HttpOnly cookie');
+  // 2. sign in at Keycloak, 3. return to the web callback with the code
+  const callbackUrl = await completeLogin(kc, authorizeUrl, { redirectUri: `${webPublic}/auth/callback`, ...DEV_USERS.customer });
+  const cb = new URL(callbackUrl);
+  const callback = await get(`${web}/auth/callback${cb.search}`, { redirect: 'manual', headers: { cookie: cookieHeader() } });
+  absorb(callback);
+  const sessionCookie = callback.headers.getSetCookie().find((c) => c.startsWith('bg_session='));
+  if (callback.status !== 302 || callback.headers.get('location') !== `${webPublic}/session` || !sessionCookie)
+    throw new Error(`callback failed (${callback.status})`);
+  if (!/HttpOnly/.test(sessionCookie) || !/SameSite=Lax/.test(sessionCookie) || /eyJ/.test(sessionCookie))
+    throw new Error('session cookie must be HttpOnly, SameSite=Lax and opaque (no JWT)');
+  if (/eyJ/.test(callback.headers.get('location') ?? '') || (await callback.text()).includes('eyJ'))
+    throw new Error('token leaked to the browser in the callback response');
+  // 4. session status + the session page (which calls the API with the session's bearer token)
+  const status = await (await expectOk(`${web}/auth/session`, { headers: { cookie: cookieHeader() } })).text();
+  if (!status.includes('"authenticated":true') || status.includes('eyJ')) throw new Error('session status wrong or leaks token');
+  const page = await (await expectOk(`${web}/session`, { headers: { cookie: cookieHeader() } })).text();
+  if (!page.includes('Signed in') || !page.includes('web client (bananagig-web)')) throw new Error('session page did not show the API-confirmed identity');
+  // 5. logout: cross-origin POST is refused (CSRF), same-origin POST ends the session
+  const evil = await get(`${web}/auth/logout`, { method: 'POST', headers: { cookie: cookieHeader(), origin: 'http://evil.example' } });
+  if (evil.status !== 403) throw new Error(`cross-origin logout should be 403, got ${evil.status}`);
+  const getLogout = await get(`${web}/auth/logout`, { headers: { cookie: cookieHeader() } });
+  if (getLogout.status !== 405) throw new Error(`GET logout should be 405, got ${getLogout.status}`);
+  const logout = await get(`${web}/auth/logout`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { cookie: cookieHeader(), origin: new URL(webPublic).origin },
+  });
+  if (
+    logout.status !== 303 ||
+    !(logout.headers.get('location') ?? '').includes('/protocol/openid-connect/logout') ||
+    !logout.headers.getSetCookie().some((c) => /^bg_session=;/.test(c) || /Max-Age=0/i.test(c))
+  )
+    throw new Error('logout did not end the session');
+  const after = await (await expectOk(`${web}/auth/session`, { headers: { cookie: cookieHeader() + (cookieJar.has('bg_session') ? '' : '') } })).text();
+  const stale = await (await expectOk(`${web}/auth/session`, { headers: { cookie: `bg_session=${sessionCookie.split(';')[0]!.split('=')[1]}` } })).text();
+  if (!after.includes('"authenticated":false') || !stale.includes('"authenticated":false')) throw new Error('session still valid after logout');
+  return 'PKCE login -> opaque HttpOnly cookie -> API call with session token -> CSRF-safe logout';
+});
+
+// Caddy routes are exercised exactly as a browser would reach them (Host header), from inside the network.
+const proxy = (host: string, path: string, method = 'GET'): Promise<{ status: number; body: string }> =>
+  new Promise((resolve, reject) => {
+    const req = http.request({ host: 'caddy-proxy', port: 80, path, method, headers: { host } }, (res) => {
+      let body = '';
+      res.on('data', (c) => (body += c));
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
+    });
+    req.on('error', reject);
+    req.end();
+  });
+await check('Caddy Proxy auth routes', async () => {
+  const expectStatus = async (host: string, path: string, ok: (s: number) => boolean, what: string) => {
+    const r = await proxy(host, path);
+    if (!ok(r.status)) throw new Error(`${what}: ${host}${path} -> ${r.status}`);
+  };
+  await expectStatus('auth.localhost', '/realms/bananagig/.well-known/openid-configuration', (s) => s === 200, 'realm discovery must be public');
+  await expectStatus('auth.localhost', `/realms/bananagig/protocol/openid-connect/certs`, (s) => s === 200, 'JWKS must be public');
+  for (const path of [
+    '/admin/master/console/',
+    '/admin/realms',
+    '/realms/master/.well-known/openid-configuration',
+    '/health/ready',
+    '/health',
+    '/metrics',
+    '/',
+    '/q/health',
+  ])
+    await expectStatus('auth.localhost', path, (s) => s === 404, 'management/admin path exposed on the public identity host');
+  await expectStatus('keycloak-admin.localhost', '/admin/master/console/', (s) => s === 200, 'dev admin console host');
+  await expectStatus('api.localhost', '/internal/diagnostics', (s) => s === 404, '/internal must stay blocked');
+  await expectStatus('api.localhost', '/api/v1/system/whoami', (s) => s === 401, 'whoami through the proxy must require authentication');
+  await expectStatus('app.localhost', '/auth/session', (s) => s === 200, 'web auth routes');
+  await expectStatus('admin.localhost', '/', (s) => s === 503, 'admin host is reserved, not served by the customer web app');
+  return 'public identity host exposes only realm endpoints; admin/management/internal paths blocked';
 });
 await check('Feature Flags', async () => {
   await expectOk(`${env('FLAGD_HEALTH_URL', 'http://flagd-flags:8014')}/healthz`);
@@ -232,6 +440,10 @@ const order = [
   'PostGIS',
   'Valkey Cache',
   'Keycloak Auth',
+  'Keycloak Auth token flow',
+  'API Service auth',
+  'Web App session',
+  'Caddy Proxy auth routes',
   'NATS Events',
   'JetStream',
   'SeaweedFS Storage',

@@ -11,7 +11,8 @@ apps/
 packages/
   contracts/       Public contracts: error model, system DTOs, event envelope, protocol constants. Depends on zod only.
   config/          Typed, validated process configuration (zod). Fails fast at startup.
-  observability/   JSON logging, tracing, metrics, correlation (AsyncLocalStorage)
+  observability/   JSON logging, tracing, metrics, correlation (AsyncLocalStorage), auth telemetry
+  identity/        JWT verification, OIDC/PKCE helpers; `/testing` subpath is DEV/TEST ONLY. Imports nothing from the workspace
   database/        pg pool + Kysely, transaction helper, health. No business models.
   platform/        Infrastructure adapters: Valkey, NATS, S3, OpenFeature/flagd, mail, OpenSearch, diagnostics, health server
   testing/         Test helpers (test database). Never imported by production code.
@@ -28,9 +29,11 @@ graph LR
   web --> contracts
   web --> config
   web --> observability
+  web --> identity
   api --> platform
   api --> database
   api --> observability
+  api --> identity
   api --> config
   api --> contracts
   worker --> platform
@@ -47,11 +50,13 @@ graph LR
   testing --> database
   testing --> config
   smoke --> contracts
+  smoke --> identity
 ```
 
 | Rule | How it is enforced |
 |---|---|
 | web cannot import `database` or `platform` (or pg, kysely, pg-boss) | `check-boundaries` + ESLint on `apps/web` |
+| `@bananagig/identity/testing` (password grant, forged tokens) is DEV/TEST ONLY | ESLint forbids it in production code |
 | `contracts` cannot import workspace packages or apps | `check-boundaries` + ESLint |
 | `database` cannot import web/UI or applications | `check-boundaries` + ESLint |
 | Domain modules never import UI | Modules live only under `apps/api`/`apps/worker`; web is not a dependency of anything |
@@ -99,9 +104,9 @@ Only infrastructure settings belong in config. Product values (fees, prices, win
 
 | Service | Critical (affects `/readyz`) | Non-critical (reported by diagnostics/smoke only) |
 |---|---|---|
-| api | PostgreSQL | Valkey, NATS, S3, OpenSearch, flagd, SMTP |
+| api | PostgreSQL | Keycloak (authenticated routes return 503 AUTH_PROVIDER_UNAVAILABLE; public routes unaffected), Valkey, NATS, S3, OpenSearch, flagd, SMTP |
 | worker | PostgreSQL, job runtime (pg-boss started), NATS | Valkey, S3, OpenSearch, flagd |
-| web | The process itself (pages degrade if the API is down) | API, everything else |
+| web | The process itself (pages degrade if the API is down) | API, Keycloak, Valkey (login/session only) |
 
 A non-critical outage (search, analytics, flags) must never take request serving down. Feature code that needs an optional dependency must degrade (e.g. `flagBoolean()` falls back to its default).
 

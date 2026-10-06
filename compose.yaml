@@ -112,9 +112,13 @@ services:
       KC_HEALTH_ENABLED: "true"
       KC_HTTP_ENABLED: "true"
       KC_PROXY_HEADERS: xforwarded
-      KC_HOSTNAME_STRICT: "false"
+      # Issuer is pinned to the PUBLIC URL (what browsers use through Caddy); back-channel endpoints follow the request host so
+      # containers can call keycloak-auth:8080 directly and still receive tokens whose iss is the public issuer.
+      KC_HOSTNAME: http://auth.localhost:8080
+      KC_HOSTNAME_ADMIN: http://keycloak-admin.localhost:8080
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
     volumes:
-      - ./infra/keycloak/bananagig-dev-realm.json:/opt/keycloak/data/import/bananagig-dev-realm.json:ro
+      - ./infra/keycloak/bananagig-realm.json:/opt/keycloak/data/import/bananagig-realm.json:ro
     depends_on:
       postgres-db: { condition: service_healthy }
     networks: [bananagig]
@@ -206,7 +210,17 @@ services:
       PORT: "3000"
       HOSTNAME: 0.0.0.0
       API_INTERNAL_URL: http://api-service:3000
+      # Identity: browsers use the PUBLIC url (issuer); this container talks to Keycloak on the internal url (back channel).
+      KEYCLOAK_URL: http://keycloak-auth:8080
+      KEYCLOAK_PUBLIC_URL: ${KEYCLOAK_PUBLIC_URL}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM}
+      KEYCLOAK_WEB_CLIENT_ID: ${KEYCLOAK_WEB_CLIENT_ID}
+      WEB_PUBLIC_URL: ${WEB_PUBLIC_URL}
+      # Server-side session records only (opaque cookie in the browser, tokens never leave the server).
+      VALKEY_URL: ${VALKEY_URL}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT}
+    depends_on:
+      valkey-cache: { condition: service_healthy }
     networks: [bananagig]
     read_only: true
     tmpfs: ["/app/apps/web/.next/cache", "/tmp"]

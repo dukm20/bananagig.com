@@ -5,16 +5,6 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    services:
-      postgres-db:
-        image: postgis/postgis:17-3.5
-        env: { POSTGRES_DB: bananagig, POSTGRES_USER: bananagig, POSTGRES_PASSWORD: bananagig_dev_only }
-        ports: ["5433:5432"]
-        options: >-
-          --health-cmd "pg_isready -U bananagig" --health-interval 5s --health-timeout 5s --health-retries 20
-      nats-events:
-        image: nats:2.11-alpine
-        ports: ["14222:4222"]
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 } # governance checks diff against the PR base / previous push
@@ -32,10 +22,11 @@ jobs:
       - run: pnpm openapi:lint
       - run: pnpm asyncapi:validate
       - run: pnpm build
-      - name: Integration tests (real Postgres + NATS service containers)
+      - run: pnpm identity:check
+      - name: Integration tests (starts Postgres, NATS, Keycloak, ... through Compose, migrates, runs *.itest.ts)
         run: |
+          cp .env.example .env
           cp .env.host.example .env.host
-          node --env-file=.env.host scripts/migrate.mjs
           pnpm test:integration
       - run: pnpm audit --prod
       # ---- repository governance (META-001) ----

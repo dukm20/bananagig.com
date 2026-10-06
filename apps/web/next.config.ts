@@ -5,7 +5,7 @@ const config: NextConfig = {
   output: 'standalone',
   // Standalone tracing must see workspace packages, so trace from the repo root.
   outputFileTracingRoot: path.join(import.meta.dirname, '../..'),
-  transpilePackages: ['@bananagig/contracts', '@bananagig/config', '@bananagig/observability'],
+  transpilePackages: ['@bananagig/contracts', '@bananagig/config', '@bananagig/observability', '@bananagig/identity'],
   serverExternalPackages: [
     '@opentelemetry/sdk-node',
     '@opentelemetry/exporter-trace-otlp-http',
@@ -13,6 +13,7 @@ const config: NextConfig = {
     '@opentelemetry/sdk-logs',
     '@opentelemetry/resources',
     'prom-client',
+    'iovalkey',
   ],
   poweredByHeader: false,
   typedRoutes: true,

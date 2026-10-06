@@ -8,6 +8,12 @@ info:
     identifier: UNLICENSED
   description: HTTP contract for the BananaGig API. Generated from route schemas; do not edit docs/api/openapi.yaml by hand.
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Keycloak access token for the bananagig-api audience (Authorization Code + PKCE). Obtain it through the web app or an approved client.
   schemas: {}
 paths:
   /healthz:
@@ -16,6 +22,7 @@ paths:
       summary: "Liveness: the process is alive"
       tags:
         - system
+      security: []
       responses:
         "200":
           description: Default Response
@@ -40,6 +47,7 @@ paths:
       summary: "Readiness: critical dependencies allow serving requests"
       tags:
         - system
+      security: []
       responses:
         "200":
           description: Default Response
@@ -103,6 +111,7 @@ paths:
       summary: Build version of the running service
       tags:
         - system
+      security: []
       responses:
         "200":
           description: Default Response
@@ -138,6 +147,7 @@ paths:
       summary: Service and environment information
       tags:
         - system
+      security: []
       responses:
         "200":
           description: Default Response
@@ -275,6 +285,150 @@ paths:
                   - error
                 additionalProperties: false
         "500":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "503":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+  /api/v1/system/whoami:
+    get:
+      operationId: getWhoAmI
+      summary: Minimal identity of the caller (never the raw token)
+      tags:
+        - system
+      description: Requires a valid bananagig-api access token. Returns the immutable subject, the client the token was issued to, the audience, identity roles and the authentication context.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      subject:
+                        type: string
+                        description: Immutable Keycloak subject (`sub`)
+                      clientId:
+                        type: string
+                        description: Client the token was issued to (`azp`)
+                      audience:
+                        type: array
+                        items:
+                          type: string
+                      realmRoles:
+                        type: array
+                        items:
+                          type: string
+                      authContext:
+                        type: string
+                        enum:
+                          - web
+                          - admin
+                          - other
+                        description: "Which identity context issued the token: normal web client, admin console client, or anything else"
+                    required:
+                      - subject
+                      - clientId
+                      - audience
+                      - realmRoles
+                      - authContext
+                    additionalProperties: false
+                  meta:
+                    type: object
+                    properties:
+                      correlationId:
+                        type: string
+                    required:
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - data
+                  - meta
+                additionalProperties: false
+        "401":
           description: Default Response
           content:
             application/json:

@@ -48,6 +48,10 @@ Latest migration: `0003_integration_outbox.sql`. Ownership: application migratio
 | OpenSearch | Search projection | No (rebuilt from PostgreSQL) |
 | SeaweedFS (S3) | Media/blobs | Authoritative for blob bytes; PostgreSQL holds metadata |
 
+## Identity boundary (INF-004: no schema change)
+
+Keycloak (database `keycloak`, infrastructure-owned) owns credentials, protocol sessions and MFA factors. BananaGig will reference identities by the immutable Keycloak `sub` in a future `identity.external_identities` table (unique on provider + subject), created by the first persisted account feature (ID-001) through the Data Model Review Gate. No user or profile table exists and none was needed for INF-004. Web sessions live in Valkey (non-authoritative, TTL on every key). See `docs/engineering/IDENTITY.md`.
+
 ## ERD
 
 See `ERD.md`.

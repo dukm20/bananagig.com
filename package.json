@@ -38,7 +38,10 @@
     "checkpoint:start": "node scripts/checkpoint-start.mjs",
     "checkpoint:finalize": "node scripts/checkpoint-finalize.mjs",
     "checkpoint:commit": "node scripts/commit-checkpoint.mjs",
-    "db:backup-test": "node scripts/db-backup-test.mjs"
+    "db:backup-test": "node scripts/db-backup-test.mjs",
+    "identity:check": "node scripts/identity-realm.mjs",
+    "identity:build-prod": "node scripts/identity-realm.mjs --build-prod",
+    "identity:sync": "node --env-file-if-exists=.env.host scripts/identity-sync.mjs"
   },
   "devDependencies": {
     "@asyncapi/cli": "^6.2.0",
@@ -60,6 +63,7 @@
     "typescript-eslint": "^8.0.0",
     "vitest": "^5.0.3",
     "yaml": "^2.9.1",
-    "zod": "^4.6.5"
+    "zod": "^4.6.5",
+    "@bananagig/identity": "workspace:*"
   }
 }

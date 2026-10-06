@@ -7,6 +7,8 @@ export class AppError extends Error {
     public readonly code: string,
     message: string,
     public readonly details?: Record<string, unknown>,
+    /** Extra response headers, e.g. WWW-Authenticate on 401. */
+    public readonly headers?: Record<string, string>,
   ) {
     super(message);
     this.name = 'AppError';

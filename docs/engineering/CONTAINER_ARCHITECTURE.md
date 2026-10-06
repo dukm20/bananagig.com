@@ -55,6 +55,8 @@ web-app, api-service, worker-service -> otel-collector (OTLP/HTTP :4318) -> temp
 prometheus-metrics -> web-app, api-service, worker-service  /metrics
 grafana-dashboard -> prometheus-metrics, loki-logs, tempo-traces
 keycloak-auth -> postgres-db (own `keycloak` database and role)
+web-app -> valkey-cache (server-side session records only), keycloak-auth (back-channel token calls)
+api-service -> keycloak-auth (JWKS fetch, cached)
 ```
 
 ## Application containers
@@ -70,6 +72,10 @@ Built from the one root `Dockerfile` (`--build-arg APP=<app>`), multi-stage: `fe
 - `web-app` gets an explicit minimal environment (no `env_file`), so it never holds database or infrastructure credentials.
 - Graceful shutdown: api-service and worker-service handle SIGTERM (stop accepting, drain, close DB/NATS/Valkey, flush telemetry bounded to 3 s) and exit 0 in well under a second. The web-app container exits via SIGTERM default (143): the Next standalone server has no drain hook (DEBT, stateless).
 - `/internal/diagnostics` (api-service, worker-service) runs connectivity checks, is not routed by Caddy and is excluded from OpenAPI.
+
+## Keycloak (`keycloak-auth`)
+
+Started with `start-dev --import-realm` (development only). `KC_HOSTNAME=http://auth.localhost:8080` pins the issuer to the public URL, `KC_HOSTNAME_ADMIN=http://keycloak-admin.localhost:8080` serves the admin console on its own host, and `KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true` lets containers call `keycloak-auth:8080` and still receive tokens with the public issuer. The realm is the repository file `infra/keycloak/bananagig-realm.json`. Caddy exposes only `/realms/bananagig/*` and `/resources/*` on `auth.localhost`; the admin console host is dev-only. `web-app` receives `KEYCLOAK_URL`, `KEYCLOAK_PUBLIC_URL`, `KEYCLOAK_REALM`, `KEYCLOAK_WEB_CLIENT_ID`, `WEB_PUBLIC_URL` and `VALKEY_URL` (still no database credentials). See `IDENTITY.md`.
 
 ## Ports published to the host (all bound to 127.0.0.1)
 

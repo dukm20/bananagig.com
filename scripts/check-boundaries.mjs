@@ -8,11 +8,12 @@ const ALLOWED = {
   '@bananagig/database': [],
   '@bananagig/observability': ['config', 'contracts'],
   '@bananagig/platform': ['config', 'contracts', 'database', 'observability'],
+  '@bananagig/identity': [],
   '@bananagig/testing': ['config', 'database'],
-  '@bananagig/web': ['config', 'contracts', 'observability', 'testing'],
-  '@bananagig/api': ['config', 'contracts', 'database', 'observability', 'platform', 'testing'],
+  '@bananagig/web': ['config', 'contracts', 'identity', 'observability', 'testing'],
+  '@bananagig/api': ['config', 'contracts', 'database', 'identity', 'observability', 'platform', 'testing'],
   '@bananagig/worker': ['config', 'contracts', 'database', 'observability', 'platform', 'testing'],
-  '@bananagig/smoke': ['contracts'],
+  '@bananagig/smoke': ['contracts', 'identity'],
 };
 
 const pkgs = {};

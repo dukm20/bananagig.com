@@ -65,6 +65,21 @@ export const SystemInfo = z.object({
 });
 export const SystemInfoResponse = envelope(SystemInfo);
 export type SystemInfo = z.infer<typeof SystemInfo>;
+
+// ---- identity (whoami) ----
+export const AuthContext = z
+  .enum(['web', 'admin', 'other'])
+  .describe('Which identity context issued the token: normal web client, admin console client, or anything else');
+export const WhoAmI = z.object({
+  subject: z.string().describe('Immutable Keycloak subject (`sub`)'),
+  clientId: z.string().describe('Client the token was issued to (`azp`)'),
+  audience: z.array(z.string()),
+  realmRoles: z.array(z.string()),
+  authContext: AuthContext,
+});
+export const WhoAmIResponse = envelope(WhoAmI);
+export type WhoAmI = z.infer<typeof WhoAmI>;
+export type WhoAmIResponse = z.infer<typeof WhoAmIResponse>;
 export type SystemInfoResponse = z.infer<typeof SystemInfoResponse>;
 export type VersionResponse = z.infer<typeof VersionResponse>;
 

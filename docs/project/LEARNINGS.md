@@ -307,3 +307,54 @@ Only mark an outbox row published after a JetStream ack. Keep consumers idempote
 ### Evidence
 `apps/worker/src/runtime/events.ts`, `packages/platform/src/clients.ts` (`ensureEventStream`), `apps/worker/src/outbox.itest.ts` (duplicate test).
 
+## LRN-0013 — Pin the Keycloak issuer to the public URL; realm files are imported only once
+
+Date: 2026-10-05
+Checkpoint: INF-004
+Domain: identity
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0013
+Related skill: skills/identity/SKILL.md
+
+### Context
+Containers reach Keycloak at `keycloak-auth:8080`, browsers at `auth.localhost:8080`. Without pinning, Keycloak derives `iss` from the request host, so a token fetched in-network never matches the issuer the browser saw. Separately, `--import-realm` silently skips a realm that already exists, so edited realm files appear not to apply.
+
+### Learning
+Start Keycloak with `KC_HOSTNAME=<public url>` and `KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true`: `iss` is always the public URL, while token and JWKS endpoints follow the caller's host. Validate the exact public issuer and fetch keys from the internal JWKS URL. To apply realm edits locally use `pnpm identity:sync` (delete and re-import) or `pnpm stack:reset`.
+
+### Why it matters
+An issuer mismatch makes every token fail validation, and un-applied realm edits make security settings look configured when they are not.
+
+### Reuse rule
+Never derive the expected issuer from the request or from discovery at runtime; configure it. After any realm file change, re-import and run the live integration tests.
+
+### Evidence
+`compose.yaml` keycloak-auth environment, `packages/config/src/index.ts` (`identity.issuer`), `packages/identity/src/keycloak.itest.ts` (discovery issuer test), `scripts/identity-sync.mjs`.
+
+
+## LRN-0014 — Every Keycloak realm ships a built-in admin-cli client with the password grant enabled
+
+Date: 2026-10-05
+Checkpoint: INF-004
+Domain: identity
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0014
+Related skill: skills/identity/SKILL.md
+
+### Context
+A freshly imported product realm contains Keycloak's built-in clients. `admin-cli` is a public client with direct access (password) grants enabled, so it silently violates a "no password grant" policy even when every BananaGig client is correct.
+
+### Learning
+Declare `admin-cli` in the realm file with `enabled: false` and no direct grants (realm administration uses the master realm's own admin-cli). Test the live realm for ANY enabled password grant, not just BananaGig clients, and require it to be flagged dev-only.
+
+### Why it matters
+A policy test limited to our own clients would pass while an extra password-grant client stayed reachable.
+
+### Reuse rule
+When asserting protocol restrictions, enumerate all clients in the live realm (`GET /admin/realms/<realm>/clients`), including Keycloak's built-ins.
+
+### Evidence
+`infra/keycloak/bananagig-realm.json` (admin-cli entry), `packages/identity/src/keycloak.itest.ts` ("bananagig-api issues nothing; password grant exists only on the dev-only client").
+

@@ -32,6 +32,13 @@ const raw = z.object({
   SMTP_PORT: port.default(1025),
   MAIL_FROM: z.string().default('no-reply@bananagig.localhost'),
   KEYCLOAK_URL: url.optional(),
+  // Identity (Keycloak). KEYCLOAK_URL is the internal/back-channel base; KEYCLOAK_PUBLIC_URL is what browsers use (the issuer).
+  KEYCLOAK_PUBLIC_URL: url.optional(),
+  KEYCLOAK_REALM: z.string().min(1).default('bananagig'),
+  KEYCLOAK_API_AUDIENCE: z.string().min(1).default('bananagig-api'),
+  KEYCLOAK_WEB_CLIENT_ID: z.string().min(1).default('bananagig-web'),
+  KEYCLOAK_ADMIN_CLIENT_ID: z.string().min(1).default('bananagig-admin'),
+  WEB_PUBLIC_URL: url.optional(),
   API_INTERNAL_URL: url.optional(),
   WORKER_ID: z.string().optional(),
   WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(64).default(2),
@@ -62,7 +69,9 @@ const DEV_DEFAULTS = {
   FLAGD_HOST: 'localhost',
   OTEL_EXPORTER_OTLP_ENDPOINT: 'http://localhost:4318',
   SMTP_HOST: 'localhost',
-  KEYCLOAK_URL: 'http://localhost:8081',
+  KEYCLOAK_URL: 'http://127.0.0.1:18081',
+  KEYCLOAK_PUBLIC_URL: 'http://auth.localhost:8080',
+  WEB_PUBLIC_URL: 'http://app.localhost:8080',
   API_INTERNAL_URL: 'http://localhost:3211',
 } as const;
 
@@ -82,6 +91,18 @@ export interface AppConfig {
   smtp: { host: string; port: number };
   mailFrom: string;
   keycloakUrl: string;
+  identity: {
+    realm: string;
+    /** Exact `iss` of tokens: the public realm URL. */
+    issuer: string;
+    publicUrl: string;
+    /** Back-channel JWKS location (internal URL). */
+    jwksUrl: string;
+    apiAudience: string;
+    webClientId: string;
+    adminClientId: string;
+    webPublicUrl: string;
+  };
   apiInternalUrl: string;
   worker: { id: string; concurrency: number };
   db: { poolMax?: number; idleTimeoutMs?: number; connectionTimeoutMs?: number; statementTimeoutMs?: number; slowQueryMs: number; logSql: boolean };
@@ -100,8 +121,8 @@ type DevKey = keyof typeof DEV_DEFAULTS;
 
 /** Settings that must be explicit in production for each process role. Others are optional there. */
 const ROLE_REQUIRED: Record<Role, DevKey[]> = {
-  web: ['API_INTERNAL_URL', 'OTEL_EXPORTER_OTLP_ENDPOINT'],
-  api: ['DATABASE_URL', 'OTEL_EXPORTER_OTLP_ENDPOINT'],
+  web: ['API_INTERNAL_URL', 'OTEL_EXPORTER_OTLP_ENDPOINT', 'KEYCLOAK_URL', 'KEYCLOAK_PUBLIC_URL', 'WEB_PUBLIC_URL', 'VALKEY_URL'],
+  api: ['DATABASE_URL', 'OTEL_EXPORTER_OTLP_ENDPOINT', 'KEYCLOAK_URL', 'KEYCLOAK_PUBLIC_URL'],
   worker: ['DATABASE_URL', 'NATS_URL', 'OTEL_EXPORTER_OTLP_ENDPOINT'],
   tool: [],
 };
@@ -151,6 +172,20 @@ export function loadConfig(opts: LoadOptions): Readonly<AppConfig> {
     smtp: { host: need('SMTP_HOST'), port: e.SMTP_PORT },
     mailFrom: e.MAIL_FROM,
     keycloakUrl: need('KEYCLOAK_URL'),
+    identity: (() => {
+      const publicUrl = need('KEYCLOAK_PUBLIC_URL').replace(/\/$/, '');
+      const internal = need('KEYCLOAK_URL').replace(/\/$/, '');
+      return {
+        realm: e.KEYCLOAK_REALM,
+        issuer: `${publicUrl}/realms/${e.KEYCLOAK_REALM}`,
+        publicUrl,
+        jwksUrl: `${internal}/realms/${e.KEYCLOAK_REALM}/protocol/openid-connect/certs`,
+        apiAudience: e.KEYCLOAK_API_AUDIENCE,
+        webClientId: e.KEYCLOAK_WEB_CLIENT_ID,
+        adminClientId: e.KEYCLOAK_ADMIN_CLIENT_ID,
+        webPublicUrl: need('WEB_PUBLIC_URL').replace(/\/$/, ''),
+      };
+    })(),
     apiInternalUrl: need('API_INTERNAL_URL'),
     worker: { id: e.WORKER_ID ?? `${opts.service}-${process.pid}`, concurrency: e.WORKER_CONCURRENCY },
     db: {

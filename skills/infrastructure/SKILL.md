@@ -26,6 +26,7 @@ Operate and extend the local container platform: services, profiles, ports, heal
 - Apps run non-root, read-only root filesystem, `cap_drop: ALL`, `no-new-privileges`. The web container gets an explicit minimal environment, never `env_file`.
 - Every long-running service needs a healthcheck unless its image is distroless (collector, flagd): then the smoke test must verify it by connectivity.
 - No secrets in images or git; development defaults must look obviously fake (`*_dev_only`).
+- Keycloak (`keycloak-auth`) is configured from `infra/keycloak/bananagig-realm.json` only; its issuer is pinned with `KC_HOSTNAME`. The public identity host in Caddy exposes only `/realms/bananagig/*` and `/resources/*`; the admin console is on a dev-only host. See `skills/identity/SKILL.md`.
 
 ## Implementation pattern
 
@@ -63,10 +64,12 @@ Compose services add no tables. A service that stores state (queue, cache, searc
 - Cold-start-only failures from readiness races (LRN-0003).
 - Port collisions with other projects on the machine (LRN-0009); check `lsof -iTCP:<port> -sTCP:LISTEN`.
 - Fresh install failing on pnpm build-script approvals (LRN-0010).
+- Realm edits not applying because `--import-realm` skips an existing realm (LRN-0013): `pnpm identity:sync` or `pnpm stack:reset`.
 
 ## Known BananaGig-specific lessons
 
 - flagd server and provider SDK versions must be bumped together (LRN-0001).
+- Keycloak's built-in `admin-cli` enables the password grant in every realm; the realm file disables it (LRN-0014).
 - PostGIS comes from a custom image because upstream has no arm64 build (LRN-0002).
 - Image scans do not see bundled dependencies; also run the lockfile audit (LRN-0008).
 - Distroless images (otel-collector, flagd) cannot have shell healthchecks (DEBT-0009).
@@ -84,4 +87,4 @@ ADR-0001, ADR-0003, ADR-0005, ADR-0007
 
 ## Last reviewed
 
-2026-10-05 (INF-002A)
+2026-10-05 (INF-004)

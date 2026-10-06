@@ -23,7 +23,28 @@
 
 	@auth host auth.localhost
 	handle @auth {
+		# Public identity host: ONLY the realm endpoints browsers need (login, tokens, logout, JWKS, discovery) and static resources.
+		# The admin console, the master realm, health, metrics and every other path are not exposed here.
+		@realm path /realms/bananagig /realms/bananagig/* /resources/*
+		handle @realm {
+			reverse_proxy keycloak-auth:8080
+		}
+		handle {
+			respond "Not found" 404
+		}
+	}
+
+	# DEV ONLY: Keycloak admin console on its own host name (KC_HOSTNAME_ADMIN). Remove this block in production
+	# deployments and reach the admin console through a private network instead (DEBT-0004).
+	@kcadmin host keycloak-admin.localhost
+	handle @kcadmin {
 		reverse_proxy keycloak-auth:8080
+	}
+
+	# Reserved for the future admin console application (separate host, separate Keycloak client bananagig-admin).
+	@admin host admin.localhost
+	handle @admin {
+		respond "The BananaGig admin console is not implemented yet." 503
 	}
 
 	@grafana host grafana.localhost

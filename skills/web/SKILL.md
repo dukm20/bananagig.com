@@ -13,16 +13,17 @@ Build web UI and the server-side API client without breaking the workspace bound
 ## Canonical files
 
 - `apps/web/src/app/layout.tsx`, `apps/web/src/app/page.tsx`, `apps/web/src/app/system/page.tsx`
-- `apps/web/src/lib/api-client.ts`, `apps/web/src/lib/server.ts`, `apps/web/src/instrumentation.ts`
+- `apps/web/src/lib/api-client.ts`, `apps/web/src/lib/server.ts`, `apps/web/src/instrumentation.ts`, `apps/web/src/lib/auth/handlers.ts`, `apps/web/src/lib/auth/runtime.ts`, `apps/web/src/app/session/page.tsx`
 - `apps/web/next.config.ts`, `apps/web/src/web.test.tsx`
 - `Dockerfile` (target `runtime-web`)
 
 ## Architecture rules
 
 - App Router with server rendering by default; client components only when needed.
-- The web app imports only `@bananagig/contracts`, `@bananagig/config` and `@bananagig/observability`. It never imports `database`, `platform`, pg, kysely or pg-boss (lint and `pnpm deps:check` fail).
+- The web app imports only `@bananagig/contracts`, `@bananagig/config`, `@bananagig/identity` and `@bananagig/observability`. It never imports `database`, `platform`, pg, kysely or pg-boss (lint and `pnpm deps:check` fail). It may use Valkey for session records only.
 - All data comes from the API through `createApiClient` (`/api/v1`, correlation id propagated, errors parsed to `ApiError`). Server code reads config lazily via `serverConfig()` (never at import time, or `next build` breaks).
 - Persona shells (customer/provider/admin) will be route-group layouts wrapping `children`; none exist yet.
+- Authentication is a server-side session (ADR-0014): `/auth/login`, `/auth/callback`, `/auth/session`, POST `/auth/logout` implemented as plain Request->Response functions in `apps/web/src/lib/auth/handlers.ts`. The browser holds only opaque HttpOnly cookies; tokens never reach it. Never use localStorage, sessionStorage or JS-readable cookies for auth (a test scans the source). Redirects use `WEB_PUBLIC_URL`, not the request host. Read the session with `getSession(cookieHeader, authDeps())` and call the API with the session's bearer token via `serverApi(accessToken)`.
 - Keep the accessibility baseline: skip link, landmarks, `role=status/alert`, focus styles.
 
 ## Implementation pattern
@@ -68,11 +69,12 @@ The web app has no database access and no data-model impact. Needing data means 
 - Do not call the database or infrastructure adapters from web code.
 - Do not hardcode marketplace content or business values in pages.
 - Do not read `process.env` directly in components; go through `@bananagig/config`.
+- Do not render tokens, put them in URLs, or build GET endpoints that change state (logout is POST with an Origin check).
 
 ## Related ADRs
 
-ADR-0006, ADR-0007
+ADR-0006, ADR-0007, ADR-0014
 
 ## Last reviewed
 
-2026-10-05 (META-001)
+2026-10-05 (INF-004)

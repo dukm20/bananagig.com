@@ -9,6 +9,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@bananagig/contracts": "workspace:*"
+    "@bananagig/contracts": "workspace:*",
+    "@bananagig/identity": "workspace:*"
   }
 }

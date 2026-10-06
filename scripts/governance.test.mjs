@@ -407,6 +407,26 @@ describe('checkpoint:commit', () => {
     expect(out.out).toContain('private key');
     expect(out.out).toContain('credential assignment');
   });
+  it('does not flag plain identifier assignments, but still flags quoted literals and env-style secrets', () => {
+    const ok = commitRepo();
+    write(
+      ok.root,
+      'apps/a.ts',
+      'const token = bearerFromHeader(header);\nconst password = opts.passwordProvider();\nconst apiKey = config.apiKeyFromEnvironment;\n',
+    );
+    finalized(ok.root, 'TST-009');
+    expect(node(ok.root, 'commit-checkpoint.mjs', ['TST-009', MSG, '--dry-run']).code).toBe(0);
+    const env = commitRepo();
+    write(env.root, 'infra/prod.env.txt', 'APP_SECRET=abcdef0123456789abcdef0123\n'); // secret-scan:allow
+    finalized(env.root, 'TST-009');
+    const out = node(env.root, 'commit-checkpoint.mjs', ['TST-009', MSG]);
+    expect(out.code).toBe(1);
+    expect(out.out).toContain('env-style credential');
+    const placeholder = commitRepo();
+    write(placeholder.root, 'infra/x.env.txt', 'APP_SECRET=replace_me_dev_only_value_123\n');
+    finalized(placeholder.root, 'TST-009');
+    expect(node(placeholder.root, 'commit-checkpoint.mjs', ['TST-009', MSG, '--dry-run']).code).toBe(0);
+  });
   it('lets a line opt out of the secret scan with an explicit marker (fake fixtures only)', () => {
     const { root } = commitRepo();
     write(root, 'apps/fixture.ts', 'const api_key = "A1b2C3d4E5f6G7h8I9j0"; // secret-scan:allow\n');
@@ -421,6 +441,24 @@ describe('checkpoint:commit', () => {
     expect(out.code).toBe(0);
     expect(out.out).toContain('docs/x.md');
     expect(sh(root, 'git', ['log', '--oneline']).trim().split('\n')).toHaveLength(1);
+  });
+  it('commits deletions of tracked files (staged and unstaged) together with other changes', () => {
+    const { root } = commitRepo();
+    write(root, 'docs/old-a.md', 'a');
+    write(root, 'docs/old-b.md', 'b');
+    sh(root, 'git', ['add', '-A']);
+    sh(root, 'git', ['commit', '-q', '-m', 'chore(TST-001): add files to delete']);
+    sh(root, 'git', ['rm', '-q', 'docs/old-a.md']); // staged deletion
+    rmSync(path.join(root, 'docs/old-b.md')); // unstaged deletion
+    write(root, 'docs/new.md', 'n');
+    finalized(root, 'TST-009');
+    const out = node(root, 'commit-checkpoint.mjs', ['TST-009', MSG]);
+    expect(out.code).toBe(0);
+    expect(sh(root, 'git', ['status', '--porcelain'])).toBe('');
+    const stat = sh(root, 'git', ['show', '--name-status', '--format=', 'HEAD']);
+    expect(stat).toContain('D\tdocs/old-a.md');
+    expect(stat).toContain('D\tdocs/old-b.md');
+    expect(stat).toContain('A\tdocs/new.md');
   });
   it('creates one commit with the message and trailer, and never pushes', () => {
     const { root, bare } = commitRepo();

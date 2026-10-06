@@ -13,7 +13,7 @@ Add or change HTTP endpoints following the BananaGig API conventions.
 ## Canonical files
 
 - `apps/api/src/app.ts`, `apps/api/src/index.ts`, `apps/api/src/errors.ts`, `apps/api/src/schema.ts`
-- `apps/api/src/plugins/correlation.ts`, `apps/api/src/plugins/errors.ts`
+- `apps/api/src/plugins/correlation.ts`, `apps/api/src/plugins/errors.ts`, `apps/api/src/plugins/auth.ts`
 - `apps/api/src/modules/system/routes.ts`, `apps/api/src/modules/system/service.ts`
 - `packages/contracts/src/index.ts`, `scripts/generate-specs.mjs`, `docs/api/openapi.yaml`, `docs/events/asyncapi.yaml`
 - `docs/engineering/API_CONVENTIONS.md`, `docs/engineering/EVENT_CONVENTIONS.md`
@@ -26,6 +26,7 @@ Add or change HTTP endpoints following the BananaGig API conventions.
 - Success responses under `/api/v1` use `{ data, meta: { correlationId } }`; errors use `ErrorResponse` with one of the 8 categories. Throw `AppError(category, code, message, details?)`.
 - Readiness checks critical dependencies only (API: PostgreSQL). Optional outages must not fail `/readyz`.
 - Cross-cutting plugins use `fastify-plugin`; route modules stay encapsulated (LRN-0006).
+- Protected routes use the guards in `apps/api/src/plugins/auth.ts` (`requireAuthenticated`, `requireRealmRole`, `requireAnyRole`, `requireClientRole`, `requireAuthContext`) and declare `security: [{ bearerAuth: [] }]`; public routes declare `security: []`. 401 is AUTHENTICATION, 403 is AUTHORIZATION; no provider payloads are returned. Details: `skills/identity/SKILL.md`.
 
 ## Implementation pattern
 
@@ -73,11 +74,12 @@ Services never write SQL in routes. Persistence changes go through the database 
 - Do not return stack traces or raw exception messages.
 - Do not invent business error codes outside the feature that needs them.
 - Do not import `@bananagig/web` or put database types in contracts.
+- Do not trust a route to be private because it is unlisted or because the UI hides it: add a guard.
 
 ## Related ADRs
 
-ADR-0006, ADR-0004
+ADR-0006, ADR-0004, ADR-0013
 
 ## Last reviewed
 
-2026-10-05 (META-001)
+2026-10-05 (INF-004)

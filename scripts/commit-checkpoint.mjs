@@ -60,7 +60,10 @@ const SECRET_PATTERNS = [
   [/sk_live_[0-9a-zA-Z]{16,}/, 'Stripe live key'],
   [/gh[pousr]_[A-Za-z0-9]{30,}/, 'GitHub token'],
   [/xox[baprs]-[A-Za-z0-9-]{10,}/, 'Slack token'],
-  [/\b(?:secret|password|passwd|token|api[_-]?key)\b["']?\s*[:=]\s*["']?([A-Za-z0-9/+_.-]{16,})/i, 'credential assignment'],
+  // A quoted string literal assigned to a credential-looking name (code, JSON, YAML). Plain identifiers/calls are not secrets.
+  [/\b(?:secret|password|passwd|token|api[_-]?key)\b["']?\s*[:=]\s*["']([A-Za-z0-9/+_.-]{16,})["']/i, 'credential assignment'],
+  // An unquoted .env-style assignment such as APP_SECRET=abcdef0123456789xyz
+  [/^\s*[A-Z0-9_]*(?:SECRET|PASSWORD|PASSWD|TOKEN|API_KEY)[A-Z0-9_]*\s*=\s*([A-Za-z0-9/+_.-]{16,})\s*$/m, 'env-style credential'],
 ];
 const SAFE_VALUE = /dev_only|example|changeme|placeholder|dummy|test|\$\{|process\.env|xxxx/i;
 const hits = [];
@@ -82,7 +85,7 @@ for (const f of files) {
   for (const [re, name] of SECRET_PATTERNS) {
     const m = scanned.match(re);
     if (!m) continue;
-    if (name === 'credential assignment' && SAFE_VALUE.test(m[0])) continue;
+    if (name.endsWith('credential') || name === 'credential assignment') if (SAFE_VALUE.test(m[0])) continue;
     hits.push(`${f}: possible ${name}`);
   }
 }
@@ -97,7 +100,11 @@ if (dry) {
 }
 
 // 4. explicit file list only (never `git add -A`); never push
-git(['add', '--', ...files]);
+// Deleted files cannot be named in `git add` (the path no longer exists), so stage deletions with `git rm --cached`.
+const deleted = entries.filter((e) => e.code.includes('D')).map((e) => e.file);
+const present = files.filter((f) => !deleted.includes(f));
+if (present.length) git(['add', '--', ...present]);
+if (deleted.length) git(['rm', '-q', '--cached', '--ignore-unmatch', '--', ...deleted]);
 const trailers = (flags.trailer ?? []).filter((x) => typeof x === 'string');
 const full = trailers.length ? `${message}\n\n${trailers.join('\n')}` : message;
 git(['commit', '-m', full]);

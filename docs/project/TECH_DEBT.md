@@ -42,7 +42,7 @@ Status: ACCEPTED
 Severity: MEDIUM
 Introduced by: INF-001
 Owner/domain: infrastructure
-Description: Keycloak runs `start-dev`, OpenSearch has its security plugin disabled, Caddy serves plain HTTP, and development credentials are in `.env.example`. `/internal/diagnostics` has no authentication (it relies on not being routed by Caddy).
+Description: Keycloak runs `start-dev` (and INF-004 added a dev-only admin console host `keycloak-admin.localhost` in Caddy), OpenSearch has its security plugin disabled, Caddy serves plain HTTP, and development credentials are in `.env.example`. `/internal/diagnostics` has no authentication (it relies on not being routed by Caddy).
 Why deferred: local development convenience; production deployment is out of scope so far.
 Exit criteria: a production deployment design with TLS, real secrets management, Keycloak `start`, OpenSearch security, and authenticated or removed diagnostics.
 Target checkpoint: production deployment checkpoint
@@ -135,7 +135,8 @@ Owner/domain: database / security
 Description: API, worker and the migration runner connect as the Postgres bootstrap superuser (`bananagig`). The target model (migrator role owning schemas, non-superuser `bananagig_app` runtime role with DML-only grants, pg-boss schema pre-created by the migrator) is designed in `docs/data/DATABASE_CONVENTIONS.md` section 11 but not built.
 Why deferred: pg-boss needs DDL rights unless its schema is pre-created from its construction plan, and the role/grant bootstrap needs a production-shaped provisioning story; both are larger than this checkpoint and local-only risk is low.
 Exit criteria: separate migrator and runtime roles in the local stack, api and worker connect as the runtime role, pg-boss schema created by the migrator, an integration test proving the runtime role cannot run DDL or create extensions.
-Target checkpoint: production deployment checkpoint (or INF-004 if identity work needs per-service database roles earlier)
+Target checkpoint: production deployment checkpoint
+Reviewed in INF-004: the identity baseline needed no per-service database roles (the API validates tokens and has no identity persistence); unchanged.
 
 ## DEBT-0013 — Idempotency records table not built
 
@@ -169,4 +170,63 @@ Description: `pnpm db:backup-test` proves pg_dump/pg_restore and migration compa
 Why deferred: production hosting is undecided.
 Exit criteria: production backup strategy, PITR, and a scheduled restore drill.
 Target checkpoint: production deployment checkpoint
+
+## DEBT-0016 — Production secret manager and realm provisioning not wired
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: INF-004
+Owner/domain: identity / security
+Description: Keycloak admin credentials, database credentials and any future confidential-client secret come from environment variables with dev placeholders. `pnpm identity:build-prod` produces a production realm, but there is no process that provisions it into a production Keycloak.
+Why deferred: Production hosting and secret storage are undecided.
+Exit criteria: A secrets manager supplies all credentials, the production realm is applied by an automated, reviewed pipeline, and the dev admin credentials cannot exist in production.
+Target checkpoint: production deployment checkpoint
+
+
+## DEBT-0017 — Identity notifications (email, SMS) and recovery flows not built
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: INF-004
+Owner/domain: identity
+Description: Email verification, phone verification and account recovery are disabled in the realm (`verifyEmail` and `resetPasswordAllowed` false; no SMTP is configured in Keycloak; recovery/backup MFA hooks are not provisioned).
+Why deferred: They are business flows with their own contracts and need a delivery provider; INF-004 is infrastructure only.
+Exit criteria: Verified-email and recovery flows implemented with configured SMTP (Mailpit locally), recovery codes and tests.
+Target checkpoint: ID-001 and following identity checkpoints
+
+
+## DEBT-0018 — WebAuthn and web step-up authentication deferred
+
+Status: OPEN
+Severity: LOW
+Introduced by: INF-004
+Owner/domain: identity
+Description: WebAuthn has default policy values only, and the web client's browser flow does not request level-2 authentication. The `acr` mapping (`bananagig:mfa`=2) exists but only the admin flow has an MFA step.
+Why deferred: No feature needs step-up yet and WebAuthn needs a UX decision.
+Exit criteria: A level-of-authentication browser flow bound to the web client, an `acr_values` request from the features that need it, and WebAuthn enrolment, with tests.
+Target checkpoint: first feature requiring step-up (for example payment method change)
+
+
+## DEBT-0019 — Keycloak built-in account console and login theme not decided
+
+Status: OPEN
+Severity: LOW
+Introduced by: INF-004
+Owner/domain: identity / web
+Description: Keycloak's built-in account console (`/realms/bananagig/account`) is reachable through the public identity host (the proxy allows `/realms/bananagig/*`), and login pages use the default Keycloak theme rather than BananaGig branding. Built-in clients such as `account-console` keep Keycloak's wildcard redirect defaults.
+Why deferred: BananaGig's own account and security screens do not exist yet, and the account console is currently the only way for a user to enrol TOTP.
+Exit criteria: Either disable the built-in clients and reverse-proxy rules once BananaGig account screens exist, or theme and keep them; add a BananaGig login theme.
+Target checkpoint: account security screens checkpoint
+
+
+## DEBT-0020 — Interactive login only works in the container stack
+
+Status: OPEN
+Severity: LOW
+Introduced by: INF-004
+Owner/domain: identity / developer experience
+Description: The issuer is pinned to `http://auth.localhost:8080` (Caddy). `pnpm dev` (host apps) therefore supports bearer-token calls but not browser login, because the dev stack does not run Caddy by default and the realm redirect URIs are the container-stack URLs.
+Why deferred: Supporting a second origin means extra redirect URIs and hostname handling for little benefit while no UI needs login.
+Exit criteria: A documented host-mode login path (Caddy in the dev profile or an additional registered dev origin) with a test.
+Target checkpoint: first UI checkpoint that requires a signed-in user
 

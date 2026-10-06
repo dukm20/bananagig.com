@@ -92,3 +92,25 @@ Rollback: forward-fix only (`MIGRATION_POLICY.md`); locally rebuild from zero
 
 Reason: strengthen migration discipline (versioned, timed, uniquely keyed bookkeeping) and provide the transactional outbox required before the first event-producing feature (resolves DEBT-0002)
 
+## INF-004
+
+Migration: none
+Added: none
+Changed: none
+Removed: none
+Renamed: none
+
+Relationships: none
+
+Constraints: none
+
+Indexes: none
+
+Backfill: none
+
+Compatibility: no schema change
+
+Rollback: not applicable
+
+Reason: identity infrastructure only (Keycloak realm, token validation, web session in Valkey); the user/profile model and the external identity mapping are deferred to ID-001
+

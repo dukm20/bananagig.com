@@ -2,13 +2,15 @@ import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['**/dist/**', '**/node_modules/**', '**/.next/**', '**/next-env.d.ts'] },
+  { ignores: ['**/dist/**', '**/node_modules/**', '**/.next/**', '**/next-env.d.ts', 'docs/**'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   { rules: { '@typescript-eslint/no-unused-vars': ['error', { varsIgnorePattern: '^_', argsIgnorePattern: '^_', ignoreRestSiblings: true }] } },
   // Architecture rules (see docs/engineering/APPLICATION_ARCHITECTURE.md)
   {
+    // web (production code): no database/infrastructure access, no DEV/TEST-only identity helpers
     files: ['apps/web/**/*.{ts,tsx}'],
+    ignores: ['**/*.test.ts', '**/*.test.tsx'],
     rules: {
       'no-restricted-imports': [
         'error',
@@ -18,17 +20,52 @@ export default tseslint.config(
               group: ['@bananagig/database', '@bananagig/database/*', '@bananagig/platform', '@bananagig/platform/*', 'pg', 'kysely', 'pg-boss'],
               message: 'web must not access the database or infrastructure adapters; call the API.',
             },
+            { group: ['@bananagig/identity/testing'], message: 'identity test helpers are DEV/TEST ONLY.' },
           ],
         },
       ],
     },
   },
   {
-    files: ['packages/contracts/**/*.ts'],
+    files: ['apps/web/**/*.test.{ts,tsx}'],
     rules: {
       'no-restricted-imports': [
         'error',
-        { patterns: [{ group: ['@bananagig/*', '**/apps/**'], message: 'contracts must not import workspace packages or apps.' }] },
+        {
+          patterns: [
+            {
+              group: ['@bananagig/database', '@bananagig/database/*', '@bananagig/platform', '@bananagig/platform/*', 'pg', 'kysely', 'pg-boss'],
+              message: 'web must not access the database or infrastructure adapters.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    // DEV/TEST-ONLY identity helpers (password grant, forged tokens) must never reach production code.
+    files: [
+      'apps/api/src/**/*.ts',
+      'apps/worker/src/**/*.ts',
+      'packages/platform/src/**/*.ts',
+      'packages/database/src/**/*.ts',
+      'packages/config/src/**/*.ts',
+      'packages/observability/src/**/*.ts',
+    ],
+    ignores: ['**/*.test.ts', '**/*.itest.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        { patterns: [{ group: ['@bananagig/identity/testing'], message: 'identity test helpers are DEV/TEST ONLY; use them from tests and the smoke app.' }] },
+      ],
+    },
+  },
+  {
+    files: ['packages/contracts/**/*.ts', 'packages/identity/src/index.ts', 'packages/identity/src/verifier.ts', 'packages/identity/src/oidc.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        { patterns: [{ group: ['@bananagig/*', '**/apps/**'], message: 'contracts and identity must not import workspace packages or apps.' }] },
       ],
     },
   },
@@ -50,6 +87,16 @@ export default tseslint.config(
   },
   {
     files: ['**/*.mjs', '**/*.js'],
-    languageOptions: { globals: { process: 'readonly', console: 'readonly', fetch: 'readonly', setTimeout: 'readonly', URL: 'readonly' } },
+    languageOptions: {
+      globals: {
+        process: 'readonly',
+        console: 'readonly',
+        fetch: 'readonly',
+        setTimeout: 'readonly',
+        URL: 'readonly',
+        URLSearchParams: 'readonly',
+        structuredClone: 'readonly',
+      },
+    },
   },
 );

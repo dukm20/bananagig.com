@@ -85,3 +85,34 @@ Event version appears in both `event_type` and `event_version` (see below). The 
 ### Final decision
 Schema accepted. Ownership: both tables are application-owned (`public` bookkeeping, `integration`). Nullability reviewed (only genuinely optional columns are nullable). Immutable historical state: all columns except the relay's four state columns are write-once; published rows are retained for `OUTBOX_RETENTION_DAYS` (default 7) then purged by the worker under an advisory lock. Concurrency: relay claims with `FOR UPDATE SKIP LOCKED` plus a lease so no lock is held during publishing; duplicate publishes are absorbed by JetStream (`Nats-Msg-Id`) and consumers dedupe by `eventId`. Configuration vs schema: no business values in the schema. Idempotency records deferred (DEBT-0013).
 
+## INF-004
+
+Tables reviewed: none changed. Application-owned tables remain `public.schema_migrations` and `integration.outbox_events` (reviewed in INF-003).
+
+### 1NF
+PASS (unchanged). No new columns or tables.
+
+### 2NF
+PASS (unchanged).
+
+### 3NF
+PASS (unchanged).
+
+### BCNF
+PASS (unchanged).
+
+### Duplicate concepts examined
+Identity data: credentials, sessions and MFA factors stay in Keycloak (its own database); profile data will live in the BananaGig schema keyed by the Keycloak `sub`. Nothing was duplicated between them, and no user table was created.
+
+### Derived fields examined
+None added. Web session records are cached in Valkey (non-authoritative, TTL), not stored in PostgreSQL.
+
+### Intentional denormalization
+None.
+
+### Index review
+No change.
+
+### Final decision
+No schema change; `pnpm data-model:check INF-004` confirms an unchanged snapshot. The future `identity.external_identities` design (unique provider + subject) is documented in `docs/engineering/IDENTITY.md` and will go through the full gate with ID-001.
+

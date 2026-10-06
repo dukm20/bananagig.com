@@ -161,3 +161,38 @@ None (convention, not an architecture decision).
 ### Known follow-up
 Telemetry `service.name` values (`bananagig-api`, `bananagig-worker`, `bananagig-web`) and named volumes keep their original names by design; rename them only with a deliberate log/dashboard migration.
 
+## INF-004 — 2026-10-05
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(INF-004)"`.
+Summary: Production-capable identity baseline on Keycloak: realm as code, web client with Authorization Code + PKCE and a server-side session, API JWT validation with guards and `whoami`, a separate admin client with an MFA-ready flow, minimal claims, auth telemetry, locked-down Caddy auth routes, and tests from forged tokens to live protocol checks. No users table or business flow.
+
+### Delivered
+- `infra/keycloak/bananagig-realm.json` (realm `bananagig`; clients web, api, admin, dev-only test client; roles customer/provider and the admin client role; TOTP policy; ACR map), pinned issuer via `KC_HOSTNAME`
+- `packages/identity`: `TokenVerifier`, OIDC/PKCE helpers, DEV/TEST-only `/testing` helpers (ESLint-restricted)
+- API: `plugins/auth.ts` guards (`requireAuthenticated`, `requireRealmRole`, `requireAnyRole`, `requireClientRole`, `requireAuthContext`), `GET /api/v1/system/whoami`, 401/403/503 standard errors, `security-defined` lint enforced
+- Web: `/auth/login`, `/auth/callback`, `/auth/session`, POST `/auth/logout`, `/session` page, server-side Valkey session, bearer calls to the API
+- Auth telemetry (counts by failure category, mismatch counters, duration); no token material in logs
+- `pnpm identity:check`, `identity:sync` (dev), `identity:build-prod` (strips dev-only, enforces admin OTP, https origins)
+- Caddy: public identity host exposes only realm endpoints; dev-only admin console host; admin host reserved
+- Smoke grew to 27 checks (realm/clients, PKCE logins, API auth, web session E2E, Caddy auth routes)
+- Docs: `IDENTITY.md`; ADR-0013, ADR-0014, ADR-0015; skill `skills/identity`
+
+### Schema
+No schema change (data model: NOT_REQUIRED). Future `identity.external_identities` keyed by Keycloak `sub` documented for ID-001.
+
+### Contracts
+OpenAPI: `GET /api/v1/system/whoami` and the `bearerAuth` security scheme; public routes now declare `security: []`.
+
+### Tests
+Unit 83, root script tests 59, integration 81, smoke 27 checks.
+
+### Skills updated
+New `skills/identity`; updated `api`, `web`, `infrastructure`, `testing`.
+
+### ADRs
+ADR-0013 (Keycloak and data ownership), ADR-0014 (PKCE and server-side session), ADR-0015 (admin separation and role split).
+
+### Known follow-up
+DEBT-0016 to DEBT-0020. Built-in `admin-cli` password grant found and disabled (LRN-0014).
+

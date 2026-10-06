@@ -16,6 +16,7 @@ export const errorPlugin = fp(async (app: FastifyInstance): Promise<void> => {
 
   app.setErrorHandler((err: FastifyError | AppError, req, reply) => {
     if (err instanceof AppError) {
+      if (err.headers) reply.headers(err.headers);
       return reply.status(err.status).send(body(req, err.category, err.code, err.message, err.details));
     }
     const fe = err as FastifyError;

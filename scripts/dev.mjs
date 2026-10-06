@@ -6,7 +6,7 @@ import { spawnSync, spawn } from 'node:child_process';
 if (!existsSync('.env')) copyFileSync('.env.example', '.env');
 if (!existsSync('.env.host')) copyFileSync('.env.host.example', '.env.host');
 
-const deps = ['postgres-db', 'valkey-cache', 'nats-events', 'seaweedfs-storage', 'seaweedfs-storage-init', 'flagd-flags', 'mailpit-email'];
+const deps = ['postgres-db', 'valkey-cache', 'nats-events', 'seaweedfs-storage', 'seaweedfs-storage-init', 'flagd-flags', 'mailpit-email', 'keycloak-auth'];
 const compose = ['compose', '-f', 'compose.yaml', '-f', 'compose.dev.yaml', '--profile', 'core', '--profile', 'devtools'];
 const up = spawnSync('docker', [...compose, 'up', '-d', ...deps], { stdio: 'inherit' });
 if (up.status !== 0) {

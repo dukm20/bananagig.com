@@ -8,3 +8,5 @@ export function schemaOf(t: z.ZodType): Record<string, unknown> {
 }
 export const errorSchema = schemaOf(ErrorResponse);
 export const errorResponses = { 400: errorSchema, 404: errorSchema, 500: errorSchema, 503: errorSchema };
+/** Documented failure responses for protected routes (403 only where a role guard applies). */
+export const authErrorResponses = { 401: errorSchema, 503: errorSchema };

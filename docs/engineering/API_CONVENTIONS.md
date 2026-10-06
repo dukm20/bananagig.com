@@ -49,7 +49,14 @@ Every non-2xx response has this shape (`ErrorResponse` in `@bananagig/contracts`
 - **Source of truth: the code.** The document is generated from the real Fastify route schemas (built from zod contracts) by `pnpm specs:generate`. Do not hand-edit it.
 - CI runs `pnpm specs:check` (fails if the committed file differs from what the code generates) and `pnpm openapi:lint` (Redocly). This removes hand-maintained drift.
 - Adding an endpoint: add the contract to `@bananagig/contracts`, declare the route with `schema` via `schemaOf()`, run `pnpm specs:generate`, commit the regenerated file.
-- `security-defined` lint is off until the first protected endpoint exists.
+- The Redocly `security-defined` rule is enforced: every operation declares its security.
+
+## Authentication and authorization
+
+- Protected routes require `Authorization: Bearer <Keycloak access token for audience bananagig-api>` and use the guards in `apps/api/src/plugins/auth.ts`. Public routes declare `security: []` in OpenAPI; protected ones declare the `bearerAuth` scheme.
+- **401 AUTHENTICATION**: `AUTHENTICATION_REQUIRED` (no token) or `INVALID_TOKEN` (malformed, forged, wrong issuer/audience/type, expired), with `WWW-Authenticate: Bearer realm="bananagig"`. **403 AUTHORIZATION**: `INSUFFICIENT_PERMISSIONS`. **503 DEPENDENCY**: `AUTH_PROVIDER_UNAVAILABLE` when the key set cannot be fetched.
+- Guards authenticate first (401 before 403). Responses never include provider payloads or token content; the correlation id is preserved on every failure.
+- Roles in tokens are identity roles (`customer`, `provider`); business permissions are application data. See `IDENTITY.md`.
 
 ## Current endpoints
 
@@ -59,3 +66,4 @@ Every non-2xx response has this shape (`ErrorResponse` in `@bananagig/contracts`
 | GET | `/readyz` | readiness (critical dependencies) |
 | GET | `/version` | service, version, commit, build time, environment |
 | GET | `/api/v1/system/info` | service/environment/version/uptime (enveloped) |
+| GET | `/api/v1/system/whoami` | caller identity: subject, client, audience, realm roles, auth context (requires a valid token) |

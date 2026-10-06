@@ -1,0 +1,497 @@
+{
+  "realm": "bananagig",
+  "displayName": "BananaGig",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "registrationEmailAsUsername": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "editUsernameAllowed": false,
+  "verifyEmail": false,
+  "rememberMe": false,
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "failureFactor": 5,
+  "waitIncrementSeconds": 60,
+  "maxFailureWaitSeconds": 900,
+  "maxDeltaTimeSeconds": 43200,
+  "accessTokenLifespan": 300,
+  "accessCodeLifespan": 60,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "passwordPolicy": "length(12) and notUsername",
+  "otpPolicyType": "totp",
+  "otpPolicyAlgorithm": "HmacSHA1",
+  "otpPolicyDigits": 6,
+  "otpPolicyPeriod": 30,
+  "otpPolicyLookAheadWindow": 1,
+  "otpSupportedApplications": [
+    "totpAppGoogleName",
+    "totpAppMicrosoftAuthenticatorName",
+    "totpAppFreeOTPName"
+  ],
+  "webAuthnPolicyRpEntityName": "BananaGig",
+  "webAuthnPolicySignatureAlgorithms": [
+    "ES256",
+    "RS256"
+  ],
+  "webAuthnPolicyUserVerificationRequirement": "preferred",
+  "attributes": {
+    "acr.loa.map": "{\"bananagig:password\": 1, \"bananagig:mfa\": 2}"
+  },
+  "roles": {
+    "realm": [
+      {
+        "name": "customer",
+        "description": "Identity role: account may act as a customer. Business permissions live in application data."
+      },
+      {
+        "name": "provider",
+        "description": "Identity role: account may act as a provider. Business permissions live in application data."
+      }
+    ],
+    "client": {
+      "bananagig-admin": [
+        {
+          "name": "admin-console-access",
+          "description": "Allows signing in to the admin console client. Business admin permissions live in application data."
+        }
+      ]
+    }
+  },
+  "scopeMappings": [
+    {
+      "client": "bananagig-web",
+      "roles": [
+        "customer",
+        "provider"
+      ]
+    },
+    {
+      "client": "bananagig-dev-test",
+      "roles": [
+        "customer",
+        "provider"
+      ]
+    }
+  ],
+  "clientScopeMappings": {
+    "bananagig-admin": [
+      {
+        "client": "bananagig-admin",
+        "roles": [
+          "admin-console-access"
+        ]
+      }
+    ]
+  },
+  "clientScopes": [
+    {
+      "name": "basic",
+      "description": "sub and auth_time only",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "sub",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-sub-mapper",
+          "consentRequired": false,
+          "config": {
+            "introspection.token.claim": "true",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "auth_time",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usersessionmodel-note-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.session.note": "AUTH_TIME",
+            "id.token.claim": "true",
+            "introspection.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "auth_time",
+            "jsonType.label": "long"
+          }
+        }
+      ]
+    },
+    {
+      "name": "roles",
+      "description": "Realm and client roles (identity roles only)",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "realm roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "multivalued": "true",
+            "user.attribute": "foo",
+            "access.token.claim": "true",
+            "claim.name": "realm_access.roles",
+            "jsonType.label": "String",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "client roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-client-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "multivalued": "true",
+            "user.attribute": "foo",
+            "access.token.claim": "true",
+            "claim.name": "resource_access.${client_id}.roles",
+            "jsonType.label": "String",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "acr",
+      "description": "Authentication context class reference (step-up)",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "acr loa level",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-acr-mapper",
+          "consentRequired": false,
+          "config": {
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "bananagig-api-audience",
+      "description": "Adds the bananagig-api audience so the API accepts the token",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "bananagig-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "bananagig-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "authenticationFlows": [
+    {
+      "id": "b4a9c3e2-0000-4000-8000-00000000a001",
+      "alias": "bananagig-admin-browser",
+      "description": "Admin console browser flow. DEV: OTP is required only once a user has a TOTP credential (conditional). PRODUCTION: built with OTP required and CONFIGURE_TOTP enforced (scripts/identity-realm.mjs --production).",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "requirement": "ALTERNATIVE",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "authenticator": "auth-cookie",
+          "authenticatorFlow": false
+        },
+        {
+          "requirement": "ALTERNATIVE",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "authenticatorFlow": true,
+          "flowAlias": "bananagig-admin-browser-forms"
+        }
+      ]
+    },
+    {
+      "id": "b4a9c3e2-0000-4000-8000-00000000a002",
+      "alias": "bananagig-admin-browser-forms",
+      "description": "Username/password then OTP",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "authenticator": "auth-username-password-form",
+          "authenticatorFlow": false
+        },
+        {
+          "requirement": "CONDITIONAL",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "authenticatorFlow": true,
+          "flowAlias": "bananagig-admin-browser-otp"
+        }
+      ]
+    },
+    {
+      "id": "b4a9c3e2-0000-4000-8000-00000000a003",
+      "alias": "bananagig-admin-browser-otp",
+      "description": "OTP (conditional in dev, required in production)",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "authenticator": "conditional-user-configured",
+          "authenticatorFlow": false
+        },
+        {
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "authenticator": "auth-otp-form",
+          "authenticatorFlow": false
+        }
+      ]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "bananagig-web",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": false,
+      "frontchannelLogout": false,
+      "redirectUris": [
+        "http://app.localhost:8080/auth/callback"
+      ],
+      "webOrigins": [
+        "http://app.localhost:8080"
+      ],
+      "defaultClientScopes": [
+        "basic",
+        "roles",
+        "acr",
+        "bananagig-api-audience"
+      ],
+      "optionalClientScopes": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://app.localhost:8080/",
+        "access.token.lifespan": "300"
+      },
+      "name": "BananaGig web (customers and providers)",
+      "rootUrl": "http://app.localhost:8080",
+      "baseUrl": "http://app.localhost:8080"
+    },
+    {
+      "clientId": "bananagig-api",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": false,
+      "frontchannelLogout": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "defaultClientScopes": [],
+      "optionalClientScopes": [],
+      "attributes": {
+        "bananagig.note": "Audience for access tokens; never used to obtain tokens"
+      },
+      "name": "BananaGig API (resource server / audience only)"
+    },
+    {
+      "clientId": "bananagig-admin",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": false,
+      "frontchannelLogout": false,
+      "redirectUris": [
+        "http://admin.localhost:8080/auth/callback"
+      ],
+      "webOrigins": [
+        "http://admin.localhost:8080"
+      ],
+      "defaultClientScopes": [
+        "basic",
+        "roles",
+        "acr",
+        "bananagig-api-audience"
+      ],
+      "optionalClientScopes": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://admin.localhost:8080/",
+        "access.token.lifespan": "180",
+        "client.session.idle.timeout": "900",
+        "client.session.max.lifespan": "28800"
+      },
+      "name": "BananaGig admin console (separate identity context)",
+      "rootUrl": "http://admin.localhost:8080",
+      "authenticationFlowBindingOverrides": {
+        "browser": "b4a9c3e2-0000-4000-8000-00000000a001"
+      }
+    },
+    {
+      "clientId": "admin-cli",
+      "enabled": false,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": false,
+      "frontchannelLogout": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "defaultClientScopes": [],
+      "optionalClientScopes": [],
+      "attributes": {
+        "bananagig.note": "Built-in client disabled in the product realm: it enables the password grant. Realm administration uses the master realm."
+      },
+      "name": "${client_admin-cli}"
+    },
+    {
+      "clientId": "bananagig-dev-test",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": false,
+      "frontchannelLogout": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "defaultClientScopes": [
+        "basic",
+        "roles",
+        "acr",
+        "bananagig-api-audience"
+      ],
+      "optionalClientScopes": [],
+      "attributes": {
+        "bananagig.devOnly": "true"
+      },
+      "name": "DEV/TEST ONLY: automated token acquisition (removed from production realm builds)"
+    }
+  ],
+  "users": [
+    {
+      "username": "customer.dev",
+      "email": "customer.dev@bananagig.localhost",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Dev",
+      "lastName": "Customer",
+      "realmRoles": [
+        "customer"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "dev_only_customer_password",
+          "temporary": false
+        }
+      ],
+      "attributes": {
+        "bananagig.devOnly": [
+          "true"
+        ]
+      }
+    },
+    {
+      "username": "provider.dev",
+      "email": "provider.dev@bananagig.localhost",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Dev",
+      "lastName": "Provider",
+      "realmRoles": [
+        "provider"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "dev_only_provider_password",
+          "temporary": false
+        }
+      ],
+      "attributes": {
+        "bananagig.devOnly": [
+          "true"
+        ]
+      }
+    },
+    {
+      "username": "admin.dev",
+      "email": "admin.dev@bananagig.localhost",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Dev",
+      "lastName": "Admin",
+      "clientRoles": {
+        "bananagig-admin": [
+          "admin-console-access"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "dev_only_admin_password",
+          "temporary": false
+        }
+      ],
+      "attributes": {
+        "bananagig.devOnly": [
+          "true"
+        ]
+      }
+    }
+  ]
+}

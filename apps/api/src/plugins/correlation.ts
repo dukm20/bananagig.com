@@ -15,13 +15,15 @@ declare module 'fastify' {
  * Every request gets a correlation id (safe inbound value or fresh UUID), echoed in the response header,
  * available through AsyncLocalStorage to logs/spans/DB transactions, and logged on completion.
  */
+// Module scope: registering the metric per app instance would throw on the second buildApp() in one process.
+const duration = new Histogram({
+  name: 'http_server_request_duration_seconds',
+  help: 'HTTP server request duration',
+  labelNames: ['method', 'route', 'status'] as const,
+  registers: [metrics],
+});
+
 export const correlationPlugin = fp(async (app: FastifyInstance): Promise<void> => {
-  const duration = new Histogram({
-    name: 'http_server_request_duration_seconds',
-    help: 'HTTP server request duration',
-    labelNames: ['method', 'route', 'status'] as const,
-    registers: [metrics],
-  });
   app.decorateRequest('correlationId', '');
   app.decorateRequest('startedAt', 0);
 

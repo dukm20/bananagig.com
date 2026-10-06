@@ -191,3 +191,35 @@ export function registerPoolMetrics(pool: string, stats: () => { total: number; 
     },
   });
 }
+
+// ---------- authentication telemetry ----------
+const authValidations = new Counter({
+  name: 'auth_token_validations_total',
+  help: 'Access token validations by result',
+  labelNames: ['result'] as const,
+  registers: [metrics],
+});
+const authFailures = new Counter({
+  name: 'auth_token_validation_failures_total',
+  help: 'Access token validation failures by category',
+  labelNames: ['category'] as const,
+  registers: [metrics],
+});
+const authMismatch = new Counter({
+  name: 'auth_issuer_audience_mismatch_total',
+  help: 'Tokens rejected for issuer or audience mismatch',
+  labelNames: ['kind'] as const,
+  registers: [metrics],
+});
+const authDuration = new Histogram({ name: 'auth_token_validation_duration_seconds', help: 'Token validation duration', registers: [metrics] });
+
+/** Records the outcome of one token validation. Only the failure CATEGORY is recorded; token material is never logged. */
+export function recordAuthResult(result: { ok: true } | { ok: false; category: string }, durationMs: number): void {
+  authDuration.observe(durationMs / 1000);
+  authValidations.labels(result.ok ? 'success' : 'failure').inc();
+  if (result.ok) return;
+  authFailures.labels(result.category).inc();
+  if (result.category === 'issuer_mismatch') authMismatch.labels('issuer').inc();
+  if (result.category === 'audience_mismatch') authMismatch.labels('audience').inc();
+  log('warn', 'authentication failed', { category: result.category });
+}

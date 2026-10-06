@@ -22,7 +22,7 @@ Choose and write the right test level, and run the same gates CI runs.
 - Integration tests (`*.itest.ts`): real Postgres and NATS via `pnpm dev:deps`; each test FILE creates its own freshly migrated database with `createIsolatedDatabase()` (never the dev database); run by `pnpm test:integration` (it starts dependencies itself).
 - Smoke (`pnpm smoke`): runs inside the Compose network and proves real connectivity across all services.
 - Contract checks: `pnpm specs:check`, `pnpm openapi:lint`, `pnpm asyncapi:validate`; boundaries: `pnpm deps:check`.
-- Test helpers live in `@bananagig/testing` and are never imported by production code.
+- Test helpers live in `@bananagig/testing` and are never imported by production code. Identity test helpers (`@bananagig/identity/testing`: forged tokens, scripted PKCE login, dev password grant) are DEV/TEST ONLY and ESLint forbids importing them from production code.
 
 ## Implementation pattern
 
@@ -45,6 +45,7 @@ pnpm checkpoint:finalize <ID> --skill-update=UPDATED|NOT_REQUIRED
 
 - A bug fix includes a regression test that fails without the fix.
 - Error-path tests are required (rollback, standard error model, graceful stop), not just happy paths.
+- Auth tests: forged tokens for unit tests; real Keycloak (`keycloak.itest.ts`, `auth.itest.ts`) for protocol and end-to-end behavior; `pnpm test:integration` starts `keycloak-auth`.
 - Concurrency tests use deferred barriers (`deferred()` in `@bananagig/testing`) to force interleavings, never sleeps alone.
 - Never assert on secrets or unstable values (timestamps, generated ids) without normalizing them.
 
@@ -75,4 +76,4 @@ ADR-0004, ADR-0006
 
 ## Last reviewed
 
-2026-10-05 (INF-003)
+2026-10-05 (INF-004)

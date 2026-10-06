@@ -2,6 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { loadConfig } from '@bananagig/config';
 import { CORRELATION_HEADER, ErrorResponse, SystemInfoResponse } from '@bananagig/contracts';
+import { createTokenVerifier } from '@bananagig/identity';
+import { createTestKeys } from '@bananagig/identity/testing';
 import { buildApp } from './app';
 import { AppError } from './errors';
 
@@ -10,7 +12,9 @@ let ready = true;
 let app: FastifyInstance;
 
 beforeAll(async () => {
-  app = await buildApp({ cfg, readiness: async () => ({ postgres: ready ? 'up' : 'down' }) });
+  const keys = await createTestKeys();
+  const verifier = createTokenVerifier({ issuer: cfg.identity.issuer, apiAudience: cfg.identity.apiAudience, jwks: keys.getKey });
+  app = await buildApp({ cfg, verifier, readiness: async () => ({ postgres: ready ? 'up' : 'down' }) });
   app.get('/__throw/:kind', { schema: { hide: true } }, async (req) => {
     const { kind } = req.params as { kind: string };
     if (kind === 'conflict') throw new AppError('CONFLICT', 'TEST_CONFLICT', 'conflict happened', { field: 'x' });

@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import type { ReactNode } from 'react';
+import Link from 'next/link';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -23,6 +24,9 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         </a>
         <header className="site-header">
           <span className="brand">BananaGig</span>
+          <nav aria-label="Primary" className="muted">
+            <Link href="/session">Session</Link>
+          </nav>
         </header>
         <main id="main" tabIndex={-1}>
           {children}
