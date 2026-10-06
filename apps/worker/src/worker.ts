@@ -1,4 +1,5 @@
 import type { PgBoss } from 'pg-boss';
+import type { ConfigurationService } from '@bananagig/configuration';
 import type { AppConfig } from '@bananagig/config';
 import { INFRA_PING_EVENT_TYPE, INFRA_PING_QUEUE } from '@bananagig/contracts';
 import type { Database } from '@bananagig/database';
@@ -6,6 +7,7 @@ import { log, runWithCorrelation } from '@bananagig/observability';
 import type { NatsClient } from '@bananagig/platform';
 import { randomUUID } from 'node:crypto';
 import { NatsEventPublisher, INFRA_PING_SUBJECT, newEvent, subscribe } from './runtime/events';
+import { registerConfigurationJobs } from './jobs/configuration';
 import { jobHandler, withJobMeta } from './runtime/job';
 import { PollingOutboxRelay } from './runtime/outbox';
 import { insertOutboxEvent } from '@bananagig/platform';
@@ -15,6 +17,8 @@ export interface WorkerDeps {
   database: Database;
   nats: NatsClient;
   boss: PgBoss;
+  /** When present, the worker registers the configuration activation job. */
+  configuration?: ConfigurationService;
 }
 
 /** Worker host: owns job runtime (pg-boss) and event runtime (NATS) lifecycle. No product handlers yet. */
@@ -46,6 +50,7 @@ export class Worker {
         this.seen.get(`job:${data.pingId}`)?.();
       }),
     );
+    if (this.d.configuration) await registerConfigurationJobs(boss, this.d.configuration);
     await nats.ensureEventStream();
     await subscribe(nats, INFRA_PING_SUBJECT, async (e) => {
       this.seen.get(`${e.payload.via === 'outbox' ? 'outbox' : 'event'}:${String(e.payload.pingId)}`)?.();

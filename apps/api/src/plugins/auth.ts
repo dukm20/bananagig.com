@@ -101,3 +101,18 @@ export function requireAuthContext(context: Principal['authContext']): preHandle
     if (request.principal!.authContext !== context) throw forbidden();
   };
 }
+
+/**
+ * TEMPORARY infrastructure permission strategy for the configuration registry (CFG-001): admin-console identity context plus one of
+ * three client roles on `bananagig-admin`. These are placeholders that will be mapped to application permissions
+ * (docs/engineering/CONFIGURATION.md). Business roles such as finance or trust administration are NOT modelled here.
+ */
+export const CONFIGURATION_PERMISSIONS = { read: 'configuration-read', write: 'configuration-write', approve: 'configuration-approve' } as const;
+export function requireConfigurationPermission(action: keyof typeof CONFIGURATION_PERMISSIONS): preHandlerAsyncHookHandler {
+  const authenticate = requireAuthenticated();
+  return async function guard(request, reply) {
+    await authenticate.call(request.server, request, reply);
+    const p = request.principal!;
+    if (p.authContext !== 'admin' || !p.clientRoles[p.clientId]?.includes(CONFIGURATION_PERMISSIONS[action])) throw forbidden();
+  };
+}

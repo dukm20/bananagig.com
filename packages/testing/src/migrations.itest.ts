@@ -14,6 +14,13 @@ const tmpMigrations = (copyReal = true): string => {
   if (copyReal) cpSync(migrationsDir(), dir, { recursive: true });
   return dir;
 };
+// Derived from the real migrations so these tests do not break when a checkpoint adds one.
+const realFiles = (): string[] =>
+  readdirSync(migrationsDir())
+    .filter((f) => f.endsWith('.sql'))
+    .sort();
+const pad = (n: number): string => String(n).padStart(4, '0');
+const nextVersion = (): string => pad(realFiles().length + 1);
 const HEADER = HEADER_FIELDS.map((f) => `-- ${f}: test`).join('\n');
 afterAll(() => scratchDirs.forEach((d) => rmSync(d, { recursive: true, force: true })));
 
@@ -87,9 +94,10 @@ describe('migration immutability and validation', () => {
     try {
       const dir = tmpMigrations();
       await runMigrations({ url: iso.url, dir });
-      rmSync(path.join(dir, '0003_integration_outbox.sql'));
+      const last = realFiles().at(-1)!;
+      rmSync(path.join(dir, last));
       const err = (await rejection(runMigrations({ url: iso.url, dir }))) as Error;
-      expect(err.message).toContain('applied migration 0003_integration_outbox.sql has no file');
+      expect(err.message).toContain(`applied migration ${last} has no file`);
     } finally {
       await iso.drop();
     }
@@ -100,7 +108,7 @@ describe('migration immutability and validation', () => {
     expect(loadMigrations(dup).errors.join('\n')).toContain('duplicate migration version 0003');
 
     const gap = tmpMigrations();
-    writeFileSync(path.join(gap, '0009_gap.sql'), `${HEADER}\nSELECT 1;\n`);
+    writeFileSync(path.join(gap, `${pad(realFiles().length + 5)}_gap.sql`), `${HEADER}\nSELECT 1;\n`);
     expect(loadMigrations(gap).errors.join('\n')).toContain('contiguous');
 
     const name = tmpMigrations();
@@ -108,16 +116,14 @@ describe('migration immutability and validation', () => {
     expect(loadMigrations(name).errors.join('\n')).toContain('invalid migration file name');
 
     const header = tmpMigrations();
-    writeFileSync(path.join(header, '0004_nohdr.sql'), 'SELECT 1;\n');
+    writeFileSync(path.join(header, `${nextVersion()}_nohdr.sql`), 'SELECT 1;\n');
     expect(loadMigrations(header).errors.join('\n')).toContain('missing header comment "-- rollback strategy: <text>"');
 
     const destructive = tmpMigrations();
-    writeFileSync(path.join(destructive, '0004_drop.sql'), `${HEADER}\nDROP TABLE something;\n`);
+    const dropFile = path.join(destructive, `${nextVersion()}_drop.sql`);
+    writeFileSync(dropFile, `${HEADER}\nDROP TABLE something;\n`);
     expect(loadMigrations(destructive).errors.join('\n')).toContain('destructive statement');
-    writeFileSync(
-      path.join(destructive, '0004_drop.sql'),
-      `${HEADER}\n-- destructive: contract phase of expand/migrate/contract, data verified in INF-999\nDROP TABLE something;\n`,
-    );
+    writeFileSync(dropFile, `${HEADER}\n-- destructive: contract phase of expand/migrate/contract, data verified in INF-999\nDROP TABLE something;\n`);
     expect(loadMigrations(destructive).errors).toEqual([]);
   });
   it('the real migrations pass validation', () => {

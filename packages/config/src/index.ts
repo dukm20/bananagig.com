@@ -55,6 +55,9 @@ const raw = z.object({
   OUTBOX_BATCH_SIZE: z.coerce.number().int().min(1).max(1000).default(50),
   OUTBOX_LEASE_MS: z.coerce.number().int().min(1000).default(30000),
   OUTBOX_RETENTION_DAYS: z.coerce.number().int().min(1).default(7),
+  // Configuration registry cache (Valkey). The database stays the source of truth.
+  CONFIG_CACHE_TTL_SECONDS: z.coerce.number().int().min(1).max(3600).default(30),
+  CONFIG_LKG_MAX_AGE_SECONDS: z.coerce.number().int().min(60).default(86400),
 });
 
 // Localhost defaults are applied only outside production. Production must set everything explicitly.
@@ -106,6 +109,7 @@ export interface AppConfig {
   apiInternalUrl: string;
   worker: { id: string; concurrency: number };
   db: { poolMax?: number; idleTimeoutMs?: number; connectionTimeoutMs?: number; statementTimeoutMs?: number; slowQueryMs: number; logSql: boolean };
+  configuration: { cacheTtlSeconds: number; lkgMaxAgeSeconds: number };
   outbox: { enabled: boolean; pollIntervalMs: number; batchSize: number; leaseMs: number; retentionDays: number };
 }
 
@@ -196,6 +200,7 @@ export function loadConfig(opts: LoadOptions): Readonly<AppConfig> {
       slowQueryMs: e.DB_SLOW_QUERY_MS,
       logSql: e.DB_LOG_SQL === 'true',
     },
+    configuration: { cacheTtlSeconds: e.CONFIG_CACHE_TTL_SECONDS, lkgMaxAgeSeconds: e.CONFIG_LKG_MAX_AGE_SECONDS },
     outbox: {
       enabled: e.OUTBOX_RELAY_ENABLED === 'true',
       pollIntervalMs: e.OUTBOX_POLL_INTERVAL_MS,

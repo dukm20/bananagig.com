@@ -14,7 +14,7 @@ let app: FastifyInstance;
 beforeAll(async () => {
   const keys = await createTestKeys();
   const verifier = createTokenVerifier({ issuer: cfg.identity.issuer, apiAudience: cfg.identity.apiAudience, jwks: keys.getKey });
-  app = await buildApp({ cfg, verifier, readiness: async () => ({ postgres: ready ? 'up' : 'down' }) });
+  app = await buildApp({ cfg, verifier, configuration: {} as never, readiness: async () => ({ postgres: ready ? 'up' : 'down' }) });
   app.get('/__throw/:kind', { schema: { hide: true } }, async (req) => {
     const { kind } = req.params as { kind: string };
     if (kind === 'conflict') throw new AppError('CONFLICT', 'TEST_CONFLICT', 'conflict happened', { field: 'x' });

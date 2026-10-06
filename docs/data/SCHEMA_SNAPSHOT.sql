@@ -2,7 +2,172 @@
 -- Scope: application-owned objects only (excludes pgboss, PostGIS and other extension-owned objects, system catalogs).
 -- Regenerate: pnpm schema:snapshot --write
 
+CREATE SCHEMA configuration;
 CREATE SCHEMA integration;
+
+CREATE TABLE configuration.audit_events (
+  audit_event_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  occurred_at timestamp with time zone NOT NULL DEFAULT now(),
+  actor text NOT NULL,
+  action text NOT NULL,
+  parameter_id uuid NOT NULL,
+  change_request_id uuid,
+  old_version_id uuid,
+  new_version_id uuid,
+  reason text,
+  correlation_id text NOT NULL,
+  CONSTRAINT pk_audit_events PRIMARY KEY (audit_event_id),
+  CONSTRAINT fk_audit_events__change_request_id FOREIGN KEY (change_request_id) REFERENCES configuration.change_requests(change_request_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_audit_events__new_version_id FOREIGN KEY (new_version_id) REFERENCES configuration.value_versions(version_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_audit_events__old_version_id FOREIGN KEY (old_version_id) REFERENCES configuration.value_versions(version_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_audit_events__parameter_id FOREIGN KEY (parameter_id) REFERENCES configuration.parameters(parameter_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_audit_events__action CHECK ((action = ANY (ARRAY['PARAMETER_CREATED'::text, 'CHANGE_DRAFTED'::text, 'CHANGE_SUBMITTED'::text, 'CHANGE_APPROVED'::text, 'CHANGE_REJECTED'::text, 'CHANGE_CANCELLED'::text, 'CHANGE_PUBLISHED'::text, 'CHANGE_ACTIVATED'::text, 'CHANGE_SUPERSEDED'::text])))
+);
+CREATE INDEX idx_audit_events__change_request ON configuration.audit_events USING btree (change_request_id) WHERE (change_request_id IS NOT NULL);
+CREATE INDEX idx_audit_events__parameter ON configuration.audit_events USING btree (parameter_id, occurred_at DESC);
+
+CREATE TABLE configuration.change_approvals (
+  approval_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  change_request_id uuid NOT NULL,
+  approver text NOT NULL,
+  decision text NOT NULL,
+  comment text,
+  decided_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_change_approvals PRIMARY KEY (approval_id),
+  CONSTRAINT uq_change_approvals__request_approver UNIQUE (change_request_id, approver),
+  CONSTRAINT fk_change_approvals__change_request_id FOREIGN KEY (change_request_id) REFERENCES configuration.change_requests(change_request_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_change_approvals__decision CHECK ((decision = ANY (ARRAY['APPROVE'::text, 'REJECT'::text])))
+);
+
+CREATE TABLE configuration.change_requests (
+  change_request_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  parameter_id uuid NOT NULL,
+  scope_type text NOT NULL,
+  scope_ref text,
+  proposed_value jsonb NOT NULL,
+  effective_from timestamp with time zone NOT NULL,
+  effective_to timestamp with time zone,
+  reason text NOT NULL,
+  requested_by text NOT NULL,
+  approval_policy text NOT NULL,
+  state text NOT NULL DEFAULT 'DRAFT'::text,
+  value_version_id uuid,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_change_requests PRIMARY KEY (change_request_id),
+  CONSTRAINT uq_change_requests__value_version_id UNIQUE (value_version_id),
+  CONSTRAINT fk_change_requests__parameter_scope FOREIGN KEY (parameter_id, scope_type) REFERENCES configuration.parameter_scopes(parameter_id, scope_type) ON DELETE RESTRICT,
+  CONSTRAINT fk_change_requests__value_version_id FOREIGN KEY (value_version_id) REFERENCES configuration.value_versions(version_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_change_requests__approval_policy CHECK ((approval_policy = ANY (ARRAY['NONE'::text, 'OWNER_APPROVAL'::text, 'SECOND_APPROVER'::text]))),
+  CONSTRAINT ck_change_requests__effective_range CHECK (((effective_to IS NULL) OR (effective_to > effective_from))),
+  CONSTRAINT ck_change_requests__platform_has_no_ref CHECK (((scope_type = 'PLATFORM'::text) = (scope_ref IS NULL))),
+  CONSTRAINT ck_change_requests__published_has_version CHECK (((state = ANY (ARRAY['SCHEDULED'::text, 'ACTIVE'::text, 'SUPERSEDED'::text])) = (value_version_id IS NOT NULL))),
+  CONSTRAINT ck_change_requests__reason_not_blank CHECK ((length(btrim(reason)) > 0)),
+  CONSTRAINT ck_change_requests__scope_ref_format CHECK (((scope_ref IS NULL) OR (scope_ref ~ '^[A-Za-z0-9._:-]{1,200}$'::text))),
+  CONSTRAINT ck_change_requests__state CHECK ((state = ANY (ARRAY['DRAFT'::text, 'PENDING_APPROVAL'::text, 'APPROVED'::text, 'SCHEDULED'::text, 'ACTIVE'::text, 'REJECTED'::text, 'SUPERSEDED'::text, 'CANCELLED'::text])))
+);
+CREATE INDEX idx_change_requests__parameter ON configuration.change_requests USING btree (parameter_id, created_at DESC);
+CREATE INDEX idx_change_requests__pending ON configuration.change_requests USING btree (created_at) WHERE (state = 'PENDING_APPROVAL'::text);
+CREATE INDEX idx_change_requests__scheduled ON configuration.change_requests USING btree (effective_from) WHERE (state = 'SCHEDULED'::text);
+
+CREATE TABLE configuration.parameter_scopes (
+  parameter_id uuid NOT NULL,
+  scope_type text NOT NULL,
+  CONSTRAINT pk_parameter_scopes PRIMARY KEY (parameter_id, scope_type),
+  CONSTRAINT fk_parameter_scopes__parameter_id FOREIGN KEY (parameter_id) REFERENCES configuration.parameters(parameter_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_parameter_scopes__scope_type FOREIGN KEY (scope_type) REFERENCES configuration.scope_levels(scope_type) ON DELETE RESTRICT
+);
+
+CREATE TABLE configuration.parameter_values (
+  parameter_value_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  parameter_id uuid NOT NULL,
+  scope_type text NOT NULL,
+  scope_ref text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_parameter_values PRIMARY KEY (parameter_value_id),
+  CONSTRAINT uq_parameter_values__parameter_scope_ref UNIQUE NULLS NOT DISTINCT (parameter_id, scope_type, scope_ref),
+  CONSTRAINT fk_parameter_values__parameter_scope FOREIGN KEY (parameter_id, scope_type) REFERENCES configuration.parameter_scopes(parameter_id, scope_type) ON DELETE RESTRICT,
+  CONSTRAINT ck_parameter_values__platform_has_no_ref CHECK (((scope_type = 'PLATFORM'::text) = (scope_ref IS NULL))),
+  CONSTRAINT ck_parameter_values__scope_ref_format CHECK (((scope_ref IS NULL) OR (scope_ref ~ '^[A-Za-z0-9._:-]{1,200}$'::text)))
+);
+
+CREATE TABLE configuration.parameters (
+  parameter_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  key text NOT NULL,
+  data_type text NOT NULL,
+  unit text,
+  description text NOT NULL,
+  owner_role text NOT NULL,
+  validation_rules jsonb NOT NULL DEFAULT '{}'::jsonb,
+  sensitivity text NOT NULL DEFAULT 'INTERNAL'::text,
+  approval_policy text NOT NULL,
+  criticality text NOT NULL DEFAULT 'STANDARD'::text,
+  is_required boolean NOT NULL DEFAULT true,
+  is_active boolean NOT NULL DEFAULT true,
+  created_by text NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_parameters PRIMARY KEY (parameter_id),
+  CONSTRAINT uq_parameters__key UNIQUE (key),
+  CONSTRAINT ck_parameters__approval_policy CHECK ((approval_policy = ANY (ARRAY['NONE'::text, 'OWNER_APPROVAL'::text, 'SECOND_APPROVER'::text]))),
+  CONSTRAINT ck_parameters__criticality CHECK ((criticality = ANY (ARRAY['STANDARD'::text, 'CRITICAL'::text]))),
+  CONSTRAINT ck_parameters__data_type CHECK ((data_type = ANY (ARRAY['STRING'::text, 'INTEGER'::text, 'DECIMAL'::text, 'BOOLEAN'::text, 'ENUM'::text, 'DURATION'::text, 'MONEY'::text, 'JSON'::text]))),
+  CONSTRAINT ck_parameters__description_not_blank CHECK ((length(btrim(description)) > 0)),
+  CONSTRAINT ck_parameters__key_format CHECK (((key ~ '^[a-z][a-z0-9_]*([.][a-z][a-z0-9_]*)+$'::text) AND (length(key) <= 120))),
+  CONSTRAINT ck_parameters__owner_role_format CHECK ((owner_role ~ '^[a-z][a-z0-9_-]*$'::text)),
+  CONSTRAINT ck_parameters__sensitivity CHECK ((sensitivity = ANY (ARRAY['PUBLIC'::text, 'INTERNAL'::text, 'SENSITIVE'::text]))),
+  CONSTRAINT ck_parameters__validation_rules_object CHECK ((jsonb_typeof(validation_rules) = 'object'::text))
+);
+
+CREATE TABLE configuration.scope_levels (
+  scope_type text NOT NULL,
+  rank smallint NOT NULL,
+  CONSTRAINT pk_scope_levels PRIMARY KEY (scope_type),
+  CONSTRAINT uq_scope_levels__rank UNIQUE (rank),
+  CONSTRAINT ck_scope_levels__rank_nonnegative CHECK ((rank >= 0)),
+  CONSTRAINT ck_scope_levels__scope_type_format CHECK ((scope_type ~ '^[A-Z][A-Z_]*$'::text))
+);
+
+CREATE TABLE configuration.snapshot_items (
+  snapshot_id uuid NOT NULL,
+  parameter_id uuid NOT NULL,
+  version_id uuid NOT NULL,
+  CONSTRAINT pk_snapshot_items PRIMARY KEY (snapshot_id, parameter_id),
+  CONSTRAINT fk_snapshot_items__parameter_id FOREIGN KEY (parameter_id) REFERENCES configuration.parameters(parameter_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_snapshot_items__snapshot_id FOREIGN KEY (snapshot_id) REFERENCES configuration.snapshots(snapshot_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_snapshot_items__version_id FOREIGN KEY (version_id) REFERENCES configuration.value_versions(version_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE configuration.snapshots (
+  snapshot_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  evaluated_at timestamp with time zone NOT NULL,
+  context jsonb NOT NULL,
+  purpose text NOT NULL,
+  created_by text NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_snapshots PRIMARY KEY (snapshot_id),
+  CONSTRAINT ck_snapshots__context_object CHECK ((jsonb_typeof(context) = 'object'::text)),
+  CONSTRAINT ck_snapshots__purpose_not_blank CHECK ((length(btrim(purpose)) > 0))
+);
+
+CREATE TABLE configuration.value_versions (
+  version_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  parameter_value_id uuid NOT NULL,
+  version integer NOT NULL,
+  value jsonb NOT NULL,
+  effective_from timestamp with time zone NOT NULL,
+  effective_to timestamp with time zone,
+  reason text NOT NULL,
+  created_by text NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_value_versions PRIMARY KEY (version_id),
+  CONSTRAINT uq_value_versions__parameter_value_version UNIQUE (parameter_value_id, version),
+  CONSTRAINT fk_value_versions__parameter_value_id FOREIGN KEY (parameter_value_id) REFERENCES configuration.parameter_values(parameter_value_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_value_versions__effective_range CHECK (((effective_to IS NULL) OR (effective_to > effective_from))),
+  CONSTRAINT ck_value_versions__reason_not_blank CHECK ((length(btrim(reason)) > 0)),
+  CONSTRAINT ck_value_versions__version_positive CHECK ((version > 0))
+);
+CREATE INDEX idx_value_versions__holder_effective ON configuration.value_versions USING btree (parameter_value_id, effective_from DESC);
 
 CREATE TABLE integration.outbox_events (
   outbox_event_id uuid NOT NULL DEFAULT gen_random_uuid(),

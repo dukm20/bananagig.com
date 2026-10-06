@@ -38,7 +38,12 @@ describe('identity realm (infra/keycloak/bananagig-realm.json)', () => {
     expect(admin.redirectUris).not.toEqual(expect.arrayContaining(web.redirectUris));
     expect(admin.authenticationFlowBindingOverrides.browser).toBeTruthy();
     expect(Number(admin.attributes['access.token.lifespan'])).toBeLessThan(Number(web.attributes['access.token.lifespan']));
-    expect(r.roles.client['bananagig-admin'].map((x) => x.name)).toEqual(['admin-console-access']);
+    expect(r.roles.client['bananagig-admin'].map((x) => x.name).sort()).toEqual([
+      'admin-console-access',
+      'configuration-approve',
+      'configuration-read',
+      'configuration-write',
+    ]);
     expect(r.roles.realm.map((x) => x.name).sort()).toEqual(['customer', 'provider']);
   });
   it('is MFA-capable: TOTP policy, admin flow with OTP step, ACR/LoA map for step-up', () => {

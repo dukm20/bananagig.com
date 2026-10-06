@@ -2,11 +2,13 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import swagger from '@fastify/swagger';
 import type { AppConfig } from '@bananagig/config';
 import { API_PREFIX } from '@bananagig/contracts';
+import type { ConfigurationService } from '@bananagig/configuration';
 import type { TokenVerifier } from '@bananagig/identity';
 import { metrics } from '@bananagig/observability';
 import { authPlugin } from './plugins/auth';
 import { correlationPlugin } from './plugins/correlation';
 import { errorPlugin } from './plugins/errors';
+import { configurationRoutes } from './modules/configuration/routes';
 import { systemAuthRoutes, systemRootRoutes, systemV1Routes } from './modules/system/routes';
 
 export interface AppDeps {
@@ -17,10 +19,13 @@ export interface AppDeps {
   diagnostics?: () => Promise<unknown>;
   /** Access-token verifier (real JWKS in production, local keys in tests). */
   verifier: TokenVerifier;
+  /** Product configuration registry (internal/admin API). */
+  configuration: ConfigurationService;
 }
 
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
-  const app = Fastify({ logger: false, trustProxy: true });
+  // removeAdditional=false: unknown request properties are REJECTED (400) instead of silently stripped.
+  const app = Fastify({ logger: false, trustProxy: true, ajv: { customOptions: { removeAdditional: false } } });
   const sys = { cfg: deps.cfg, startedAt: Date.now() };
 
   await app.register(swagger, {
@@ -33,7 +38,10 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
         description: 'HTTP contract for the BananaGig API. Generated from route schemas; do not edit docs/api/openapi.yaml by hand.',
       },
       servers: [{ url: 'http://api.localhost:8080', description: 'Local development via Caddy' }],
-      tags: [{ name: 'system', description: 'Operational and system information' }],
+      tags: [
+        { name: 'system', description: 'Operational and system information' },
+        { name: 'configuration', description: 'Product configuration registry: internal/admin only (admin identity context plus a configuration permission)' },
+      ],
       components: {
         securitySchemes: {
           bearerAuth: {
@@ -54,6 +62,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   await app.register(systemRootRoutes, { ...sys, readiness: deps.readiness });
   await app.register(systemV1Routes, { ...sys, prefix: API_PREFIX });
   await app.register(systemAuthRoutes, { prefix: API_PREFIX });
+  await app.register(configurationRoutes, { prefix: `${API_PREFIX}/configuration`, configuration: deps.configuration });
 
   app.get('/metrics', { schema: { hide: true } }, async (_req, reply) => reply.type(metrics.contentType).send(await metrics.metrics()));
   if (deps.diagnostics) {

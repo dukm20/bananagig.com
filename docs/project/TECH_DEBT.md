@@ -230,3 +230,58 @@ Why deferred: Supporting a second origin means extra redirect URIs and hostname 
 Exit criteria: A documented host-mode login path (Caddy in the dev profile or an additional registered dev origin) with a test.
 Target checkpoint: first UI checkpoint that requires a signed-in user
 
+
+## DEBT-0021 — Temporary configuration permissions and unenforced owner role
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: CFG-001
+Owner/domain: configuration / identity
+Description: Access to the configuration API uses admin-context tokens plus client roles `configuration-read/write/approve` on `bananagig-admin`. `parameters.owner_role` is metadata; `OWNER_APPROVAL` is satisfied by any holder of `configuration-approve`.
+Why deferred: Application roles and permissions do not exist yet.
+Exit criteria: Application RBAC (identity-linked, in the BananaGig database) governs configuration access and owner-role approval; Keycloak client roles removed or reduced to authentication context.
+Target checkpoint: admin/RBAC checkpoint (after ID-001)
+
+## DEBT-0022 — Activation marker lag and cache invalidation limits
+
+Status: OPEN
+Severity: LOW
+Introduced by: CFG-001
+Owner/domain: configuration / worker
+Description: The activation job runs every minute, so the `SCHEDULED -> ACTIVE` marker, its event and the predecessor supersession can lag by up to about 60 seconds. Resolution is unaffected (it uses timestamps). Cache invalidation relies on the shared generation counter in Valkey and a 30 s TTL; there is no push to other instances and no event consumers yet.
+Why deferred: No consumer needs sub-minute notification.
+Exit criteria: A consumer with a documented latency need, then a tighter schedule or database-driven wake-up.
+Target checkpoint: first consumer of `configuration.activated.v1`
+
+## DEBT-0023 — No configuration admin UI, bulk import or export
+
+Status: OPEN
+Severity: LOW
+Introduced by: CFG-001
+Owner/domain: configuration / admin
+Description: Parameters and changes are managed through the API only. There is no UI, bulk import/export, diff view or environment promotion tooling.
+Why deferred: Out of scope for the engine checkpoint.
+Exit criteria: Admin UI and a controlled promotion path.
+Target checkpoint: admin console checkpoint
+
+## DEBT-0024 — Scope references are not validated against domain entities
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: CFG-001
+Owner/domain: configuration / each owning domain
+Description: `scope_ref` is an opaque string with no foreign key, so a value can be set for a market, category or provider that does not exist or is later removed. The scope level is enforced; the entity is not.
+Why deferred: The domain tables do not exist yet and the registry must not depend on them.
+Exit criteria: A scope-reference validator port implemented by each owning domain and called on change-request creation and publish, with a test per scope level.
+Target checkpoint: first checkpoint that creates a domain table used as a scope (geography/market, catalog/category, provider)
+
+## DEBT-0025 — Snapshot and audit retention undefined
+
+Status: OPEN
+Severity: LOW
+Introduced by: CFG-001
+Owner/domain: configuration / data governance
+Description: Snapshots, snapshot items, audit events and value versions are retained indefinitely. Snapshot volume will grow once bookings take one per quote.
+Why deferred: No volume data; retention rules depend on legal and finance requirements.
+Exit criteria: Documented retention per table, archival or partitioning where justified, and a restore test.
+Target checkpoint: before the first booking checkpoint goes live

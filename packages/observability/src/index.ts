@@ -223,3 +223,27 @@ export function recordAuthResult(result: { ok: true } | { ok: false; category: s
   if (result.category === 'audience_mismatch') authMismatch.labels('audience').inc();
   log('warn', 'authentication failed', { category: result.category });
 }
+
+// ---------- configuration registry telemetry ----------
+const cfgResolutions = new Counter({
+  name: 'configuration_resolutions_total',
+  help: 'Configuration resolutions by source',
+  labelNames: ['source'] as const,
+  registers: [metrics],
+});
+const cfgErrors = new Counter({
+  name: 'configuration_errors_total',
+  help: 'Configuration errors by typed code',
+  labelNames: ['code'] as const,
+  registers: [metrics],
+});
+
+/** source: db (authoritative read), cache (Valkey hit), lkg (last-known-good served during a database outage). */
+export function recordConfigResolution(source: 'db' | 'cache' | 'lkg'): void {
+  cfgResolutions.labels(source).inc();
+}
+/** Counts typed configuration errors (NO_VALUE, UNAVAILABLE, ...). A rise in NO_VALUE or lkg usage should alert. Never include values. */
+export function recordConfigError(code: string): void {
+  cfgErrors.labels(code).inc();
+  log('warn', 'configuration error', { code });
+}

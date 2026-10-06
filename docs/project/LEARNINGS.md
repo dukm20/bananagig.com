@@ -358,3 +358,78 @@ When asserting protocol restrictions, enumerate all clients in the live realm (`
 ### Evidence
 `infra/keycloak/bananagig-realm.json` (admin-cli entry), `packages/identity/src/keycloak.itest.ts` ("bananagig-api issues nothing; password grant exists only on the dev-only client").
 
+
+## LRN-0015 — Immutable history and a no-overlap constraint need one explicit, trigger-allowed closure
+
+Date: 2026-10-05
+Checkpoint: CFG-001
+Domain: database
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0016
+Related skill: skills/configuration/SKILL.md
+
+### Context
+Effective-dated values must be immutable, yet a database exclusion constraint on `tstzrange(effective_from, effective_to)` only works when the predecessor's end is stored. Deriving the end from the successor leaves overlap prevention to application code.
+
+### Learning
+Store `effective_to`, allow exactly one mutation (NULL to a value, every other column unchanged) in a `BEFORE UPDATE` guard trigger, and let the gist exclusion constraint (`btree_gist` for the uuid equality part) be the final arbiter of concurrent publishes. Test both the permitted closure and every forbidden update.
+
+### Why it matters
+Application-level overlap checks race under concurrency; a blanket "no updates" trigger would make the constraint unusable.
+
+### Reuse rule
+Any effective-dated history table: explicit end column, half-open range, exclusion constraint, one-time closure trigger, concurrency test.
+
+### Evidence
+`db/migrations/0004_configuration_registry.sql` (`ex_value_versions__no_overlap`, `guard_value_versions`), `packages/configuration/src/configuration.itest.ts`.
+
+## LRN-0016 — Fastify's default Ajv strips unknown body fields silently
+
+Date: 2026-10-05
+Checkpoint: CFG-001
+Domain: api
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/api/SKILL.md
+
+### Context
+Fastify's default Ajv options set `removeAdditional: true`, so with the zod-derived schemas (`additionalProperties: false`) an unknown body property is removed silently instead of rejected. Found while designing the configuration write endpoints.
+
+### Learning
+Set `ajv: { customOptions: { removeAdditional: false } }` so `additionalProperties: false` rejects unknown fields with a 400 instead of ignoring them.
+
+### Why it matters
+Silent field dropping on a configuration write can publish a different change than the caller intended.
+
+### Reuse rule
+Keep `removeAdditional: false` on the app; when adding write endpoints, include an unknown-field case in the validation test (the CFG-001 test covers bad bodies generally, not an explicit unknown-field case).
+
+### Evidence
+`apps/api/src/app.ts` (comment at the Fastify constructor), `apps/api/src/configuration.test.ts` ("validates request bodies").
+
+## LRN-0017 — Fastify `preHandler` guards run after validation; use `preValidation` so 401 beats 400
+
+Date: 2026-10-05
+Checkpoint: CFG-001
+Domain: api
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/api/SKILL.md
+
+### Context
+With the guard in `preHandler`, validation runs first, so an anonymous caller sending an invalid body would receive 400 (and learn about the schema) instead of 401.
+
+### Learning
+Authorization guards for routes with a body schema belong in `preValidation`. Read-only routes without bodies are indifferent.
+
+### Why it matters
+Unauthenticated callers must learn nothing about the contract beyond 401.
+
+### Reuse rule
+Assert 401 with an empty or invalid body in route tests (the CFG-001 test posts `{}` anonymously to every POST route).
+
+### Evidence
+`apps/api/src/modules/configuration/routes.ts`, `apps/api/src/configuration.test.ts` ("requires authentication on every route (401)").

@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { stringify } from 'yaml';
 import { z } from 'zod';
 import { loadConfig } from '@bananagig/config';
-import { EventEnvelope, INFRA_PING_EVENT_TYPE } from '@bananagig/contracts';
+import { CONFIGURATION_EVENTS, ConfigurationEventPayload, EventEnvelope, INFRA_PING_EVENT_TYPE } from '@bananagig/contracts';
 import { createTokenVerifier } from '@bananagig/identity';
 import { buildApp } from '../apps/api/src/app.ts';
 
@@ -21,42 +21,69 @@ const verifier = createTokenVerifier({
     throw new Error('not used');
   },
 });
-const app = await buildApp({ cfg, verifier, readiness: async () => ({}) });
+const app = await buildApp({ cfg, verifier, configuration: {}, readiness: async () => ({}) });
 await app.ready();
 const openapi = app.swagger();
 await app.close();
 
 const { $schema: _a, ...envelopeSchema } = z.toJSONSchema(EventEnvelope, { target: 'draft-7' });
+// Envelope with a fixed eventType and a typed payload, as JSON Schema (draft-07).
+const typedEnvelope = (type, payload) => {
+  const { $schema: _s, ...schema } = z.toJSONSchema(EventEnvelope.extend({ eventType: z.literal(type), payload }), { target: 'draft-7' });
+  return schema;
+};
+const CONFIG_MESSAGES = {
+  changeRequested: ['ConfigurationChangeRequested', 'A configuration change was submitted for approval.'],
+  changeApproved: ['ConfigurationChangeApproved', 'A configuration change was approved (or auto-approved by policy NONE).'],
+  changeRejected: ['ConfigurationChangeRejected', 'A configuration change was rejected.'],
+  scheduled: ['ConfigurationScheduled', 'An approved change was published with a future effective time.'],
+  activated: ['ConfigurationActivated', 'A configuration change became effective.'],
+};
+const channels = {
+  infraPing: {
+    address: INFRA_PING_EVENT_TYPE,
+    description: 'Infrastructure self-test used by the worker diagnostics. Not a product event.',
+    messages: { infraPing: { $ref: '#/components/messages/EventEnvelope' } },
+  },
+};
+const operations = { receiveInfraPing: { action: 'receive', channel: { $ref: '#/channels/infraPing' }, summary: 'Worker consumes the infrastructure ping' } };
+const messages = {
+  EventEnvelope: {
+    name: 'EventEnvelope',
+    title: 'Domain event envelope',
+    headers: { type: 'object', properties: { 'x-correlation-id': { type: 'string' } } },
+    payload: { $ref: '#/components/schemas/EventEnvelope' },
+  },
+};
+const schemas = { EventEnvelope: envelopeSchema };
+for (const [k, [name, summary]] of Object.entries(CONFIG_MESSAGES)) {
+  const type = CONFIGURATION_EVENTS[k];
+  channels[`configuration_${k}`] = {
+    address: type,
+    description: `${summary} Published through the transactional outbox; payload carries identifiers only, never values.`,
+    messages: { [name]: { $ref: `#/components/messages/${name}` } },
+  };
+  operations[`send${name}`] = { action: 'send', channel: { $ref: `#/channels/configuration_${k}` }, summary };
+  messages[name] = {
+    name,
+    title: summary,
+    headers: { type: 'object', properties: { 'x-correlation-id': { type: 'string' } } },
+    payload: { $ref: `#/components/schemas/${name}` },
+  };
+  schemas[name] = typedEnvelope(type, ConfigurationEventPayload);
+}
 const asyncapi = {
   asyncapi: '3.0.0',
   info: {
     title: 'BananaGig Events',
     version: '1.0.0',
     description:
-      'Event contract. Only the generic envelope and an infrastructure self-test event exist; product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.',
+      'Event contract. The generic envelope, the infrastructure self-test event and the configuration registry events exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.',
   },
   defaultContentType: 'application/json',
-  channels: {
-    infraPing: {
-      address: INFRA_PING_EVENT_TYPE,
-      description: 'Infrastructure self-test used by the worker diagnostics. Not a product event.',
-      messages: { infraPing: { $ref: '#/components/messages/EventEnvelope' } },
-    },
-  },
-  operations: {
-    receiveInfraPing: { action: 'receive', channel: { $ref: '#/channels/infraPing' }, summary: 'Worker consumes the infrastructure ping' },
-  },
-  components: {
-    messages: {
-      EventEnvelope: {
-        name: 'EventEnvelope',
-        title: 'Domain event envelope',
-        headers: { type: 'object', properties: { 'x-correlation-id': { type: 'string' } } },
-        payload: { $ref: '#/components/schemas/EventEnvelope' },
-      },
-    },
-    schemas: { EventEnvelope: envelopeSchema },
-  },
+  channels,
+  operations,
+  components: { messages, schemas },
 };
 
 const outputs = [

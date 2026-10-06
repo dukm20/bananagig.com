@@ -1,12 +1,15 @@
 import { PgBoss } from 'pg-boss';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { loadConfig } from '@bananagig/config';
+import { ConfigurationService } from '@bananagig/configuration';
 import { NatsClient } from '@bananagig/platform';
 import { createIsolatedDatabase, type IsolatedDatabase } from '@bananagig/testing';
 import { Worker } from './worker';
 
 // Real Postgres + NATS (pnpm dev:deps). pg-boss and the outbox live in this file's own isolated database.
 let worker: Worker;
+let boss: PgBoss;
+let configuration: ConfigurationService;
 let iso: IsolatedDatabase;
 beforeAll(async () => {
   iso = await createIsolatedDatabase();
@@ -20,7 +23,9 @@ beforeAll(async () => {
       OUTBOX_POLL_INTERVAL_MS: '100',
     },
   });
-  worker = new Worker({ cfg, database: iso.database, nats: new NatsClient(cfg), boss: new PgBoss({ connectionString: iso.url, max: 3 }) });
+  boss = new PgBoss({ connectionString: iso.url, max: 3 });
+  configuration = new ConfigurationService({ database: iso.database, env: 'test', allowTestKeys: true });
+  worker = new Worker({ cfg, database: iso.database, nats: new NatsClient(cfg), boss, configuration });
   await worker.start();
 });
 afterAll(async () => {
@@ -35,6 +40,31 @@ describe('worker (integration)', () => {
   it('round-trips an infrastructure job, event and outbox-relayed event with correlation', async () => {
     const r = await worker.selfTest();
     expect(r).toMatchObject({ job: true, event: true, outbox: true });
+  });
+  it('activates a scheduled configuration change through the durable job', async () => {
+    await configuration.createParameter(
+      { key: 'devtest.job.value', dataType: 'INTEGER', description: 'job test', ownerRole: 'platform', approvalPolicy: 'NONE', allowedOverrideScopes: [] },
+      'actor',
+    );
+    const publish = async (value: number, from?: Date) => {
+      const cr = await configuration.createChangeRequest(
+        { parameterKey: 'devtest.job.value', scopeType: 'PLATFORM', value, effectiveFrom: from?.toISOString(), reason: 'job' },
+        'actor',
+      );
+      await configuration.submit(cr.changeRequestId, 'actor');
+      return configuration.publish(cr.changeRequestId, 'actor');
+    };
+    await publish(1);
+    const scheduled = await publish(2, new Date(Date.now() + 1000));
+    expect(scheduled.state).toBe('SCHEDULED');
+    await new Promise((r) => setTimeout(r, 1300));
+    await boss.send('configuration.activate-due', {}); // the cron sweep would do this every minute
+    let state = scheduled.state as string;
+    for (let i = 0; i < 40 && state !== 'ACTIVE'; i++) {
+      await new Promise((r) => setTimeout(r, 250));
+      state = (await configuration.getChangeRequest(scheduled.changeRequestId)).state;
+    }
+    expect(state).toBe('ACTIVE');
   });
   it('stops gracefully and then reports not ready', async () => {
     const t = Date.now();

@@ -3,7 +3,7 @@ asyncapi: 3.0.0
 info:
   title: BananaGig Events
   version: 1.0.0
-  description: Event contract. Only the generic envelope and an infrastructure self-test event exist; product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.
+  description: Event contract. The generic envelope, the infrastructure self-test event and the configuration registry events exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.
 defaultContentType: application/json
 channels:
   infraPing:
@@ -12,12 +12,67 @@ channels:
     messages:
       infraPing:
         $ref: "#/components/messages/EventEnvelope"
+  configuration_changeRequested:
+    address: bananagig.configuration.change-requested.v1
+    description: A configuration change was submitted for approval. Published through the transactional outbox; payload carries identifiers only, never values.
+    messages:
+      ConfigurationChangeRequested:
+        $ref: "#/components/messages/ConfigurationChangeRequested"
+  configuration_changeApproved:
+    address: bananagig.configuration.change-approved.v1
+    description: A configuration change was approved (or auto-approved by policy NONE). Published through the transactional outbox; payload carries identifiers only, never values.
+    messages:
+      ConfigurationChangeApproved:
+        $ref: "#/components/messages/ConfigurationChangeApproved"
+  configuration_changeRejected:
+    address: bananagig.configuration.change-rejected.v1
+    description: A configuration change was rejected. Published through the transactional outbox; payload carries identifiers only, never values.
+    messages:
+      ConfigurationChangeRejected:
+        $ref: "#/components/messages/ConfigurationChangeRejected"
+  configuration_scheduled:
+    address: bananagig.configuration.scheduled.v1
+    description: An approved change was published with a future effective time. Published through the transactional outbox; payload carries identifiers only, never values.
+    messages:
+      ConfigurationScheduled:
+        $ref: "#/components/messages/ConfigurationScheduled"
+  configuration_activated:
+    address: bananagig.configuration.activated.v1
+    description: A configuration change became effective. Published through the transactional outbox; payload carries identifiers only, never values.
+    messages:
+      ConfigurationActivated:
+        $ref: "#/components/messages/ConfigurationActivated"
 operations:
   receiveInfraPing:
     action: receive
     channel:
       $ref: "#/channels/infraPing"
     summary: Worker consumes the infrastructure ping
+  sendConfigurationChangeRequested:
+    action: send
+    channel:
+      $ref: "#/channels/configuration_changeRequested"
+    summary: A configuration change was submitted for approval.
+  sendConfigurationChangeApproved:
+    action: send
+    channel:
+      $ref: "#/channels/configuration_changeApproved"
+    summary: A configuration change was approved (or auto-approved by policy NONE).
+  sendConfigurationChangeRejected:
+    action: send
+    channel:
+      $ref: "#/channels/configuration_changeRejected"
+    summary: A configuration change was rejected.
+  sendConfigurationScheduled:
+    action: send
+    channel:
+      $ref: "#/channels/configuration_scheduled"
+    summary: An approved change was published with a future effective time.
+  sendConfigurationActivated:
+    action: send
+    channel:
+      $ref: "#/channels/configuration_activated"
+    summary: A configuration change became effective.
 components:
   messages:
     EventEnvelope:
@@ -30,6 +85,56 @@ components:
             type: string
       payload:
         $ref: "#/components/schemas/EventEnvelope"
+    ConfigurationChangeRequested:
+      name: ConfigurationChangeRequested
+      title: A configuration change was submitted for approval.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/ConfigurationChangeRequested"
+    ConfigurationChangeApproved:
+      name: ConfigurationChangeApproved
+      title: A configuration change was approved (or auto-approved by policy NONE).
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/ConfigurationChangeApproved"
+    ConfigurationChangeRejected:
+      name: ConfigurationChangeRejected
+      title: A configuration change was rejected.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/ConfigurationChangeRejected"
+    ConfigurationScheduled:
+      name: ConfigurationScheduled
+      title: An approved change was published with a future effective time.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/ConfigurationScheduled"
+    ConfigurationActivated:
+      name: ConfigurationActivated
+      title: A configuration change became effective.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/ConfigurationActivated"
   schemas:
     EventEnvelope:
       type: object
@@ -81,6 +186,466 @@ components:
           propertyNames:
             type: string
           additionalProperties: {}
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    ConfigurationChangeRequested:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.configuration.change-requested.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            changeRequestId:
+              type: string
+            parameterKey:
+              type: string
+            scopeType:
+              type: string
+              enum:
+                - PLATFORM
+                - COUNTRY
+                - MARKET
+                - CATEGORY
+                - PLAN
+                - PROVIDER
+                - GIG
+                - DROP
+            scopeRef:
+              type:
+                - string
+                - "null"
+            effectiveFrom:
+              type: string
+            version:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
+          required:
+            - changeRequestId
+            - parameterKey
+            - scopeType
+            - scopeRef
+            - effectiveFrom
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    ConfigurationChangeApproved:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.configuration.change-approved.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            changeRequestId:
+              type: string
+            parameterKey:
+              type: string
+            scopeType:
+              type: string
+              enum:
+                - PLATFORM
+                - COUNTRY
+                - MARKET
+                - CATEGORY
+                - PLAN
+                - PROVIDER
+                - GIG
+                - DROP
+            scopeRef:
+              type:
+                - string
+                - "null"
+            effectiveFrom:
+              type: string
+            version:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
+          required:
+            - changeRequestId
+            - parameterKey
+            - scopeType
+            - scopeRef
+            - effectiveFrom
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    ConfigurationChangeRejected:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.configuration.change-rejected.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            changeRequestId:
+              type: string
+            parameterKey:
+              type: string
+            scopeType:
+              type: string
+              enum:
+                - PLATFORM
+                - COUNTRY
+                - MARKET
+                - CATEGORY
+                - PLAN
+                - PROVIDER
+                - GIG
+                - DROP
+            scopeRef:
+              type:
+                - string
+                - "null"
+            effectiveFrom:
+              type: string
+            version:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
+          required:
+            - changeRequestId
+            - parameterKey
+            - scopeType
+            - scopeRef
+            - effectiveFrom
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    ConfigurationScheduled:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.configuration.scheduled.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            changeRequestId:
+              type: string
+            parameterKey:
+              type: string
+            scopeType:
+              type: string
+              enum:
+                - PLATFORM
+                - COUNTRY
+                - MARKET
+                - CATEGORY
+                - PLAN
+                - PROVIDER
+                - GIG
+                - DROP
+            scopeRef:
+              type:
+                - string
+                - "null"
+            effectiveFrom:
+              type: string
+            version:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
+          required:
+            - changeRequestId
+            - parameterKey
+            - scopeType
+            - scopeRef
+            - effectiveFrom
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    ConfigurationActivated:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.configuration.activated.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            changeRequestId:
+              type: string
+            parameterKey:
+              type: string
+            scopeType:
+              type: string
+              enum:
+                - PLATFORM
+                - COUNTRY
+                - MARKET
+                - CATEGORY
+                - PLAN
+                - PROVIDER
+                - GIG
+                - DROP
+            scopeRef:
+              type:
+                - string
+                - "null"
+            effectiveFrom:
+              type: string
+            version:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
+          required:
+            - changeRequestId
+            - parameterKey
+            - scopeType
+            - scopeRef
+            - effectiveFrom
+          additionalProperties: false
       required:
         - eventId
         - eventType

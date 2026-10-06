@@ -138,7 +138,12 @@ describe('Authorization Code + PKCE end to end', () => {
     const { tokens } = await codeFlow('bananagig-admin', ADMIN_REDIRECT_URI, 'admin');
     const p = await verifier.verifyAccessToken(tokens.accessToken);
     expect(p).toMatchObject({ clientId: 'bananagig-admin', authContext: 'admin', realmRoles: [] });
-    expect(p.clientRoles['bananagig-admin']).toEqual(['admin-console-access']);
+    expect([...p.clientRoles['bananagig-admin']!].sort()).toEqual([
+      'admin-console-access',
+      'configuration-approve',
+      'configuration-read',
+      'configuration-write',
+    ]);
     expect(p.expiresAt - p.issuedAt).toBeLessThanOrEqual(180);
     expect(tokens.expiresIn).toBeLessThanOrEqual(180);
   });

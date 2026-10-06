@@ -114,3 +114,25 @@ Rollback: not applicable
 
 Reason: identity infrastructure only (Keycloak realm, token validation, web session in Valkey); the user/profile model and the external identity mapping are deferred to ID-001
 
+## CFG-001
+
+Migration: db/migrations/0004_configuration_registry.sql
+Added: extension `btree_gist`; schema `configuration`; tables `scope_levels` (seeded with the 8 canonical scope levels), `parameters`, `parameter_scopes`, `parameter_values`, `value_versions`, `change_requests`, `change_approvals`, `snapshots`, `snapshot_items`, `audit_events`; guard functions and triggers (immutability, workflow transitions, no self-approval, parameter identity)
+Changed: none
+Removed: none
+Renamed: none
+
+Relationships: `parameter_scopes -> parameters, scope_levels`; `parameter_values -> parameter_scopes (parameter_id, scope_type)`; `value_versions -> parameter_values`; `change_requests -> parameter_scopes, value_versions`; `change_approvals -> change_requests`; `snapshot_items -> snapshots, parameters, value_versions`; `audit_events -> parameters, change_requests, value_versions`. `scope_ref` deliberately has no foreign key
+
+Constraints: unique key per parameter; typed/enumerated check constraints on data type, sensitivity, approval policy, criticality, state, decision, action; `PLATFORM` takes no scope reference; half-open validity `effective_to > effective_from`; exclusion constraint `ex_value_versions__no_overlap` (gist, per holder); unique `(parameter_value_id, version)`; one decision per approver per request; published states require a version (`ck_change_requests__published_has_version`)
+
+Indexes: `idx_value_versions__holder_effective` (resolution), `idx_change_requests__pending` (partial), `idx_change_requests__scheduled` (partial), `idx_change_requests__parameter` (history), `idx_audit_events__parameter`, `idx_audit_events__change_request` (partial); unique/exclusion constraint indexes
+
+Backfill: none. `scope_levels` is structural reference data seeded by the migration
+
+Compatibility: new schema only; `integration.outbox_events` is reused for the five configuration events
+
+Rollback: forward-fix only; locally rebuild from zero
+
+Reason: central versioned configuration registry required by every later domain (cancellation windows, review windows, Banana unit rules, retry policies) with no hardcoded business values
+

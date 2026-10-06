@@ -65,3 +65,23 @@ describe('job correlation', () => {
     expect(seen).toBe('corr-abcdef123');
   });
 });
+
+describe('configuration activation job', () => {
+  it('registers a durable queue, a minute schedule and an idempotent handler', async () => {
+    const { registerConfigurationJobs, CONFIGURATION_ACTIVATION_QUEUE, CONFIGURATION_ACTIVATION_CRON } = await import('./jobs/configuration');
+    const handlers: Record<string, (jobs: unknown[]) => Promise<void>> = {};
+    const boss = {
+      createQueue: vi.fn(),
+      schedule: vi.fn(),
+      work: vi.fn(async (name: string, _o: unknown, h: (jobs: unknown[]) => Promise<void>) => void (handlers[name] = h)),
+    };
+    const activateDue = vi.fn().mockResolvedValueOnce(2).mockResolvedValueOnce(0);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await registerConfigurationJobs(boss as any, { activateDue } as any);
+    expect(boss.createQueue).toHaveBeenCalledWith(CONFIGURATION_ACTIVATION_QUEUE);
+    expect(boss.schedule).toHaveBeenCalledWith(CONFIGURATION_ACTIVATION_QUEUE, CONFIGURATION_ACTIVATION_CRON);
+    await handlers[CONFIGURATION_ACTIVATION_QUEUE]!([{ id: '1', data: null }]);
+    await handlers[CONFIGURATION_ACTIVATION_QUEUE]!([{ id: '2', data: null }]); // running again with nothing due is harmless
+    expect(activateDue).toHaveBeenCalledTimes(2);
+  });
+});

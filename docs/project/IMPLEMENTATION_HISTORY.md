@@ -196,3 +196,38 @@ ADR-0013 (Keycloak and data ownership), ADR-0014 (PKCE and server-side session),
 ### Known follow-up
 DEBT-0016 to DEBT-0020. Built-in `admin-cli` password grant found and disabled (LRN-0014).
 
+
+## CFG-001 — 2026-10-05
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(CFG-001)"`.
+Summary: Generic configuration registry with no business parameters: typed parameters, a scope hierarchy (PLATFORM to DROP), immutable effective-dated versions with database overlap prevention, change requests with approval policies (including second approver), scheduled activation, immutable snapshots, append-only audit, outbox events, and a cached resolver with last-known-good for non-critical parameters.
+
+### Delivered
+- Migration `0004_configuration_registry.sql`: schema `configuration`, 10 tables, `btree_gist`, exclusion constraint `ex_value_versions__no_overlap`, immutability and workflow guard triggers, seeded `scope_levels`
+- `packages/configuration`: `ConfigurationService`, 3-query batch resolver, Valkey and in-memory cache, value validation for 8 data types
+- `packages/contracts`: configuration contracts and event payloads; `envelope.ts` split out to avoid a cycle
+- API module `/api/v1/configuration` (parameters, resolve, snapshots, change requests with submit/approve/reject/cancel/publish), guards `requireConfigurationPermission(read|write|approve)`, redaction of SENSITIVE values
+- Worker job `configuration.activate-due` (cron every minute)
+- Keycloak: admin client roles `configuration-read/write/approve`; second dev admin `admin2.dev`
+- OpenAPI and AsyncAPI regenerated (five configuration events); smoke grew to 28 checks (two real admin PKCE logins, self-approval refused)
+- Migration integration tests no longer hardcode the latest migration number
+- Docs: `docs/engineering/CONFIGURATION.md`; ADR-0016, ADR-0017; skill `skills/configuration`; data-model documents
+
+### Schema
+New schema `configuration` (10 tables); see `docs/data/DATA_MODEL_CHANGELOG.md` and `NORMALIZATION_LOG.md` (CFG-001). `docs/design/` (brand kit) is excluded from tooling through `.git/info/exclude` and is not part of this checkpoint.
+
+### Contracts
+OpenAPI: 12 configuration operations. AsyncAPI: `bananagig.configuration.change-requested|change-approved|change-rejected|scheduled|activated.v1`.
+
+### Tests
+Unit 116, root script tests 59, integration 133, smoke 28 checks.
+
+### Skills updated
+New `skills/configuration`; updated `database`, `api`, `worker`, `testing`, `identity`.
+
+### ADRs
+ADR-0016 (registry design), ADR-0017 (cache, last-known-good, temporary permissions).
+
+### Known follow-up
+DEBT-0021 to DEBT-0025. LRN-0015 to LRN-0017.

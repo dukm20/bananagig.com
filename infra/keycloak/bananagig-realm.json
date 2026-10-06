@@ -57,6 +57,18 @@
         {
           "name": "admin-console-access",
           "description": "Allows signing in to the admin console client. Business admin permissions live in application data."
+        },
+        {
+          "name": "configuration-read",
+          "description": "TEMPORARY infrastructure permission: read the configuration registry (internal API). To be mapped to application permissions."
+        },
+        {
+          "name": "configuration-write",
+          "description": "TEMPORARY infrastructure permission: create parameters and change requests. To be mapped to application permissions."
+        },
+        {
+          "name": "configuration-approve",
+          "description": "TEMPORARY infrastructure permission: approve or reject configuration changes. To be mapped to application permissions."
         }
       ]
     }
@@ -82,7 +94,10 @@
       {
         "client": "bananagig-admin",
         "roles": [
-          "admin-console-access"
+          "admin-console-access",
+          "configuration-read",
+          "configuration-write",
+          "configuration-approve"
         ]
       }
     ]
@@ -477,13 +492,44 @@
       "lastName": "Admin",
       "clientRoles": {
         "bananagig-admin": [
-          "admin-console-access"
+          "admin-console-access",
+          "configuration-read",
+          "configuration-write",
+          "configuration-approve"
         ]
       },
       "credentials": [
         {
           "type": "password",
           "value": "dev_only_admin_password",
+          "temporary": false
+        }
+      ],
+      "attributes": {
+        "bananagig.devOnly": [
+          "true"
+        ]
+      }
+    },
+    {
+      "username": "admin2.dev",
+      "email": "admin2.dev@bananagig.localhost",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Dev",
+      "lastName": "AdminTwo",
+      "clientRoles": {
+        "bananagig-admin": [
+          "admin-console-access",
+          "configuration-read",
+          "configuration-write",
+          "configuration-approve"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "dev_only_admin2_password",
           "temporary": false
         }
       ],

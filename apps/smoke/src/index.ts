@@ -384,6 +384,89 @@ await check('Web App session', async () => {
   return 'PKCE login -> opaque HttpOnly cookie -> API call with session token -> CSRF-safe logout';
 });
 
+await check('Configuration Registry', async () => {
+  // DEV/TEST-only records (devtest.* keys are refused in production). Two real administrators, real PKCE logins, real HTTP.
+  const tokenFor = async (user: keyof typeof DEV_USERS): Promise<string> => {
+    const login = await authorizationCodeLogin(kc, { clientId: 'bananagig-admin', redirectUri: ADMIN_REDIRECT_URI, ...DEV_USERS[user] });
+    return (
+      await exchangeAuthorizationCode({
+        tokenEndpoint: ep.token,
+        clientId: 'bananagig-admin',
+        redirectUri: ADMIN_REDIRECT_URI,
+        code: login.code,
+        codeVerifier: login.verifier,
+      })
+    ).accessToken;
+  };
+  const [a, b] = [await tokenFor('admin'), await tokenFor('admin2')];
+  const call = async (token: string, method: 'GET' | 'POST', path: string, body?: unknown, okStatuses = [200, 201]) => {
+    const r = await get(`${api}/api/v1/configuration${path}`, {
+      method,
+      headers: { authorization: `Bearer ${token}`, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    const json = (await r.json().catch(() => ({}))) as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    if (!okStatuses.includes(r.status)) throw new Error(`${method} ${path} -> ${r.status} ${json?.error?.code ?? ''}`);
+    return { status: r.status, json };
+  };
+  const key = 'devtest.smoke.window_hours';
+  // 1. create the test parameter (idempotent across runs)
+  await call(
+    a,
+    'POST',
+    '/parameters',
+    {
+      key,
+      dataType: 'INTEGER',
+      description: 'DEV/TEST ONLY smoke parameter',
+      ownerRole: 'platform',
+      approvalPolicy: 'SECOND_APPROVER',
+      validationRules: { min: 1, max: 1000 },
+      allowedOverrideScopes: ['MARKET'],
+    },
+    [201, 409],
+  );
+  // publishes a value through the full second-approver workflow
+  let selfApprovalChecked = false;
+  const publish = async (scopeType: 'PLATFORM' | 'MARKET', scopeRef: string | null, value: number): Promise<void> => {
+    const cr = (await call(a, 'POST', '/change-requests', { parameterKey: key, scopeType, scopeRef, value, reason: 'smoke test' })).json.data
+      .changeRequestId as string;
+    await call(a, 'POST', `/change-requests/${cr}/submit`, {});
+    if (!selfApprovalChecked) {
+      await call(a, 'POST', `/change-requests/${cr}/approve`, {}, [403]); // the requester cannot approve their own change
+      selfApprovalChecked = true;
+    }
+    await call(b, 'POST', `/change-requests/${cr}/approve`, {});
+    await call(a, 'POST', `/change-requests/${cr}/publish`, {});
+  };
+  const base = 10 + (Date.now() % 500);
+  await publish('PLATFORM', null, base); // 2. platform value
+  await publish('MARKET', 'smoke-market', base + 1); // 3. market override
+  const resolve = async (market?: string) =>
+    (await call(a, 'POST', '/resolve', { keys: [key], context: market ? { market } : {} })).json.data.values[0] as {
+      value: number;
+      sourceScope: string;
+      version: number;
+    };
+  const inMarket = await resolve('smoke-market'); // 4. resolve with market context
+  if (inMarket.value !== base + 1 || inMarket.sourceScope !== 'MARKET') throw new Error('market override did not win'); // 5.
+  const elsewhere = await resolve('other-market');
+  if (elsewhere.value !== base || elsewhere.sourceScope !== 'PLATFORM') throw new Error('platform value should apply outside the override market');
+  const snap = (await call(a, 'POST', '/snapshots', { keys: [key], context: { market: 'smoke-market' }, purpose: 'smoke test' })).json.data; // 6.
+  await publish('MARKET', 'smoke-market', base + 2); // 7. change active configuration
+  const now = await resolve('smoke-market');
+  if (now.value !== base + 2) throw new Error('new market value is not effective');
+  const again = (await call(a, 'GET', `/snapshots/${snap.snapshotId}`)).json.data; // 8. old snapshot unchanged
+  if (again.items[0].value !== base + 1 || again.items[0].version !== inMarket.version) throw new Error('snapshot changed after a configuration change');
+  // access control: a customer-style token and an unauthenticated call are refused
+  const anon = await get(`${api}/api/v1/configuration/parameters`);
+  if (anon.status !== 401) throw new Error(`configuration API must require authentication (got ${anon.status})`);
+  const customerToken = await devAccessToken(kc, 'customer');
+  const forbidden = await get(`${api}/api/v1/configuration/parameters`, { headers: { authorization: `Bearer ${customerToken}` } });
+  if (forbidden.status !== 403) throw new Error(`customer token must be forbidden (got ${forbidden.status})`);
+  return `second-approver workflow, market override beat platform (${base + 1} vs ${base}), snapshot kept ${base + 1} after change to ${base + 2}`;
+});
+
 // Caddy routes are exercised exactly as a browser would reach them (Host header), from inside the network.
 const proxy = (host: string, path: string, method = 'GET'): Promise<{ status: number; body: string }> =>
   new Promise((resolve, reject) => {
@@ -444,6 +527,7 @@ const order = [
   'API Service auth',
   'Web App session',
   'Caddy Proxy auth routes',
+  'Configuration Registry',
   'NATS Events',
   'JetStream',
   'SeaweedFS Storage',

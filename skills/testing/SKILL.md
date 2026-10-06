@@ -63,6 +63,7 @@ Schema changes also need constraint-violation and rollback tests, and the data-m
 
 - Vitest 5 is required; vitest 3 pulled critical `tinypool` advisories (`docs/security/SCAN_RESULTS.md`).
 - Governance scripts are tested against scratch git repositories in `scripts/governance.test.mjs`.
+- Tests that copy the real migrations must derive numbering from the directory, not hardcode the latest version. Use isolated databases for anything that mutates shared timelines (activation, concurrency). Use `devtest.*` parameter keys, which exist only when `allowTestKeys` is on. The real-Valkey cache test self-skips when Valkey is unreachable; say so in reports.
 
 ## Do not
 
@@ -76,4 +77,4 @@ ADR-0004, ADR-0006
 
 ## Last reviewed
 
-2026-10-05 (INF-004)
+2026-10-05 (CFG-001)

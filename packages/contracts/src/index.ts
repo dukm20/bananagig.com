@@ -39,7 +39,8 @@ export const ErrorResponse = z.object({
 export type ErrorResponse = z.infer<typeof ErrorResponse>;
 
 // ---- success envelope for /api/v1 ----
-export const envelope = <T extends z.ZodType>(data: T) => z.object({ data, meta: z.object({ correlationId: z.string() }) });
+import { envelope } from './envelope';
+export { envelope };
 
 // ---- system DTOs ----
 export const HealthResponse = z.object({ status: z.literal('ok'), service: z.string() });
@@ -107,3 +108,4 @@ export const INFRA_PING_QUEUE = 'infra.ping';
 /** Metadata carried by background jobs so correlation survives the HTTP -> job hop. */
 export const JobMeta = z.object({ correlationId: z.string() });
 export type JobMeta = z.infer<typeof JobMeta>;
+export * from './configuration';

@@ -3,6 +3,7 @@ import { loadConfig, redactConfig } from '@bananagig/config';
 import { createDatabase, PG_BOSS_POOL_MAX } from '@bananagig/database';
 import { createDbTelemetry, getCorrelationId, registerPoolMetrics, initObservability, log, shutdownObservability } from '@bananagig/observability';
 import { NatsClient, closeValkey, createS3, createValkey, runDiagnostics, startHealthServer } from '@bananagig/platform';
+import { ConfigurationService, ValkeyConfigCache } from '@bananagig/configuration';
 import { Worker } from './worker';
 
 const cfg = loadConfig({ service: 'bananagig-worker', role: 'worker' });
@@ -15,7 +16,16 @@ registerPoolMetrics('worker', () => database.poolStats());
 const nats = new NatsClient(cfg);
 const valkey = createValkey(cfg);
 const s3 = createS3(cfg);
+const configuration = new ConfigurationService({
+  database,
+  cache: new ValkeyConfigCache(valkey),
+  env: cfg.env,
+  cacheTtlSeconds: cfg.configuration.cacheTtlSeconds,
+  lkgMaxAgeSeconds: cfg.configuration.lkgMaxAgeSeconds,
+  allowTestKeys: cfg.env !== 'production',
+});
 const worker = new Worker({
+  configuration,
   cfg,
   database,
   nats,

@@ -2,6 +2,7 @@ import { loadConfig, redactConfig } from '@bananagig/config';
 import { createDatabase } from '@bananagig/database';
 import { createDbTelemetry, getCorrelationId, registerPoolMetrics, initObservability, log, shutdownObservability } from '@bananagig/observability';
 import { NatsClient, closeValkey, createS3, createValkey, runDiagnostics } from '@bananagig/platform';
+import { ConfigurationService, ValkeyConfigCache } from '@bananagig/configuration';
 import { createTokenVerifier } from '@bananagig/identity';
 import { buildApp } from './app';
 
@@ -25,9 +26,19 @@ const verifier = createTokenVerifier({
   adminClientId: cfg.identity.adminClientId,
 });
 
+const configuration = new ConfigurationService({
+  database,
+  cache: new ValkeyConfigCache(valkey),
+  env: cfg.env,
+  cacheTtlSeconds: cfg.configuration.cacheTtlSeconds,
+  lkgMaxAgeSeconds: cfg.configuration.lkgMaxAgeSeconds,
+  allowTestKeys: cfg.env !== 'production', // devtest.* keys are DEV/TEST only
+});
+
 const app = await buildApp({
   cfg,
   verifier,
+  configuration,
   // Critical for serving requests: Postgres only. Valkey/NATS/OpenSearch/flagd outages must not take the API down.
   readiness: async () => ({ postgres: (await database.health()).ok ? 'up' : 'down' }),
   diagnostics: () => runDiagnostics(adapters),

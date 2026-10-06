@@ -69,6 +69,7 @@ No tables exist or are needed. When accounts are persisted (ID-001) add `identit
 - Keycloak's client-secret endpoint returns `{"type":"secret"}` without a value for public clients; assert on `value`.
 - The public auth host exposes only `/realms/bananagig/*` and `/resources/*`; the dev admin console is on `keycloak-admin.localhost` (DEV ONLY).
 - Production realm: `pnpm identity:build-prod` (dev client/users removed, https origins, admin OTP required).
+- The admin client carries `configuration-read`, `configuration-write` and `configuration-approve` plus the original admin role; dev users `admin.dev` and `admin2.dev` hold all of them so second-approver flows can be exercised. These client roles are temporary access control until application RBAC exists (DEBT-0021).
 
 ## Do not
 
@@ -85,4 +86,4 @@ ADR-0013, ADR-0014, ADR-0015
 
 ## Last reviewed
 
-2026-10-05 (INF-004)
+2026-10-05 (CFG-001)

@@ -64,6 +64,7 @@ pg-boss owns the `pgboss` schema; never query or alter it directly. Handlers tha
 - Core NATS publish cannot de-duplicate or acknowledge; relays must use JetStream and mark rows published only after the ack (LRN-0012).
 - Stream `BANANAGIG_EVENTS` (subjects `bananagig.>`) is ensured by the worker at startup.
 - Unreachable OTLP endpoint must not delay exit (`shutdownObservability` is bounded to 3 s).
+- `apps/worker/src/jobs/configuration.ts` registers `configuration.activate-due` with a one-minute pg-boss schedule. A job is a safety net: business correctness must not depend on it running on time (ADR-0016). Jobs are registered in `start()` and take the service as an optional dependency.
 
 ## Do not
 
@@ -77,4 +78,4 @@ ADR-0002, ADR-0009, ADR-0012
 
 ## Last reviewed
 
-2026-10-05 (INF-003)
+2026-10-05 (CFG-001)

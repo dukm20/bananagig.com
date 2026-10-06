@@ -116,3 +116,44 @@ No change.
 ### Final decision
 No schema change; `pnpm data-model:check INF-004` confirms an unchanged snapshot. The future `identity.external_identities` design (unique provider + subject) is documented in `docs/engineering/IDENTITY.md` and will go through the full gate with ID-001.
 
+
+## CFG-001
+
+Tables reviewed: all new, in schema `configuration`: `scope_levels`, `parameters`, `parameter_scopes`, `parameter_values`, `value_versions`, `change_requests`, `change_approvals`, `snapshots`, `snapshot_items`, `audit_events`. Reused: `integration.outbox_events` (five new event types; no change).
+
+### 1NF
+PASS. Every column is an atomic scalar except three deliberate JSON documents (see intentional denormalization): `parameters.validation_rules`, `value_versions.value` / `change_requests.proposed_value`, `snapshots.context`. None is a repeating group; each is a single typed document read back whole. The allowed scope levels of a parameter are NOT an array on `parameters`; they are rows in `parameter_scopes`.
+
+### 2NF
+PASS. Composite keys: `parameter_scopes (parameter_id, scope_type)` has no non-key columns; `snapshot_items (snapshot_id, parameter_id)` has only `version_id`, which depends on the whole key. Every other table has a single-column surrogate key.
+
+### 3NF
+PASS. No transitive dependencies. Value history is separate from the holder (`parameter_values` -> `value_versions`) so scope identity is not repeated per version. Parameter definition attributes (type, sensitivity, criticality) live only on `parameters`; they are not repeated on values or versions. The scope rank lives only on `scope_levels`; the resolver joins it instead of copying it onto values.
+
+### BCNF
+PASS. Every determinant is a candidate key. Candidate keys checked: `parameters.key`; `scope_levels.rank`; `parameter_values (parameter_id, scope_type, scope_ref)` (NULLS NOT DISTINCT); `value_versions (parameter_value_id, version)` and the no-overlap period per holder; `change_requests.value_version_id`; `change_approvals (change_request_id, approver)`.
+
+### Duplicate concepts examined
+- Default value vs PLATFORM value: a `default_value` column on `parameters` would duplicate the PLATFORM-scope value and drift. Omitted; the PLATFORM version is the default.
+- Allowed scope levels vs existing values: `parameter_scopes` is the single source for what is allowed; values and change requests reference it through a composite foreign key rather than re-validating in code only.
+- Current value vs history: no "current value" column exists anywhere. Current is derived from effective dates at resolution time, so it cannot go stale.
+- Snapshot copy vs pointer: items point at immutable versions instead of copying values.
+- Audit vs change request history: `audit_events` records actions (who/when/which version), while `change_requests` and `change_approvals` hold request content and decisions; values are not copied into audit.
+
+### Derived fields examined
+- Active/scheduled status of a version: derived from `effective_from/effective_to` and `now()`, not stored.
+- `change_requests.state` ACTIVE/SUPERSEDED is a workflow marker moved by the activation job and by supersession; resolution never depends on it (the resolver uses timestamps only), so a delayed job cannot produce a wrong value.
+- `value_versions.effective_to` of a predecessor equals the `effective_from` of its successor. This is stored (see below).
+
+### Intentional denormalization
+1. `change_requests.approval_policy`: copy of `parameters.approval_policy` at request time. The policy that governed a request must not change retroactively when the parameter is edited. Frozen after DRAFT by trigger.
+2. `value_versions.effective_to`: derivable from the successor's `effective_from`. Stored so a database exclusion constraint (`ex_value_versions__no_overlap`, gist) can make overlapping validity impossible. Closed exactly once, by the publisher in the same transaction as the successor insert; trigger-guarded; verified by tests.
+3. JSON columns `validation_rules`, `value`/`proposed_value`, `context`: the shape depends on `data_type` or is an input copy; never queried relationally; validated by the service against the definition before insert, object-type checked in the database.
+4. `parameter_values.scope_ref` / `change_requests.scope_ref` have no foreign key: the referenced entities (markets, categories, providers) do not exist yet and the registry must not depend on domain tables. The scope LEVEL is enforced by foreign key; the existence of the referenced entity is validated by the owning domain when it exists (DEBT-0024).
+5. `change_requests.scope_type/scope_ref` repeat the holder identity: the holder does not exist until publish, so the request must carry the target itself.
+
+### Index review
+Primary and unique keys cover identity lookups and the foreign key from `parameter_scopes`. Added: `idx_value_versions__holder_effective (parameter_value_id, effective_from DESC)` for resolution (candidate versions by time; the resolver runs 3 queries per batch); partial `idx_change_requests__pending` and `idx_change_requests__scheduled` (small, serve the approver queue and the activation job); `idx_change_requests__parameter (parameter_id, created_at DESC)` for history; `idx_audit_events__parameter (parameter_id, occurred_at DESC)` and partial `idx_audit_events__change_request`. The exclusion constraint adds a gist index used for overlap checks. Foreign-key indexes: `parameter_values`/`change_requests` are covered by the composite keys and `uq_parameter_values__parameter_scope_ref`; `change_approvals` by `uq_change_approvals__request_approver`; `snapshot_items` by its primary key (snapshot) and the immutable version pointer (low volume, no reverse lookups yet); `audit_events.old/new_version_id` are not indexed (no lookup path). No speculative indexes.
+
+### Final decision
+Schema accepted. Ownership: all ten tables application-owned in schema `configuration`. Nullability reviewed (only genuinely optional columns nullable). Immutable historical state: `value_versions` (only a one-time closure), `change_approvals`, `snapshots`, `snapshot_items`, `audit_events` are immutable by trigger; `change_requests` content frozen after DRAFT and transitions guarded; parameters and change requests are never deleted. Concurrency: publish takes row locks on the holder and relies on the exclusion constraint as the final arbiter; approvals are unique per approver; activation is idempotent. Configuration vs schema: no business parameters or values are seeded; `scope_levels` is structural reference data. Retention: all history retained (no purge).

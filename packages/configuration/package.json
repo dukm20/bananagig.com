@@ -1,0 +1,24 @@
+{
+  "name": "@bananagig/configuration",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@bananagig/contracts": "workspace:*",
+    "@bananagig/database": "workspace:*",
+    "@bananagig/observability": "workspace:*",
+    "@bananagig/platform": "workspace:*",
+    "ajv": "^8.20.0"
+  },
+  "devDependencies": {
+    "@bananagig/testing": "workspace:*",
+    "iovalkey": "^0.4.0"
+  }
+}

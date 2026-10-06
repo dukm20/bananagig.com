@@ -78,6 +78,7 @@ This skill is the data-model process: see the review gate above, `DATABASE_CONVE
 - Core NATS publish cannot de-duplicate; the outbox relay uses JetStream message ids (LRN-0012).
 - PostgreSQL 17 has no `uuidv7()`; revisit the key default on PostgreSQL 18 (ADR-0011).
 - Local dev runs the app as the Postgres superuser (DEV ONLY, DEBT-0012); the target least-privilege role model is in `DATABASE_CONVENTIONS.md`.
+- For history that must be immutable and non-overlapping, store a half-open range, add a gist exclusion constraint (`btree_gist`), and allow exactly one closure of the open end through a guard trigger (LRN-0015, ADR-0016). Reference tables for structural enums (for example `configuration.scope_levels`) are seeded by migration; business values are never seeded.
 
 ## Do not
 
@@ -94,4 +95,4 @@ ADR-0001, ADR-0004, ADR-0008, ADR-0009, ADR-0010, ADR-0011, ADR-0012
 
 ## Last reviewed
 
-2026-10-05 (INF-003)
+2026-10-05 (CFG-001)

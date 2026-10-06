@@ -24,7 +24,7 @@ beforeAll(async () => {
     webClientId: 'bananagig-web',
     adminClientId: 'bananagig-admin',
   });
-  app = await buildApp({ cfg, verifier, readiness: async () => ({}) });
+  app = await buildApp({ cfg, verifier, configuration: {} as never, readiness: async () => ({}) });
   app.get('/__guard/provider', { preHandler: requireRealmRole('provider'), schema: { hide: true } }, async () => ({ ok: true }));
   app.get('/__guard/any', { preHandler: requireAnyRole('provider', 'customer'), schema: { hide: true } }, async () => ({ ok: true }));
   app.get('/__guard/all', { preHandler: requireRealmRole('provider', 'customer'), schema: { hide: true } }, async () => ({ ok: true }));

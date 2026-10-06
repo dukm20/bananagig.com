@@ -28,7 +28,7 @@ beforeAll(async () => {
     webClientId: cfg.identity.webClientId,
     adminClientId: cfg.identity.adminClientId,
   });
-  app = await buildApp({ cfg, verifier, readiness: async () => ({}) });
+  app = await buildApp({ cfg, verifier, configuration: {} as never, readiness: async () => ({}) });
   app.get('/__guard/provider', { preHandler: requireRealmRole('provider'), schema: { hide: true } }, async () => ({ ok: true }));
   await app.ready();
 });
@@ -80,7 +80,7 @@ describe('API with real Keycloak tokens', () => {
       apiAudience: 'bananagig-api',
       jwks: { url: 'http://127.0.0.1:1/certs', timeoutMs: 400 },
     });
-    const a = await buildApp({ cfg, verifier: offline, readiness: async () => ({}) });
+    const a = await buildApp({ cfg, verifier: offline, configuration: {} as never, readiness: async () => ({}) });
     const r = await a.inject({ url: '/api/v1/system/whoami', headers: { authorization: `Bearer ${await devAccessToken(kc, 'customer')}` } });
     expect(r.statusCode).toBe(503);
     expect(ErrorResponse.parse(r.json()).error).toMatchObject({ category: 'DEPENDENCY', code: 'AUTH_PROVIDER_UNAVAILABLE' });

@@ -15,6 +15,8 @@ export const DEV_USERS = {
   customer: { username: 'customer.dev', password: 'dev_only_customer_password' },
   provider: { username: 'provider.dev', password: 'dev_only_provider_password' },
   admin: { username: 'admin.dev', password: 'dev_only_admin_password' },
+  /** A second administrator (same roles) so tests can exercise the second-approver rule. */
+  admin2: { username: 'admin2.dev', password: 'dev_only_admin2_password' },
 } as const;
 
 // ---------------------------------------------------------------- forged tokens (unit tests, no Keycloak needed)

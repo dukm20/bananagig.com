@@ -67,6 +67,7 @@ Services never write SQL in routes. Persistence changes go through the database 
 - NestJS was rejected because esbuild bundling cannot emit decorator metadata (ADR-0006).
 - Correlation id: header `x-correlation-id`, accepted only if it matches `^[A-Za-z0-9._-]{8,128}$`.
 - OpenAPI `security-defined` lint is off until the first protected endpoint exists (`redocly.yaml`).
+- Put authorization guards in `preValidation` so 401 precedes 400 (LRN-0017), keep `removeAdditional: false` so unknown fields are rejected (LRN-0016), and map domain errors through a module `toAppError`. Configuration permissions use `requireConfigurationPermission(read|write|approve)`.
 
 ## Do not
 
@@ -82,4 +83,4 @@ ADR-0006, ADR-0004, ADR-0013
 
 ## Last reviewed
 
-2026-10-05 (INF-004)
+2026-10-05 (CFG-001)
