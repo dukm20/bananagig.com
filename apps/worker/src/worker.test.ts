@@ -16,6 +16,7 @@ const fake = () => {
       }),
     })),
     connected: true,
+    ensureEventStream: vi.fn(),
     close: vi.fn(),
   };
   const database = { health: vi.fn(async () => ({ ok: true })) };

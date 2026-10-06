@@ -255,3 +255,55 @@ When adding a dependency, run a clean `pnpm install --frozen-lockfile` and decid
 
 ### Evidence
 `pnpm-workspace.yaml`.
+
+## LRN-0011 — PostGIS silently coerces out-of-range coordinates
+
+Date: 2026-10-05
+Checkpoint: INF-003
+Domain: database
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/database/SKILL.md
+
+### Context
+Building a point from latitude 91 with `ST_MakePoint(10, 91)::geography` does not fail; PostGIS emits a notice and stores a coerced, valid value.
+
+### Learning
+A CHECK constraint on the stored coordinates cannot detect bad input because the stored value is already in range. Validate latitude (-90..90) and longitude (-180..180) before building the point, at the API boundary, and build points longitude-first.
+
+### Why it matters
+Wrong coordinates would be stored as plausible-looking locations, corrupting distance search with no error anywhere.
+
+### Reuse rule
+Every code path that creates a point validates input first (zod at the boundary); do not rely on the database to reject it.
+
+### Evidence
+`packages/testing/src/postgis.itest.ts` (the coercion test), `docs/data/DATABASE_CONVENTIONS.md` section 9.
+
+
+## LRN-0012 — JetStream de-duplication needs a stream and a message id; core NATS publish has neither
+
+Date: 2026-10-05
+Checkpoint: INF-003
+Domain: worker
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0012
+Related skill: skills/worker/SKILL.md
+
+### Context
+Core NATS `publish` is fire-and-forget: no acknowledgement and no duplicate detection. An outbox relay that retries after a crash would deliver duplicates silently.
+
+### Learning
+Publish through JetStream (`jetstream().publish`) with `msgID` set to the outbox event id, into a stream whose subjects capture the event subjects (`bananagig.>`). The stream's duplicate window drops repeats and the publish ack reports `duplicate: true`. Core subscribers still receive messages on captured subjects.
+
+### Why it matters
+Without an acknowledged publish a row would be marked published even when NATS never stored it, which loses events.
+
+### Reuse rule
+Only mark an outbox row published after a JetStream ack. Keep consumers idempotent by `eventId` because the duplicate window is finite.
+
+### Evidence
+`apps/worker/src/runtime/events.ts`, `packages/platform/src/clients.ts` (`ensureEventStream`), `apps/worker/src/outbox.itest.ts` (duplicate test).
+

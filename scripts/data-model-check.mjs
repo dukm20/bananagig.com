@@ -3,7 +3,8 @@
 // --snapshot supplies a pre-generated snapshot (tests/CI); otherwise one is generated from db/migrations in a scratch database.
 import { readFileSync } from 'node:fs';
 import { snapshotFromMigrations, SNAPSHOT_PATH } from './schema-snapshot.mjs';
-import { Report, changedSince, exists, isGitRepo, migrationFiles, parseArgs, read, run, sections, showAt } from './lib/governance.mjs';
+import { loadMigrations } from './lib/migrator.mjs';
+import { Report, changedSince, exists, isGitRepo, p, parseArgs, read, run, sections, showAt } from './lib/governance.mjs';
 
 const { positional, flag } = parseArgs(process.argv.slice(2));
 const checkpoint = positional[0];
@@ -22,11 +23,8 @@ for (const d of REQUIRED_DOCS) if (!exists(d)) r.fail(`missing ${d}`);
 if (r.errors.length) r.finish();
 
 // ---- 1. migrations: numbering and immutability ----
-const migrations = migrationFiles();
-migrations.forEach((f, i) => {
-  if (!/^\d{4}_[a-z0-9_]+\.sql$/.test(f)) r.fail(`migration name must be NNNN_snake_case.sql: ${f}`);
-  else if (Number(f.slice(0, 4)) !== i + 1) r.fail(`migration numbering must be contiguous from 0001; found ${f} at position ${i + 1}`);
-});
+const { errors: migrationErrors } = loadMigrations(p('db', 'migrations'));
+for (const e of migrationErrors) r.fail(e);
 const changes = isGitRepo() ? changedSince(base) : null;
 const baselineMode = changes === null; // no commit to compare against yet
 const migChanges = [...(changes ?? new Map())].filter(([f]) => f.startsWith('db/migrations/'));

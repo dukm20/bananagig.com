@@ -1,6 +1,6 @@
 import { loadConfig, redactConfig } from '@bananagig/config';
 import { createDatabase } from '@bananagig/database';
-import { dbQueryObserver, getCorrelationId, initObservability, log, shutdownObservability } from '@bananagig/observability';
+import { createDbTelemetry, getCorrelationId, registerPoolMetrics, initObservability, log, shutdownObservability } from '@bananagig/observability';
 import { NatsClient, closeValkey, createS3, createValkey, runDiagnostics } from '@bananagig/platform';
 import { buildApp } from './app';
 
@@ -8,7 +8,9 @@ const cfg = loadConfig({ service: 'bananagig-api', role: 'api' });
 initObservability(cfg);
 log('info', 'starting', { config: redactConfig(cfg) });
 
-const database = createDatabase(cfg.databaseUrl, { onQuery: dbQueryObserver(), correlationIdProvider: getCorrelationId });
+const telemetry = createDbTelemetry({ slowQueryMs: cfg.db.slowQueryMs, logSql: cfg.db.logSql });
+const database = createDatabase(cfg.databaseUrl, { role: 'api', overrides: cfg.db, ...telemetry, correlationIdProvider: getCorrelationId });
+registerPoolMetrics('api', () => database.poolStats());
 const valkey = createValkey(cfg);
 const nats = new NatsClient(cfg);
 const s3 = createS3(cfg);

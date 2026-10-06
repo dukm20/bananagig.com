@@ -35,6 +35,19 @@ const raw = z.object({
   API_INTERNAL_URL: url.optional(),
   WORKER_ID: z.string().optional(),
   WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(64).default(2),
+  // Database pool/telemetry overrides (defaults per role live in @bananagig/database POOL_POLICIES)
+  DB_POOL_MAX: z.coerce.number().int().min(1).max(100).optional(),
+  DB_IDLE_TIMEOUT_MS: z.coerce.number().int().min(0).optional(),
+  DB_CONNECTION_TIMEOUT_MS: z.coerce.number().int().min(100).optional(),
+  DB_STATEMENT_TIMEOUT_MS: z.coerce.number().int().min(0).optional(),
+  DB_SLOW_QUERY_MS: z.coerce.number().int().min(1).default(500),
+  DB_LOG_SQL: z.enum(['true', 'false']).default('false'),
+  // Transactional outbox relay (worker)
+  OUTBOX_RELAY_ENABLED: z.enum(['true', 'false']).default('true'),
+  OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().min(50).default(1000),
+  OUTBOX_BATCH_SIZE: z.coerce.number().int().min(1).max(1000).default(50),
+  OUTBOX_LEASE_MS: z.coerce.number().int().min(1000).default(30000),
+  OUTBOX_RETENTION_DAYS: z.coerce.number().int().min(1).default(7),
 });
 
 // Localhost defaults are applied only outside production. Production must set everything explicitly.
@@ -71,6 +84,8 @@ export interface AppConfig {
   keycloakUrl: string;
   apiInternalUrl: string;
   worker: { id: string; concurrency: number };
+  db: { poolMax?: number; idleTimeoutMs?: number; connectionTimeoutMs?: number; statementTimeoutMs?: number; slowQueryMs: number; logSql: boolean };
+  outbox: { enabled: boolean; pollIntervalMs: number; batchSize: number; leaseMs: number; retentionDays: number };
 }
 
 export class ConfigError extends Error {
@@ -138,6 +153,21 @@ export function loadConfig(opts: LoadOptions): Readonly<AppConfig> {
     keycloakUrl: need('KEYCLOAK_URL'),
     apiInternalUrl: need('API_INTERNAL_URL'),
     worker: { id: e.WORKER_ID ?? `${opts.service}-${process.pid}`, concurrency: e.WORKER_CONCURRENCY },
+    db: {
+      poolMax: e.DB_POOL_MAX,
+      idleTimeoutMs: e.DB_IDLE_TIMEOUT_MS,
+      connectionTimeoutMs: e.DB_CONNECTION_TIMEOUT_MS,
+      statementTimeoutMs: e.DB_STATEMENT_TIMEOUT_MS,
+      slowQueryMs: e.DB_SLOW_QUERY_MS,
+      logSql: e.DB_LOG_SQL === 'true',
+    },
+    outbox: {
+      enabled: e.OUTBOX_RELAY_ENABLED === 'true',
+      pollIntervalMs: e.OUTBOX_POLL_INTERVAL_MS,
+      batchSize: e.OUTBOX_BATCH_SIZE,
+      leaseMs: e.OUTBOX_LEASE_MS,
+      retentionDays: e.OUTBOX_RETENTION_DAYS,
+    },
   };
   if (missing.length) throw new ConfigError(missing);
   return Object.freeze(cfg);

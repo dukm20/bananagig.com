@@ -9,11 +9,20 @@ const sc = StringCodec();
 /** Publishes validated domain events as NATS messages. Subject == eventType (bananagig.<domain>.<event>.v<n>). */
 export class NatsEventPublisher {
   constructor(private readonly nats: NatsClient) {}
-  async publish(event: EventEnvelope): Promise<void> {
+  /**
+   * Publishes through JetStream with Nats-Msg-Id = eventId, so a re-publish (relay retry after a crash) is dropped by
+   * the stream's duplicate window. Returns true when JetStream reported a duplicate. Consumers still dedupe by eventId.
+   */
+  async publish(event: EventEnvelope): Promise<{ duplicate: boolean }> {
     const valid = EventEnvelope.parse(event);
     const h = natsHeaders();
     h.set(CORRELATION_HEADER, valid.correlationId);
-    (await this.nats.connection()).publish(valid.eventType, sc.encode(JSON.stringify(valid)), { headers: h });
+    const ack = await (
+      await this.nats.connection()
+    )
+      .jetstream()
+      .publish(valid.eventType, sc.encode(JSON.stringify(valid)), { headers: h, msgID: valid.eventId });
+    return { duplicate: ack.duplicate };
   }
 }
 

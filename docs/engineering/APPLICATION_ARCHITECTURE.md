@@ -109,7 +109,7 @@ A non-critical outage (search, analytics, flags) must never take request serving
 
 - **Jobs:** pg-boss, queues named `<domain>.<action>`; handlers registered through `jobHandler()` which restores the correlation id, opens a span, and logs. Producers wrap data with `withJobMeta()`.
 - **Events:** NATS subjects equal the event type `bananagig.<domain>.<event>.v<n>`; `NatsEventPublisher` validates the envelope and sets the `x-correlation-id` header; `subscribe()` restores correlation.
-- **Outbox:** only the port (`OutboxRelay`) exists; the relay loop arrives with the first event-producing feature (DEBT-0002).
+- **Outbox:** `integration.outbox_events` plus `PollingOutboxRelay` publish committed events to JetStream (ADR-0012). No product events exist yet; the self-test round-trips one infrastructure event through it.
 - **Identity/concurrency:** `WORKER_ID` (default `<service>-<pid>`), `WORKER_CONCURRENCY` (default 2).
 - **Self-test:** the infrastructure job `infra.ping` and event `bananagig.infra.ping.v1` are the only handlers. The worker diagnostics endpoint round-trips both.
 

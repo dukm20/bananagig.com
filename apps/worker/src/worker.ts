@@ -7,6 +7,8 @@ import type { NatsClient } from '@bananagig/platform';
 import { randomUUID } from 'node:crypto';
 import { NatsEventPublisher, INFRA_PING_SUBJECT, newEvent, subscribe } from './runtime/events';
 import { jobHandler, withJobMeta } from './runtime/job';
+import { PollingOutboxRelay } from './runtime/outbox';
+import { insertOutboxEvent } from '@bananagig/platform';
 
 export interface WorkerDeps {
   cfg: AppConfig;
@@ -21,9 +23,11 @@ export class Worker {
   private stopping = false;
   private readonly seen = new Map<string, () => void>();
   private readonly publisher: NatsEventPublisher;
+  private readonly relay: PollingOutboxRelay;
 
   constructor(private readonly d: WorkerDeps) {
     this.publisher = new NatsEventPublisher(d.nats);
+    this.relay = new PollingOutboxRelay(d.database, this.publisher, d.cfg.outbox);
   }
 
   get identity(): string {
@@ -42,9 +46,11 @@ export class Worker {
         this.seen.get(`job:${data.pingId}`)?.();
       }),
     );
+    await nats.ensureEventStream();
     await subscribe(nats, INFRA_PING_SUBJECT, async (e) => {
-      this.seen.get(`event:${String(e.payload.pingId)}`)?.();
+      this.seen.get(`${e.payload.via === 'outbox' ? 'outbox' : 'event'}:${String(e.payload.pingId)}`)?.();
     });
+    if (cfg.outbox.enabled) this.relay.start();
     this.started = true;
     log('info', 'worker started', { workerId: this.identity, concurrency: cfg.worker.concurrency });
   }
@@ -60,7 +66,7 @@ export class Worker {
   }
 
   /** Round-trips one harmless job and one harmless event through the real runtimes. */
-  async selfTest(timeoutMs = 8000): Promise<{ job: boolean; event: boolean; correlationId: string }> {
+  async selfTest(timeoutMs = 8000): Promise<{ job: boolean; event: boolean; outbox: boolean; correlationId: string }> {
     const pingId = randomUUID();
     const correlationId = randomUUID();
     const wait = (key: string) =>
@@ -76,10 +82,20 @@ export class Worker {
       const event = wait(`event:${pingId}`);
       await this.d.boss.send(INFRA_PING_QUEUE, withJobMeta({ pingId }));
       await this.publisher.publish(newEvent({ eventType: INFRA_PING_EVENT_TYPE, aggregateType: 'infra', aggregateId: 'ping', payload: { pingId } }));
-      const [j, e] = await Promise.all([job, event]);
-      this.seen.delete(`job:${pingId}`);
-      this.seen.delete(`event:${pingId}`);
-      return { job: j, event: e, correlationId };
+      // Outbox path: commit an event row in a transaction; the relay publishes it to JetStream.
+      const outbox = wait(`outbox:${pingId}`);
+      await this.d.database.transaction(async (trx) => {
+        await insertOutboxEvent(trx, {
+          aggregateType: 'infra',
+          aggregateId: 'ping',
+          eventType: INFRA_PING_EVENT_TYPE,
+          payload: { pingId, via: 'outbox' },
+          correlationId,
+        });
+      });
+      const [j, e, o] = await Promise.all([job, event, outbox]);
+      for (const k of ['job', 'event', 'outbox']) this.seen.delete(`${k}:${pingId}`);
+      return { job: j, event: e, outbox: o, correlationId };
     });
   }
 
@@ -87,6 +103,7 @@ export class Worker {
   async stop(): Promise<void> {
     if (this.stopping) return;
     this.stopping = true;
+    await this.relay.stop();
     await this.d.boss.stop({ graceful: true, timeout: 10000 });
     await this.d.nats.close();
     log('info', 'worker stopped', { workerId: this.identity });

@@ -3,3 +3,4 @@
 export * from './clients';
 export * from './checks';
 export * from './health-server';
+export * from './outbox';

@@ -17,7 +17,7 @@ We chose host apps plus container dependencies over bind-mounted dev containers:
 pnpm install
 pnpm dev                # starts dependency containers, migrates, then web+api+worker with hot reload
 pnpm dev:deps           # only the dependency containers (needed by test:integration)
-pnpm test:integration   # real Postgres + NATS; uses the isolated bananagig_test database
+pnpm test:integration   # real Postgres + NATS; every test file gets its own freshly migrated database
 ```
 
 ## Install
@@ -70,6 +70,8 @@ curl -s http://app.localhost:8080/healthz
 
 ## DB migration
 
+Run `pnpm migrate` right after the stack first starts. Until the migrations exist the worker's outbox relay logs query errors (the `integration` schema is missing). Policy and conventions: `docs/data/MIGRATION_POLICY.md`, `docs/data/DATABASE_CONVENTIONS.md`.
+
 ```bash
 set -a; . ./.env; set +a      # exports DATABASE_URL_HOST for the host-side runner
 pnpm migrate                  # applies db/migrations/*.sql in order; refuses if an applied file was edited
@@ -97,6 +99,14 @@ Runs inside the Compose network and verifies real connectivity: Postgres and Pos
 pnpm stack:all && pnpm migrate     # if not already running
 pnpm smoke                         # exit code 0 = all checks passed
 ```
+
+## Backup / restore check (development only)
+
+```bash
+pnpm db:backup-test    # scratch DB from migrations -> pg_dump -> pg_restore into a clean DB -> verify data, PostGIS, snapshot equality, checksum-clean rerun, and that a new migration still applies
+```
+
+This is a development validation, not production disaster recovery (DEBT-0015). Manual commands: `docker exec bananagig-postgres pg_dump -U bananagig -Fc -d bananagig -f /tmp/x.dump` and `pg_restore -U bananagig -d <empty db> --no-owner /tmp/x.dump`.
 
 ## Full reset / clean volumes
 

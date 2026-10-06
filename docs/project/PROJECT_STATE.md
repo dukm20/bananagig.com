@@ -2,11 +2,11 @@
 
 Current truth only. History lives in `IMPLEMENTATION_HISTORY.md`; decisions in `docs/architecture/`.
 
-Current checkpoint: META-001
-Last completed checkpoint: META-001
-Next approved checkpoint: INF-003 — PostgreSQL/PostGIS and Migration Discipline
-Latest migration: 0001_infra_baseline.sql
-Latest ADR: ADR-0009
+Current checkpoint: INF-003
+Last completed checkpoint: INF-003
+Next approved checkpoint: INF-004 — Keycloak Identity Baseline
+Latest migration: 0003_integration_outbox.sql
+Latest ADR: ADR-0012
 Last updated: 2026-10-05
 
 ## Architecture
@@ -19,10 +19,10 @@ Modular monolith in a pnpm/Turborepo workspace. PostgreSQL (with PostGIS) is aut
 |---|---|
 | `apps/web` | Next.js 16 App Router shell. Infrastructure pages only: `/`, `/health`, `/system`; `/healthz`, `/readyz`, `/metrics`. Typed API client with `getSystemInfo()` |
 | `apps/api` | Fastify 5. `GET /healthz`, `/readyz`, `/version`, `/api/v1/system/info`. System module only. Standard error model and correlation ids |
-| `apps/worker` | pg-boss + NATS host with health server. Only the infrastructure `infra.ping` job and `bananagig.infra.ping.v1` event |
-| `apps/smoke` | 22-check connectivity test (`pnpm smoke`) |
+| `apps/worker` | pg-boss + NATS host with health server and the transactional-outbox relay (publishes to JetStream stream `BANANAGIG_EVENTS`). Only the infrastructure `infra.ping` job and `bananagig.infra.ping.v1` event |
+| `apps/smoke` | 23-check connectivity test (`pnpm smoke`) |
 
-Packages: `contracts`, `config`, `observability`, `database` (Kysely + pg), `platform` (adapters), `testing`.
+Packages: `contracts`, `config`, `observability` (incl. DB telemetry), `database` (Kysely + pg, pool policies, transaction options, lock helpers), `platform` (adapters, outbox store), `testing` (isolated migrated test databases).
 
 ## Infrastructure
 
@@ -30,13 +30,14 @@ Compose profiles: `core` (postgres, valkey, nats, seaweedfs, keycloak, flagd, ap
 
 ## Database schemas
 
-| Schema | Contents |
-|---|---|
-| `public` | `schema_migrations` (application), `spatial_ref_sys` (PostGIS) |
-| `pgboss` | pg-boss internals (13 tables), queue `infra.ping` |
-| (database `keycloak`) | Keycloak, separate database |
+| Schema | Class | Contents |
+|---|---|---|
+| `public` | application bookkeeping + extension | `schema_migrations` (version PK, filename, checksum, applied_at, duration_ms); `spatial_ref_sys` (PostGIS) |
+| `integration` | application | `outbox_events` (transactional outbox) |
+| `pgboss` | infrastructure (pg-boss) | 13 tables, queue `infra.ping` |
+| (database `keycloak`) | infrastructure (Keycloak) | separate database |
 
-No business tables. Product tables will live in per-domain schemas (ADR-0008). Details: `docs/data/DATA_MODEL.md`.
+No business tables. Product schemas are created by the first feature that needs each (ADR-0008); the reserved names are listed in `docs/data/DATA_MODEL.md`. Conventions: `docs/data/DATABASE_CONVENTIONS.md`. Migration rules: `docs/data/MIGRATION_POLICY.md` (forward-only, ADR-0010). Local DB access uses the Postgres superuser (DEV ONLY, DEBT-0012).
 
 ## External integrations
 
@@ -51,7 +52,9 @@ None to external services. Local-only stand-ins: Mailpit (SMTP sink), Keycloak r
 - Local container platform with health, readiness and a passing connectivity smoke test
 - Typed validated configuration, structured logging, tracing, request correlation (HTTP, DB transaction setting, jobs, events)
 - API skeleton with generated OpenAPI 3.1, AsyncAPI 3.0 event envelope, standard error model
-- Database package with transaction helper (rollback, nesting, isolation level)
+- Database foundation: forward-only checksum-guarded migrations with advisory-lock serialization, per-role pool and timeout policy, transaction helper (isolation, read-only, timeouts, nesting rules), row-lock and advisory-lock helpers, DB telemetry (query/transaction/pool metrics, slow-query warning)
+- Transactional outbox with JetStream relay (ADR-0012)
+- Isolated per-file test databases migrated from zero; backup/restore development check (`pnpm db:backup-test`)
 - Worker runtime with graceful shutdown
 - Workspace dependency rules enforced by script and lint
 - Governance system: project state, history, learnings, debt, skills, ADRs, data-model gate, checkpoint scripts
@@ -59,7 +62,8 @@ None to external services. Local-only stand-ins: Mailpit (SMTP sink), Keycloak r
 ## Partially implemented capabilities
 
 - PWA: manifest only (DEBT-0003)
-- Transactional outbox: relay port only, no table or loop (DEBT-0002)
+- Idempotency records table designed, not built (DEBT-0013)
+- Least-privilege runtime database roles designed, not built (DEBT-0012)
 - CI: workflow written, never executed (DEBT-0001)
 - Web telemetry: SDK registered; page-level traces and logs not verified in Tempo/Loki (DEBT-0011)
 
@@ -69,4 +73,4 @@ None.
 
 ## Test counts
 
-Unit: 29 (config 5, contracts 4, observability 2, api 8, worker 4, web 5, migration files 1). Governance script tests: 33 in `scripts/governance.test.mjs` (counted in `pnpm test`; root total with migration-file test 34). Integration: 10 (database 7, worker 3). Smoke: 22 checks.
+Unit: 29 (config 5, contracts 4, observability 2, api 8, worker 4, web 5, migration files 1) plus 34 governance script tests. Integration: 55 (database 18, locks 9, migrations 11, postgis 6, outbox 8, worker 3). Smoke: 23 checks.

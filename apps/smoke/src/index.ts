@@ -77,11 +77,11 @@ both('OpenSearch', 'opensearch', (x) => `cluster ${x.status}`);
 both('flagd / OpenFeature', 'flag', (x) => `dev-test-flag=${x.value}`);
 {
   const w = d('worker', 'runtime');
-  const det = diags['worker']?.['runtime']?.detail as { job: boolean; event: boolean } | undefined;
+  const det = diags['worker']?.['runtime']?.detail as { job: boolean; event: boolean; outbox: boolean } | undefined;
   record(
     'Worker runtime',
-    w.ok && !!det?.job && !!det?.event,
-    w.ok ? `pg-boss job + NATS event round-trip ${det?.job && det?.event ? 'ok' : 'FAILED'}` : w.note,
+    w.ok && !!det?.job && !!det?.event && !!det?.outbox,
+    w.ok ? `pg-boss job + NATS event + outbox->JetStream relay ${det?.job && det?.event && det?.outbox ? 'ok' : 'FAILED'}` : w.note,
   );
 }
 
@@ -102,6 +102,18 @@ await check('Mailpit', async () => {
     );
   }
   return 'test mail from api+worker received';
+});
+await check('Database telemetry', async () => {
+  // Query/transaction/pool metrics must be exposed by both api and worker (scraped by Prometheus).
+  for (const [name, base] of [
+    ['api', api],
+    ['worker', worker],
+  ] as const) {
+    const text = await (await expectOk(`${base}/metrics`)).text();
+    for (const m of ['db_query_duration_seconds', 'db_transaction_duration_seconds', 'db_pool_connections'])
+      if (!text.includes(m)) throw new Error(`${name} /metrics is missing ${m}`);
+  }
+  return 'query, transaction and pool metrics exposed by api and worker';
 });
 await check('OTel Collector', async () => {
   await expectOk(`${env('OTEL_HEALTH_URL', 'http://otel-collector:13133')}/`);

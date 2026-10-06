@@ -39,6 +39,7 @@ function repo(files = {}, { commit = true } = {}) {
 afterAll(() => scratch.forEach((d) => rmSync(d, { recursive: true, force: true })));
 
 // ---------------------------------------------------------------- data-model-check
+const HDR = '-- checkpoint: T\n-- purpose: t\n-- rollback strategy: t\n-- backfill: t\n-- risk: t\n';
 const SNAP_EMPTY = '-- header\n\n-- (no application tables)\n';
 const SNAP_BOOKING = `${SNAP_EMPTY}\nCREATE TABLE booking.reservation (\n  id uuid NOT NULL,\n  CONSTRAINT reservation_pkey PRIMARY KEY (id)\n);\n`;
 const dmDocs = (extra = {}) => ({
@@ -96,14 +97,24 @@ describe('data-model:check', () => {
   it('rejects deletion and non-contiguous numbering of migrations', () => {
     const r = repo(dmDocs());
     write(r, 'db/migrations/0003_gap.sql', 'SELECT 1;\n');
-    expect(dm(r, SNAP_EMPTY, ['TST-002']).out).toContain('numbering must be contiguous');
+    expect(dm(r, SNAP_EMPTY, ['TST-002']).out).toContain('contiguous');
     rmSync(path.join(r, 'db/migrations/0001_init.sql'));
     expect(dm(r, SNAP_EMPTY, ['TST-002']).out).toContain('modified or removed (D)');
   });
 
+  it('requires header comments on new migrations and a marker on destructive statements', () => {
+    const r = repo(dmDocs());
+    write(r, 'db/migrations/0002_nohdr.sql', 'SELECT 1;\n');
+    expect(dm(r, SNAP_EMPTY, ['TST-002']).out).toContain('missing header comment "-- purpose: <text>"');
+    write(r, 'db/migrations/0002_nohdr.sql', `${HDR}DROP TABLE old_things;\n`);
+    expect(dm(r, SNAP_EMPTY, ['TST-002']).out).toContain('destructive statement');
+    write(r, 'db/migrations/0002_nohdr.sql', `${HDR}-- destructive: contract phase, verified in TST-001\nDROP TABLE old_things;\n`);
+    expect(dm(r, SNAP_EMPTY, ['TST-002']).out).not.toContain('destructive statement');
+  });
+
   it('requires the full model review (docs, changelog, normalization, dictionary) when the schema changes', () => {
     const r = repo(dmDocs());
-    write(r, 'db/migrations/0002_booking.sql', 'CREATE SCHEMA booking;\n');
+    write(r, 'db/migrations/0002_booking.sql', `${HDR}CREATE SCHEMA booking;\n`);
     write(r, 'docs/data/SCHEMA_SNAPSHOT.sql', SNAP_BOOKING);
     const out = dm(r, SNAP_BOOKING, ['TST-002']);
     expect(out.code).toBe(1);
@@ -113,7 +124,7 @@ describe('data-model:check', () => {
 
   it('makes the normalization review mandatory and checks its structure', () => {
     const r = repo(dmDocs());
-    write(r, 'db/migrations/0002_booking.sql', 'CREATE SCHEMA booking;\n');
+    write(r, 'db/migrations/0002_booking.sql', `${HDR}CREATE SCHEMA booking;\n`);
     write(r, 'docs/data/SCHEMA_SNAPSHOT.sql', SNAP_BOOKING);
     write(r, 'docs/data/DATA_MODEL.md', '# Data model\n\nbooking.reservation\n');
     write(r, 'docs/data/DATA_DICTIONARY.md', '# Dictionary\n\n### booking.reservation\n\nrows\n');
@@ -127,7 +138,7 @@ describe('data-model:check', () => {
 
   it('passes when the schema changed and the whole review is present', () => {
     const r = repo(dmDocs());
-    write(r, 'db/migrations/0002_booking.sql', 'CREATE SCHEMA booking;\n');
+    write(r, 'db/migrations/0002_booking.sql', `${HDR}CREATE SCHEMA booking;\n`);
     write(r, 'docs/data/SCHEMA_SNAPSHOT.sql', SNAP_BOOKING);
     write(r, 'docs/data/DATA_MODEL.md', '# Data model\n\nbooking.reservation\n');
     write(r, 'docs/data/DATA_DICTIONARY.md', '# Dictionary\n\n### booking.reservation\n\nrows\n');
@@ -147,7 +158,7 @@ describe('data-model:check', () => {
         'docs/data/DATA_DICTIONARY.md': '### booking.reservation\n',
       }),
     );
-    write(r, 'db/migrations/0002_item.sql', 'SELECT 1;\n');
+    write(r, 'db/migrations/0002_item.sql', `${HDR}SELECT 1;\n`);
     write(r, 'docs/data/SCHEMA_SNAPSHOT.sql', snapFk);
     write(r, 'docs/data/DATA_MODEL.md', 'booking.reservation booking.item\n');
     write(r, 'docs/data/DATA_DICTIONARY.md', '### booking.reservation\n\n### booking.item\n');
@@ -243,9 +254,7 @@ describe('project-state:check', () => {
   it('fails when PROJECT_STATE claims a checkpoint with no history entry, or names the wrong migration', () => {
     const r = realFiles();
     edit(r, 'docs/project/PROJECT_STATE.md', (s) =>
-      s
-        .replace('Last completed checkpoint: META-001', 'Last completed checkpoint: ZZZ-999')
-        .replace('Latest migration: 0001_infra_baseline.sql', 'Latest migration: 0009_nope.sql'),
+      s.replace(/^Last completed checkpoint:.*$/m, 'Last completed checkpoint: ZZZ-999').replace(/^Latest migration:.*$/m, 'Latest migration: 0009_nope.sql'),
     );
     const out = node(r, 'project-state-check.mjs');
     expect(out.code).toBe(1);

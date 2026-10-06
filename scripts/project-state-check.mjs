@@ -112,7 +112,8 @@ for (const d of debts) {
   for (const h of ['Status:', 'Severity:', 'Introduced by:', 'Owner/domain:', 'Description:', 'Why deferred:', 'Exit criteria:', 'Target checkpoint:'])
     if (!d.body.includes(h)) r.fail(`TECH_DEBT.md ${id}: missing "${h}"`);
   const st = d.body.match(/^Status:\s*(\S+)/m)?.[1];
-  if (!['OPEN', 'IN_PROGRESS', 'ACCEPTED', 'RESOLVED'].includes(st)) r.fail(`TECH_DEBT.md ${id}: Status must be OPEN, IN_PROGRESS, ACCEPTED or RESOLVED`);
+  if (!['OPEN', 'IN_PROGRESS', 'ACCEPTED', 'RESOLVED', 'SUPERSEDED'].includes(st))
+    r.fail(`TECH_DEBT.md ${id}: Status must be OPEN, IN_PROGRESS, ACCEPTED, RESOLVED or SUPERSEDED`);
 }
 // every DEBT reference in code/docs must exist
 function* walk(dir) {

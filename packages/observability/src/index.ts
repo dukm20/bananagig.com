@@ -8,7 +8,7 @@ import { BatchLogRecordProcessor } from '@opentelemetry/sdk-logs';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { logs, SeverityNumber } from '@opentelemetry/api-logs';
 import { trace, SpanStatusCode } from '@opentelemetry/api';
-import { Registry, collectDefaultMetrics } from 'prom-client';
+import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from 'prom-client';
 import { isSafeCorrelationId } from '@bananagig/contracts';
 import type { AppConfig } from '@bananagig/config';
 
@@ -105,15 +105,89 @@ export async function withSpan<T>(name: string, fn: () => Promise<T>, attrs: Rec
   });
 }
 
-/** Hook for @bananagig/database: records each query as a finished span with its measured duration. */
-export function dbQueryObserver(): (e: { sql: string; durationMs: number; error?: unknown }) => void {
-  return (e) => {
-    const end = Date.now();
-    const span = trace.getTracer(settings.service).startSpan('db.query', {
-      startTime: end - e.durationMs,
-      attributes: { 'db.system': 'postgresql', 'db.statement': e.sql.slice(0, 500), 'correlation.id': getCorrelationId() ?? '' },
-    });
-    if (e.error) span.setStatus({ code: SpanStatusCode.ERROR, message: String(e.error) });
-    span.end(end);
+/** Telemetry hooks for @bananagig/database. Structural types keep this package free of a database dependency. */
+export interface DbTelemetryOptions {
+  slowQueryMs: number;
+  logSql: boolean;
+}
+interface QueryEventLike {
+  sql: string;
+  durationMs: number;
+  error?: unknown;
+}
+interface TransactionEventLike {
+  durationMs: number;
+  outcome: 'commit' | 'rollback';
+  isolationLevel: string;
+  readOnly: boolean;
+}
+
+const queryHistogram = new Histogram({
+  name: 'db_query_duration_seconds',
+  help: 'Database query duration',
+  labelNames: ['operation'] as const,
+  registers: [metrics],
+});
+const txHistogram = new Histogram({
+  name: 'db_transaction_duration_seconds',
+  help: 'Database transaction duration',
+  labelNames: ['outcome'] as const,
+  registers: [metrics],
+});
+const slowCounter = new Counter({ name: 'db_slow_queries_total', help: 'Queries slower than the configured threshold', registers: [metrics] });
+const connErrors = new Counter({ name: 'db_connection_errors_total', help: 'Database connection-level errors', registers: [metrics] });
+
+/** SQL text is never logged unless DB_LOG_SQL=true; otherwise only the operation keyword is recorded. */
+export function createDbTelemetry(o: DbTelemetryOptions) {
+  return {
+    onQuery(e: QueryEventLike): void {
+      const op = (e.sql.trimStart().split(/\s+/, 1)[0] ?? 'other').toLowerCase().replace(/[^a-z]/g, '') || 'other';
+      queryHistogram.labels(op).observe(e.durationMs / 1000);
+      const end = Date.now();
+      const span = trace.getTracer(settings.service).startSpan('db.query', {
+        startTime: end - e.durationMs,
+        attributes: {
+          'db.system': 'postgresql',
+          'db.operation': op,
+          'correlation.id': getCorrelationId() ?? '',
+          ...(o.logSql ? { 'db.statement': e.sql.slice(0, 500) } : {}),
+        },
+      });
+      if (e.error) span.setStatus({ code: SpanStatusCode.ERROR, message: String(e.error) });
+      span.end(end);
+      if (e.durationMs >= o.slowQueryMs) {
+        slowCounter.inc();
+        log('warn', 'slow query', {
+          operation: op,
+          durationMs: Math.round(e.durationMs),
+          thresholdMs: o.slowQueryMs,
+          ...(o.logSql ? { sql: e.sql.slice(0, 500) } : {}),
+        });
+      }
+    },
+    onTransaction(e: TransactionEventLike): void {
+      txHistogram.labels(e.outcome).observe(e.durationMs / 1000);
+    },
+    onPoolError(err: Error): void {
+      connErrors.inc();
+      log('error', 'database connection error', { error: err.message });
+    },
   };
+}
+
+/** Exposes pool utilisation as db_pool_connections{state} gauges, read at scrape time. */
+export function registerPoolMetrics(pool: string, stats: () => { total: number; idle: number; waiting: number; max: number }): void {
+  new Gauge({
+    name: 'db_pool_connections',
+    help: 'Database pool connections by state',
+    labelNames: ['pool', 'state'] as const,
+    registers: [metrics],
+    collect() {
+      const s = stats();
+      this.labels(pool, 'total').set(s.total);
+      this.labels(pool, 'idle').set(s.idle);
+      this.labels(pool, 'waiting').set(s.waiting);
+      this.labels(pool, 'max').set(s.max);
+    },
+  });
 }

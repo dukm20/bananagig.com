@@ -95,3 +95,37 @@ ADR-0001 to ADR-0009 seeded for decisions already made.
 
 ### Known follow-up
 First real use of `checkpoint:start/finalize/commit` happens in INF-003 (requires the baseline commit).
+
+## INF-003 — 2026-10-05
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(INF-003)"`.
+Summary: Production-grade PostgreSQL/PostGIS foundation: hardened forward-only migration runner, upgraded migration bookkeeping, the `integration` schema with a transactional outbox and JetStream relay, pool/timeout policy, transaction options and locking helpers, DB telemetry, isolated per-file test databases, and a backup/restore development check. Database conventions and migration policy documented.
+
+### Delivered
+- `scripts/lib/migrator.mjs`: checksum guard, duplicate/gap detection, headers and destructive-marker rules, advisory lock with timeout, per-file transactions, check mode
+- `packages/database`: pool policies per role, statement/lock/idle-in-transaction timeouts, transaction options (isolation, read-only, timeouts, nesting rules), `applyRowLock`, advisory-lock helpers, telemetry hooks
+- Outbox store (`packages/platform/src/outbox.ts`), `PollingOutboxRelay`, JetStream stream `BANANAGIG_EVENTS` with message-id de-duplication; resolves DEBT-0002
+- DB telemetry: query/transaction/pool metrics, slow-query warning, SQL text off by default
+- Test isolation (`createIsolatedDatabase`), 55 integration tests, `pnpm db:backup-test`
+- Docs: `DATABASE_CONVENTIONS.md`, `MIGRATION_POLICY.md`; ADR-0010, ADR-0011, ADR-0012
+- Clean `git clone` bootstrap verified (closes DEBT-0010)
+
+### Schema
+Migrations `0002_database_foundation.sql` (schema_migrations: version PK, duration_ms, constraints) and `0003_integration_outbox.sql` (`integration` schema, `integration.outbox_events`). No business tables.
+
+### Contracts
+No API change. Event envelope unchanged; the worker now publishes through JetStream.
+
+### Tests
+Unit 29, governance 34, integration 55, smoke 23 checks, backup/restore test passing.
+
+### Skills updated
+`skills/database` (rewritten with INF-003 rules), `skills/worker` (outbox), `skills/testing` (isolated databases).
+
+### ADRs
+ADR-0010 forward-only migrations, ADR-0011 core data conventions, ADR-0012 transactional outbox; ADR-0002 updated.
+
+### Known follow-up
+DEBT-0012 (runtime roles), DEBT-0013 (idempotency records), DEBT-0014 (non-transactional migrations), DEBT-0015 (backup is a dev check). DEBT-0002 and DEBT-0010 resolved.
+

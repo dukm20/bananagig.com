@@ -1,6 +1,6 @@
 # Data Model Guardrails
 
-Applies to every feature checkpoint. Existing migrations and tables at INF-001: see `DATA_MODEL.md`. There are no business tables yet, so no existing table needed remediation.
+Applies to every feature checkpoint. Concrete choices (UUID, money, timestamps, naming, locking, pools, PostGIS) are in `DATABASE_CONVENTIONS.md`; migration rules are in `MIGRATION_POLICY.md`. Existing migrations and tables at INF-001: see `DATA_MODEL.md`. There are no business tables yet, so no existing table needed remediation.
 
 1. **PostgreSQL is the authoritative transactional state.** Bookings, balances, Banana Credits, subscriptions, slot reservations and tax state live only in Postgres. Valkey, OpenSearch and NATS hold derived or in-flight data that can be rebuilt.
 2. **Every schema change requires a migration** in `db/migrations/NNNN_description.sql`, applied with `pnpm migrate`. No manual DDL.
@@ -8,7 +8,7 @@ Applies to every feature checkpoint. Existing migrations and tables at INF-001: 
 4. **UUIDs.** Primary keys are `uuid`, generated with `gen_random_uuid()` (or UUIDv7 if adopted project-wide). No serial IDs for entities exposed outside the database.
 5. **Timestamps.** Always `timestamptz`, stored as UTC. Every table has `created_at timestamptz NOT NULL DEFAULT now()`. Mutable tables also have `updated_at`. Never use `timestamp without time zone`.
 6. **Money.** Store integer minor units (`bigint amount_minor`) next to an ISO-4217 `currency char(3)` with a check constraint. Never `float`. Never store amount without currency. Banana Credits are a separate ledger unit, never mixed with currency columns.
-7. **Naming.** `snake_case`, plural table names, singular column names. Booleans read as predicates (`is_active`). Timestamps end in `_at`, dates in `_on`. Foreign keys are `<referenced_singular>_id`. Constraint names: `pk_<table>`, `fk_<table>__<ref>`, `uq_<table>__<cols>`, `ck_<table>__<rule>`. Index names: `ix_<table>__<cols>`.
+7. **Naming.** *(superseded in detail by `DATABASE_CONVENTIONS.md` section 2 as of INF-003: `idx_`/`uq_`/`ck_`/`fk_`/`pk_` prefixes, `<entity>_id` keys.)* `snake_case`, plural table names, singular column names. Booleans read as predicates (`is_active`). Timestamps end in `_at`, dates in `_on`. Foreign keys are `<referenced_singular>_id`. Constraint names: `pk_<table>`, `fk_<table>__<ref>`, `uq_<table>__<cols>`, `ck_<table>__<rule>`. Index names: `idx_<table>__<cols>`.
 8. **Keys.** Every table has a primary key. Every relationship has a real foreign key with an explicit `ON DELETE` (default `RESTRICT`). Junction tables use a composite or surrogate key plus a uniqueness constraint on the pair.
 9. **Uniqueness.** Business-unique fields get unique constraints or partial unique indexes (for example, one active row per natural key `WHERE deleted_at IS NULL`). Application checks are not a substitute.
 10. **Check constraints.** Encode invariants in the schema: non-negative amounts, valid state enums, `starts_at < ends_at`. Prefer `CHECK` on text or a lookup table over free-form status strings.

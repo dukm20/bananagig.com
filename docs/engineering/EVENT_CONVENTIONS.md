@@ -31,9 +31,11 @@ NATS message header `x-correlation-id` mirrors `correlationId`.
 
 ## Delivery
 
-- Producers must write events to a transactional outbox in the same database transaction as the state change (see `DATA_MODEL_GUARDRAILS.md`); the relay publishes them to NATS. The relay is not built yet (the `OutboxRelay` port exists).
-- NATS JetStream provides durable streams; no streams are defined until the first product event.
-- Consumers are idempotent (dedupe by `eventId`).
+- Producers write events to the transactional outbox (`integration.outbox_events`) in the same database transaction as the state change, using `insertOutboxEvent(trx, ...)` (ADR-0012). Never publish to NATS inside a business transaction.
+- The worker's `PollingOutboxRelay` claims due rows with a lease (`FOR UPDATE SKIP LOCKED`), publishes through **JetStream** with `Nats-Msg-Id = outbox_event_id`, and marks a row published only after the acknowledgement. Failures back off exponentially. Published rows are purged after `OUTBOX_RETENTION_DAYS`.
+- Stream `BANANAGIG_EVENTS` captures `bananagig.>` (file storage, 7-day retention, 2-minute duplicate window) and is ensured by the worker at startup.
+- Delivery is **at-least-once**. Consumers must be idempotent and dedupe by `eventId` (the duplicate window is finite).
+- Relay settings (`OUTBOX_RELAY_ENABLED`, `OUTBOX_POLL_INTERVAL_MS`, `OUTBOX_BATCH_SIZE`, `OUTBOX_LEASE_MS`, `OUTBOX_RETENTION_DAYS`) come from `@bananagig/config`.
 
 ## pg-boss jobs
 

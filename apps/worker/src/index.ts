@@ -1,7 +1,7 @@
 import { PgBoss } from 'pg-boss';
 import { loadConfig, redactConfig } from '@bananagig/config';
-import { createDatabase } from '@bananagig/database';
-import { dbQueryObserver, getCorrelationId, initObservability, log, shutdownObservability } from '@bananagig/observability';
+import { createDatabase, PG_BOSS_POOL_MAX } from '@bananagig/database';
+import { createDbTelemetry, getCorrelationId, registerPoolMetrics, initObservability, log, shutdownObservability } from '@bananagig/observability';
 import { NatsClient, closeValkey, createS3, createValkey, runDiagnostics, startHealthServer } from '@bananagig/platform';
 import { Worker } from './worker';
 
@@ -9,11 +9,18 @@ const cfg = loadConfig({ service: 'bananagig-worker', role: 'worker' });
 initObservability(cfg);
 log('info', 'starting', { config: redactConfig(cfg) });
 
-const database = createDatabase(cfg.databaseUrl, { onQuery: dbQueryObserver(), correlationIdProvider: getCorrelationId });
+const telemetry = createDbTelemetry({ slowQueryMs: cfg.db.slowQueryMs, logSql: cfg.db.logSql });
+const database = createDatabase(cfg.databaseUrl, { role: 'worker', overrides: cfg.db, ...telemetry, correlationIdProvider: getCorrelationId });
+registerPoolMetrics('worker', () => database.poolStats());
 const nats = new NatsClient(cfg);
 const valkey = createValkey(cfg);
 const s3 = createS3(cfg);
-const worker = new Worker({ cfg, database, nats, boss: new PgBoss(cfg.databaseUrl) });
+const worker = new Worker({
+  cfg,
+  database,
+  nats,
+  boss: new PgBoss({ connectionString: cfg.databaseUrl, max: PG_BOSS_POOL_MAX, application_name: 'bananagig-worker-pgboss' }),
+});
 
 await worker.start();
 

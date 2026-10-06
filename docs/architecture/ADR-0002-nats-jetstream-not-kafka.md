@@ -19,11 +19,11 @@ Use NATS with JetStream. Subjects follow `bananagig.<domain>.<event>.v<version>`
 
 ## Consequences
 
-One light binary with persistence. Events are published from a transactional outbox in Postgres (not yet built, DEBT-0002) so the database stays the source of truth. Revisit if throughput outgrows NATS.
+One light binary with persistence. Events are published from a transactional outbox in Postgres (built in INF-003, ADR-0012) so the database stays the source of truth. Revisit if throughput outgrows NATS.
 
 ## Migration / compatibility
 
-No streams exist yet; adding the first product event creates one and an AsyncAPI entry.
+The stream `BANANAGIG_EVENTS` (subjects `bananagig.>`) is ensured by the worker at startup (INF-003); adding the first product event adds an AsyncAPI entry.
 
 ## Related files
 

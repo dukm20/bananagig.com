@@ -2,9 +2,45 @@
 -- Scope: application-owned objects only (excludes pgboss, PostGIS and other extension-owned objects, system catalogs).
 -- Regenerate: pnpm schema:snapshot --write
 
+CREATE SCHEMA integration;
+
+CREATE TABLE integration.outbox_events (
+  outbox_event_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  aggregate_type text NOT NULL,
+  aggregate_id text NOT NULL,
+  event_type text NOT NULL,
+  event_version integer NOT NULL,
+  actor_type text NOT NULL,
+  actor_id text,
+  payload_json jsonb NOT NULL,
+  correlation_id text NOT NULL,
+  causation_id text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  next_attempt_at timestamp with time zone NOT NULL DEFAULT now(),
+  published_at timestamp with time zone,
+  publish_attempts integer NOT NULL DEFAULT 0,
+  last_error text,
+  CONSTRAINT pk_outbox_events PRIMARY KEY (outbox_event_id),
+  CONSTRAINT ck_outbox_events__actor_type CHECK ((actor_type = ANY (ARRAY['user'::text, 'system'::text, 'service'::text]))),
+  CONSTRAINT ck_outbox_events__attempts_nonnegative CHECK ((publish_attempts >= 0)),
+  CONSTRAINT ck_outbox_events__event_type_format CHECK ((event_type ~ '^bananagig[.][a-z][a-z0-9-]*[.][a-z][a-z0-9-]*[.]v[1-9][0-9]*$'::text)),
+  CONSTRAINT ck_outbox_events__event_version_positive CHECK ((event_version > 0)),
+  CONSTRAINT ck_outbox_events__payload_is_object CHECK ((jsonb_typeof(payload_json) = 'object'::text)),
+  CONSTRAINT ck_outbox_events__published_has_attempt CHECK (((published_at IS NULL) OR (publish_attempts >= 1))),
+  CONSTRAINT ck_outbox_events__version_matches_type CHECK (("right"(event_type, (length((event_version)::text) + 2)) = ('.v'::text || (event_version)::text)))
+);
+CREATE INDEX idx_outbox_events__pending ON integration.outbox_events USING btree (next_attempt_at, created_at) WHERE (published_at IS NULL);
+CREATE INDEX idx_outbox_events__published_at ON integration.outbox_events USING btree (published_at) WHERE (published_at IS NOT NULL);
+
 CREATE TABLE public.schema_migrations (
   filename text NOT NULL,
   checksum text NOT NULL,
   applied_at timestamp with time zone NOT NULL DEFAULT now(),
-  CONSTRAINT schema_migrations_pkey PRIMARY KEY (filename)
+  version integer NOT NULL,
+  duration_ms integer,
+  CONSTRAINT pk_schema_migrations PRIMARY KEY (version),
+  CONSTRAINT uq_schema_migrations__filename UNIQUE (filename),
+  CONSTRAINT ck_schema_migrations__duration_ms_nonnegative CHECK (((duration_ms IS NULL) OR (duration_ms >= 0))),
+  CONSTRAINT ck_schema_migrations__filename_matches_version CHECK ((filename ~ (('^'::text || lpad((version)::text, 4, '0'::text)) || '_[a-z0-9_]+[.]sql$'::text))),
+  CONSTRAINT ck_schema_migrations__version_positive CHECK ((version > 0))
 );

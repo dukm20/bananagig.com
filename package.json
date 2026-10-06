@@ -37,7 +37,8 @@
     "project-state:check": "node scripts/project-state-check.mjs",
     "checkpoint:start": "node scripts/checkpoint-start.mjs",
     "checkpoint:finalize": "node scripts/checkpoint-finalize.mjs",
-    "checkpoint:commit": "node scripts/commit-checkpoint.mjs"
+    "checkpoint:commit": "node scripts/commit-checkpoint.mjs",
+    "db:backup-test": "node scripts/db-backup-test.mjs"
   },
   "devDependencies": {
     "@asyncapi/cli": "^6.2.0",
