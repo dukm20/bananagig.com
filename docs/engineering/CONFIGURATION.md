@@ -60,7 +60,7 @@ stateDiagram-v2
 
 ## Resolution
 
-`ConfigurationService.resolveMany(keys, context, { at? })` returns the winning version per key or fails. It runs 3 queries per batch regardless of key count: definitions, candidate holders for the context, and candidate versions by time. Missing required values fail with `NO_VALUE` (authoritative). `service.value<T>(key, context)` is the typed convenience. Context is a map of scope type to reference, for example `{ MARKET: 'us-ny' }`.
+`ConfigurationService.resolveMany(keys, context, { at? })` returns the winning version per key or fails. It runs 3 queries per batch regardless of key count: definitions, candidate versions for the context and time, and the next effective boundary. Missing required values fail with `NO_VALUE` (authoritative). `service.value<T>(key, context)` is the typed convenience. Context is a map of lower-case scope names to references, for example `{ market: 'us-ny' }`.
 
 ### Cache and last-known-good
 
@@ -116,7 +116,7 @@ Admin context only; default deny; self-approval blocked twice; sensitive values 
 ## Using it from a domain
 
 ```ts
-const hours = await configuration.value<DurationValue>('booking.cancellation_window', { MARKET: marketId });
+const hours = await configuration.value<DurationValue>('booking.cancellation_window', { market: marketId });
 const snap = await configuration.createSnapshot({ keys: [...], context, purpose: 'booking-quote' }, actor);
 ```
 

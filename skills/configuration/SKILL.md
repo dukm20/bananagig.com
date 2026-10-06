@@ -35,7 +35,7 @@ Read, define and change product configuration (business values) through the regi
 ## Implementation pattern
 
 1. Define the parameter in the owning checkpoint (key `domain.name`, type, rules, sensitivity, policy, criticality, allowed scopes) through `createParameter` or the API; seed through a change-controlled path, never an ad hoc migration of business values.
-2. Read: `configuration.value<T>(key, { MARKET: id })`, or `resolveMany` for several keys (3 queries per batch).
+2. Read: `configuration.value<T>(key, { market: id })`, or `resolveMany` for several keys (3 queries per batch).
 3. Record: `createSnapshot({ keys, context, purpose }, actor)` and store the returned id.
 4. Change: create draft, submit, approve (second approver when required), publish. Future-dated publishes become SCHEDULED and are activated by the job.
 5. After changing the API or events, run `pnpm specs:generate` and the spec checks.
@@ -90,4 +90,4 @@ ADR-0016, ADR-0017 (builds on ADR-0001, ADR-0003, ADR-0012)
 
 ## Last reviewed
 
-2026-10-05 (CFG-001)
+2026-10-06 (CFG-001A)

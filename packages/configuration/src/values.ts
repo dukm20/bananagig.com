@@ -119,7 +119,7 @@ export function validateDefinitionRules(dataType: DataType, rulesRaw: unknown): 
   }
   if (rules.schema) {
     try {
-      ajv.compile(rules.schema);
+      schemaValidator(rules.schema);
     } catch {
       fail('validationRules.schema is not a valid JSON schema');
     }

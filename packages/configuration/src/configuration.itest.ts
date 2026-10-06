@@ -110,6 +110,13 @@ describe('schema and definitions', () => {
     ).toBe('23514');
     expect(await code(svc.createParameter(param(key(), { dataType: 'ENUM' }), A))).toBe('VALIDATION_FAILED');
   });
+  it('maps database CHECK violations to VALIDATION_FAILED and preserves the constraint name', async () => {
+    const error = (await rejection(svc.createParameter(param(key(), { ownerRole: 'Bad Role' }), A))) as ConfigurationError;
+    expect(error).toMatchObject({
+      code: 'VALIDATION_FAILED',
+      details: { constraint: 'ck_parameters__owner_role_format' },
+    });
+  });
   it('a parameter cannot be overridden at a scope it does not allow', async () => {
     const k = key();
     await svc.createParameter(param(k, { allowedOverrideScopes: ['MARKET'] }), A);
@@ -200,6 +207,8 @@ describe('resolution', () => {
     const k = key();
     await svc.createParameter(param(k, { isRequired: false }), A);
     expect((await svc.resolveMany([k], {})).values.has(k)).toBe(false);
+    const err = (await rejection(svc.value(k))) as ConfigurationError;
+    expect(err).toMatchObject({ code: 'NO_VALUE', details: { key: k } });
   });
   it('a value whose period has ended no longer resolves (no stale fallback)', async () => {
     const k = key();
@@ -236,11 +245,11 @@ describe('effective dating and versions', () => {
       expect(await s.activateDue()).toBe(0); // idempotent
       expect((await s.getChangeRequest(sched.changeRequestId)).state).toBe('ACTIVE');
       expect((await s.getChangeRequest(first.changeRequestId)).state).toBe('SUPERSEDED');
-      const events = await fresh.database.query<{ payload_json: Record<string, unknown> }>(
-        'SELECT payload_json FROM integration.outbox_events WHERE event_type = $1',
+      const events = await fresh.database.query<{ payload_json: Record<string, unknown>; actor_type: string }>(
+        'SELECT payload_json, actor_type FROM integration.outbox_events WHERE event_type = $1',
         [CONFIGURATION_EVENTS.activated],
       );
-      expect(events.filter((e) => e.payload_json.changeRequestId === sched.changeRequestId)).toHaveLength(1);
+      expect(events.filter((e) => e.payload_json.changeRequestId === sched.changeRequestId)).toMatchObject([{ actor_type: 'system' }]);
     }));
   it('concurrent activation runs activate each change exactly once', () =>
     withFreshService(async (s, fresh) => {

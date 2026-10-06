@@ -165,7 +165,9 @@ describe('configuration API behavior', () => {
     const s1 = await call('POST', '/snapshots', await adminToken(['configuration-read']), { keys: ['devtest.k.a'], context: {}, purpose: 'p' });
     expect(s1.statusCode).toBe(201);
     expect(s1.body).not.toContain('TOP-SECRET');
-    expect((await call('GET', '/snapshots/s1', await adminToken(['configuration-read']))).body).not.toContain('TOP-SECRET');
+    const snapshot = await call('GET', '/snapshots/6f1d0c3e-9d1f-4a43-8f64-0a3b6f0f1111', await adminToken(['configuration-read']));
+    expect(snapshot.statusCode).toBe(200);
+    expect(snapshot.body).not.toContain('TOP-SECRET');
 
     svc.getChangeRequest.mockResolvedValue(change({ sensitivity: 'SENSITIVE', proposedValue: 'TOP-SECRET' }));
     const c = await call('GET', '/change-requests/6f1d0c3e-9d1f-4a43-8f64-0a3b6f0f1111', await adminToken(['configuration-read']));

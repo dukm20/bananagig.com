@@ -2,12 +2,12 @@
 
 Current truth only. History lives in `IMPLEMENTATION_HISTORY.md`; decisions in `docs/architecture/`.
 
-Current checkpoint: CI-001
-Last completed checkpoint: CI-001
+Current checkpoint: CFG-001A
+Last completed checkpoint: CFG-001A
 Next approved checkpoint: CFG-002 — Content and Localization Registry
 Latest migration: 0004_configuration_registry.sql
 Latest ADR: ADR-0017
-Last updated: 2026-10-05
+Last updated: 2026-10-06
 
 ## Architecture
 
@@ -78,4 +78,4 @@ None.
 
 ## Test counts
 
-Unit: 116 (config 6, contracts 4, observability 2, identity 20, configuration 25, api 32, worker 5, web 22) plus 59 root script tests (governance 37, identity realm 21, migration files 1). Integration: 133 (database 18, locks 9, migrations 11, postgis 6, outbox 8, worker 4, Keycloak 21, API auth 5, configuration 46, API configuration 5). Smoke: 28 checks.
+Unit: 117 (config 6, contracts 4, observability 2, identity 20, configuration 26, api 32, worker 5, web 22) plus 59 root script tests (governance 37, identity realm 21, migration files 1). Integration: 134 (database 18, locks 9, migrations 11, postgis 6, outbox 8, worker 4, Keycloak 21, API auth 5, configuration 47, API configuration 5). Smoke: 28 checks.

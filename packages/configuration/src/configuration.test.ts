@@ -73,6 +73,12 @@ describe('typed value validation', () => {
     expect(validateValue(d, { steps: [1, 2] })).toEqual({ steps: [1, 2] });
     for (const bad of [{ steps: ['x'] }, {}, 'str']) expect(code(() => validateValue(d, bad))).toBe('VALIDATION_FAILED');
   });
+  it('reuses the cached validator for schemas with an $id', () => {
+    const rules = { schema: { $id: 'https://bananagig.test/config-schema', type: 'object' } };
+    expect(validateDefinitionRules('JSON', rules)).toEqual(rules);
+    expect(validateDefinitionRules('JSON', rules)).toEqual(rules);
+    expect(validateValue(def('JSON', rules), { enabled: true })).toEqual({ enabled: true });
+  });
   it('definition rules must fit the data type', () => {
     expect(code(() => validateDefinitionRules('ENUM', {}))).toBe('VALIDATION_FAILED');
     expect(code(() => validateDefinitionRules('STRING', { currencies: ['USD'] }))).toBe('VALIDATION_FAILED');

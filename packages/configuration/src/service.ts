@@ -123,6 +123,7 @@ function mapDbError(err: unknown): never {
     throw new ConfigurationError('CONFLICT', 'the value period overlaps an existing version for this scope', { constraint: e.constraint });
   if (e.code === '23505')
     throw new ConfigurationError('CONFLICT', 'a conflicting record already exists (duplicate key, version or decision)', { constraint: e.constraint });
+  if (e.code === '23514') throw new ConfigurationError('VALIDATION_FAILED', 'the operation violates a configuration constraint', { constraint: e.constraint });
   if (e.code === '23000' && /own change/.test(e.message ?? ''))
     throw new ConfigurationError('FORBIDDEN_APPROVER', 'the requester cannot approve their own change when a second approver is required');
   if (e.code === '23000') throw new ConfigurationError('INVALID_STATE', 'the operation violates an immutability or workflow rule');
@@ -169,12 +170,13 @@ export class ConfigurationService {
     cr: { changeRequestId: string; parameterKey: string; scopeType: ScopeType; scopeRef: string | null; effectiveFrom: Date },
     actor: string,
     version?: number,
+    actorType: 'user' | 'system' | 'service' = 'user',
   ) {
     return insertOutboxEvent(trx, {
       aggregateType: 'configuration_change_request',
       aggregateId: cr.changeRequestId,
       eventType: type,
-      actorType: 'user',
+      actorType,
       actorId: actor,
       correlationId: getCorrelationId() ?? randomUUID(),
       payload: {
@@ -480,6 +482,7 @@ export class ConfigurationService {
           },
           'system:configuration-activation',
           r.version as number,
+          'system',
         );
         const prior = (
           await sql<Row>`SELECT version_id FROM configuration.value_versions WHERE parameter_value_id = ${r.parameter_value_id as string} AND version = ${(r.version as number) - 1}`.execute(
@@ -516,7 +519,9 @@ export class ConfigurationService {
   }
   /** Convenience for consumers: the typed value of one required parameter. Throws a typed ConfigurationError, never a code default. */
   async value<T = unknown>(key: string, ctx: ConfigContext = {}): Promise<T> {
-    return (await this.resolveMany([key], ctx)).values.get(key)!.value as T;
+    const resolved = (await this.resolveMany([key], ctx)).values.get(key);
+    if (!resolved) throw new ConfigurationError('NO_VALUE', 'no configuration value is effective for the parameter', { key });
+    return resolved.value as T;
   }
 
   /** Immutable record of exactly which versions applied. Always authoritative: reads the database, never the cache or LKG. */

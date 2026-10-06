@@ -265,3 +265,34 @@ None required.
 
 ### Known follow-up
 DEBT-0001 stays open until the governance and compose-smoke jobs have run green remotely and branch protection exists.
+
+
+## CFG-001A — 2026-10-06
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(CFG-001A)"`.
+Summary: Corrective follow-up to CFG-001 that was already present as uncommitted changes in the working tree when CFG-002 began (not written in this session). It tightens error mapping and outbox actor attribution and fixes a documentation error about context keys. No schema, contract or API surface change.
+
+### Delivered
+- `ConfigurationService`: Postgres CHECK violations (`23514`) map to `VALIDATION_FAILED` and keep the constraint name; `value()` throws a typed `NO_VALUE` error instead of dereferencing a missing result; the scheduled-activation outbox event records `actor_type = 'system'` (was `user`)
+- `validateDefinitionRules` reuses the cached schema validator, so a JSON schema with an `$id` can be validated more than once
+- Documentation: `CONFIGURATION.md` and `skills/configuration` now show the real context keys (`{ market: id }`, lower-case) and the actual three resolver queries
+- Tests: CHECK-violation mapping, `NO_VALUE` from `value()`, `actor_type = 'system'` on activation events, `$id` validator reuse; an API snapshot test now requests a real snapshot id
+
+### Schema
+None. No migration. Data model: NOT_REQUIRED.
+
+### Contracts
+None. OpenAPI and AsyncAPI are unchanged.
+
+### Tests
+Unit 117 (configuration 26), root script tests 59, integration 134 (configuration 47), all passing.
+
+### Skills updated
+`skills/configuration`: context-key example corrected.
+
+### ADRs
+None required.
+
+### Known follow-up
+None.
