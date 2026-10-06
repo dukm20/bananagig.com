@@ -433,3 +433,28 @@ Assert 401 with an empty or invalid body in route tests (the CFG-001 test posts 
 
 ### Evidence
 `apps/api/src/modules/configuration/routes.ts`, `apps/api/src/configuration.test.ts` ("requires authentication on every route (401)").
+
+## LRN-0018 — A dev-tool pin can surface in `pnpm audit --prod` through an optional peer, and `>=` overrides can jump a major
+
+Date: 2026-10-05
+Checkpoint: CI-001
+Domain: infrastructure
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/infrastructure/SKILL.md
+
+### Context
+CI's `pnpm audit --prod` failed on `@babel/core` reached as `apps/web > next > styled-jsx > @babel/core`. The only copy in the lockfile was 7.12.9, pinned exactly by `@asyncapi/generator-react-sdk` (dev tooling); pnpm used it to satisfy next's optional peer. A first override with `>=7.29.6` resolved to `@babel/core` 8.0.6 and broke the `^7` peer ranges of the Babel plugins.
+
+### Learning
+A production-audit finding may come from a dev-only dependency that satisfies a prod package's optional peer, so check `pnpm why` before judging reachability. Scope the override to the pinning parent (`"parent>child"`) and cap the major (`^7.29.6`); verify with `pnpm peers check`.
+
+### Why it matters
+An unbounded `>=` override can silently adopt a new major that satisfies the audit and breaks peers. Separately, a gate that CI enforces cannot be treated as "accepted" in a debt entry: this advisory was recorded as accepted at INF-002 while `pnpm audit --prod` already exited 1 locally, and nobody saw it fail until CI ran.
+
+### Reuse rule
+Run each CI gate locally and check its exit code, not just its summary. Use scoped, major-capped overrides and record them in `docs/security/SCAN_RESULTS.md`.
+
+### Evidence
+`pnpm-workspace.yaml` (overrides), `docs/security/SCAN_RESULTS.md` (CI-001 section).

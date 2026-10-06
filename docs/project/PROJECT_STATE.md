@@ -2,8 +2,8 @@
 
 Current truth only. History lives in `IMPLEMENTATION_HISTORY.md`; decisions in `docs/architecture/`.
 
-Current checkpoint: CFG-001
-Last completed checkpoint: CFG-001
+Current checkpoint: CI-001
+Last completed checkpoint: CI-001
 Next approved checkpoint: CFG-002 — Content and Localization Registry
 Latest migration: 0004_configuration_registry.sql
 Latest ADR: ADR-0017
@@ -69,7 +69,7 @@ None to external services. Local-only stand-ins: Mailpit (SMTP sink), Keycloak r
 - Configuration: temporary client-role permissions (DEBT-0021), activation marker lag (DEBT-0022), no admin UI (DEBT-0023), unvalidated scope references (DEBT-0024), retention undefined (DEBT-0025)
 - Idempotency records table designed, not built (DEBT-0013)
 - Least-privilege runtime database roles designed, not built (DEBT-0012)
-- CI: workflow written, never executed (DEBT-0001)
+- CI: first run (2026-10-06 UTC, commit 17b6b8d) failed at `pnpm audit --prod`; CI-001 resolved the cause, but the governance and compose-smoke jobs have not yet run remotely (DEBT-0001)
 - Web telemetry: SDK registered; page-level traces and logs not verified in Tempo/Loki (DEBT-0011)
 
 ## Known blockers

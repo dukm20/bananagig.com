@@ -17,3 +17,5 @@ overrides:
   simple-git: ">=4.0.1"
   "@simple-git/argv-parser": ">=2.0.1"
   jsonpath-plus: ">=10.3.0"
+  # Security: GHSA-4x5r-pxfx-6jf8 (@babel/core <=7.29.0). @asyncapi/generator-react-sdk pins 7.12.9 exactly; the 7.x line is API-compatible (CI-001)
+  "@asyncapi/generator-react-sdk>@babel/core": "^7.29.6"

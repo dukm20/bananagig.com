@@ -73,6 +73,7 @@ Compose services add no tables. A service that stores state (queue, cache, searc
 - PostGIS comes from a custom image because upstream has no arm64 build (LRN-0002).
 - Image scans do not see bundled dependencies; also run the lockfile audit (LRN-0008).
 - Distroless images (otel-collector, flagd) cannot have shell healthchecks (DEBT-0009).
+- Fix audit findings with a scoped, major-capped override (`"parent>child": "^x.y.z"`) and check `pnpm peers check`; an open `>=` range can adopt a new major. Run `pnpm audit --prod` and read its exit code before calling a finding accepted (LRN-0018).
 
 ## Do not
 
@@ -87,4 +88,4 @@ ADR-0001, ADR-0003, ADR-0005, ADR-0007
 
 ## Last reviewed
 
-2026-10-05 (INF-004)
+2026-10-05 (CI-001)

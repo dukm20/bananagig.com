@@ -281,7 +281,8 @@ describe('project-state:check', () => {
   it('rejects a history section inside PROJECT_STATE and malformed debt entries', () => {
     const r = realFiles();
     edit(r, 'docs/project/PROJECT_STATE.md', (s) => `${s}\n## History\n\nold news\n`);
-    edit(r, 'docs/project/TECH_DEBT.md', (s) => s.replace('Exit criteria: a remote exists', 'Exit: a remote exists'));
+    // Break the first debt entry's "Exit criteria:" label (independent of any entry's wording).
+    edit(r, 'docs/project/TECH_DEBT.md', (s) => s.replace('Exit criteria:', 'Exit:'));
     const out = node(r, 'project-state-check.mjs');
     expect(out.out).toContain('current state only');
     expect(out.out).toContain('missing "Exit criteria:"');

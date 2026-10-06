@@ -4,13 +4,13 @@ Every knowingly postponed item is recorded here, not buried in completion report
 
 ## DEBT-0001 — CI workflow never executed
 
-Status: OPEN
+Status: IN_PROGRESS
 Severity: MEDIUM
 Introduced by: INF-001
 Owner/domain: infrastructure
-Description: `.github/workflows/ci.yml` (verify, integration, compose-smoke, Trivy, governance) is written but has never run. A remote `origin` (github.com/dukm20/bananagig.com) was configured in `.git/config` outside the checkpoints (not by the checkpoint tooling), but nothing has been pushed, so no run exists. Everything the workflow runs was verified locally.
+Description: `.github/workflows/ci.yml` (verify, integration, compose-smoke, Trivy, governance) was written in INF-001 and first executed on 2026-10-06 (UTC) when the owner pushed `main` to github.com/dukm20/bananagig.com. Run #1 (commit 17b6b8d) failed at `pnpm audit --prod`, which skipped the governance checks and the compose-smoke job; every step before it passed, including the integration tests. CI-001 fixed the cause. The governance and compose-smoke jobs had not yet run at the time CI-001 was committed, so they remain unverified remotely until a green run exists.
 Why deferred: pushing is a separate explicit human decision; checkpoint tooling never pushes.
-Exit criteria: a remote exists, the first push is made by the owner, the workflow runs green on a PR, and branch protection requires it.
+Exit criteria: a green run of every job (verify with governance, compose-smoke) on the remote, and branch protection requiring it.
 Target checkpoint: first checkpoint after a remote is configured
 
 ## DEBT-0002 — Transactional outbox not implemented
@@ -79,6 +79,7 @@ Description: `pnpm audit` still reports braces (high, no patch), ajv, sprintf-js
 Why deferred: no fixed versions are available upstream.
 Exit criteria: re-audit at each dependency refresh; replace the AsyncAPI CLI with `@asyncapi/parser` if findings persist.
 Target checkpoint: INF-004
+Re-audited in CI-001 (2026-10-05): the @babel/core finding is RESOLVED by a scoped override (`docs/security/SCAN_RESULTS.md`). `pnpm audit --prod` now reports no vulnerabilities; the full audit reports braces (high), ajv x2 and sprintf-js (moderate), all unchanged and dev/CI only. Entry stays ACCEPTED for those four.
 Re-audited in INF-003 (2026-10-05): unchanged. `pnpm audit --prod` reports 1 low; full audit reports braces (high, no patch), sprintf-js (moderate, no patch), ajv (moderate x2) and @babel/core (low), all in the AsyncAPI CLI toolchain, dev/CI only.
 
 ## DEBT-0008 — AGPL licensing review for Grafana, Loki, Tempo

@@ -231,3 +231,37 @@ ADR-0016 (registry design), ADR-0017 (cache, last-known-good, temporary permissi
 
 ### Known follow-up
 DEBT-0021 to DEBT-0025. LRN-0015 to LRN-0017.
+
+
+## CI-001 — 2026-10-05
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(CI-001)"`.
+Summary: Corrective checkpoint. The first GitHub Actions run (2026-10-06 UTC, commit 17b6b8d) failed at `pnpm audit --prod` because of a low `@babel/core` advisory (GHSA-4x5r-pxfx-6jf8). It was resolved with a scoped pnpm override, without relaxing the audit gate. No application behavior, business logic, schema or migration changed.
+
+### Delivered
+- `pnpm-workspace.yaml`: override `"@asyncapi/generator-react-sdk>@babel/core": "^7.29.6"`; `pnpm-lock.yaml` now holds a single `@babel/core` 7.29.7 (was 7.12.9, exact-pinned by the AsyncAPI generator)
+- `docs/security/SCAN_RESULTS.md`: CI-001 section with advisory, ranges, resolution and rationale; historical findings kept
+- `scripts/governance.test.mjs`: the malformed-debt test no longer depends on DEBT-0001's exact wording (test-only change; it broke when that entry was rewritten)
+- DEBT-0001 (CI now executed, still IN_PROGRESS) and DEBT-0007 (babel finding resolved) updated; LRN-0018; `skills/infrastructure` lesson
+
+### Finding recorded
+The advisory was not new: it was already listed as accepted dev tooling at INF-002. CI had never run, so the audit gate's nonzero exit was never enforced until the first push. The "production" classification came from next's optional `styled-jsx` peer resolving to the dev tooling's pinned copy.
+
+### Schema
+None. No migration. Data model: NOT_REQUIRED.
+
+### Contracts
+None. OpenAPI and AsyncAPI are unchanged (`pnpm specs:check` passes without regeneration).
+
+### Tests
+Unit 116, root script tests 59, integration 133, smoke 28 checks (all unchanged). `pnpm audit --prod`: no vulnerabilities. Rebuilt images: 0 HIGH/CRITICAL (Trivy).
+
+### Skills updated
+`skills/infrastructure` (one lesson bullet).
+
+### ADRs
+None required.
+
+### Known follow-up
+DEBT-0001 stays open until the governance and compose-smoke jobs have run green remotely and branch protection exists.
