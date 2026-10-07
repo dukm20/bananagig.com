@@ -4,6 +4,7 @@ import { createDbTelemetry, getCorrelationId, registerPoolMetrics, initObservabi
 import { NatsClient, closeValkey, createS3, createValkey, runDiagnostics } from '@bananagig/platform';
 import { ConfigurationService, ValkeyConfigCache } from '@bananagig/configuration';
 import { ContentService } from '@bananagig/content';
+import { GeographyService, createGeographyScopeReferenceValidator, createMarketDefaultsProvider } from '@bananagig/geography';
 import { createTokenVerifier } from '@bananagig/identity';
 import { buildApp } from './app';
 
@@ -27,6 +28,17 @@ const verifier = createTokenVerifier({
   adminClientId: cfg.identity.adminClientId,
 });
 
+// Geography is the reference-data authority for COUNTRY/MARKET scopes: configuration and content validate scope references against it and
+// content derives a market's default locale from it (ports, so no package imports another).
+const geography = new GeographyService({
+  database,
+  cache: new ValkeyConfigCache(valkey),
+  env: cfg.env,
+  cacheTtlSeconds: cfg.configuration.cacheTtlSeconds,
+  allowTestKeys: cfg.env !== 'production', // devtest-* markets and the test country ZZ are DEV/TEST only
+});
+const scopeReferences = createGeographyScopeReferenceValidator(geography);
+
 const configuration = new ConfigurationService({
   database,
   cache: new ValkeyConfigCache(valkey),
@@ -34,6 +46,7 @@ const configuration = new ConfigurationService({
   cacheTtlSeconds: cfg.configuration.cacheTtlSeconds,
   lkgMaxAgeSeconds: cfg.configuration.lkgMaxAgeSeconds,
   allowTestKeys: cfg.env !== 'production', // devtest.* keys are DEV/TEST only
+  scopeReferences,
 });
 
 const content = new ContentService({
@@ -43,6 +56,8 @@ const content = new ContentService({
   cacheTtlSeconds: cfg.configuration.cacheTtlSeconds,
   lkgMaxAgeSeconds: cfg.configuration.lkgMaxAgeSeconds,
   allowTestKeys: cfg.env !== 'production', // devtest.* keys are DEV/TEST only
+  scopeReferences,
+  markets: createMarketDefaultsProvider(geography),
 });
 
 const app = await buildApp({
@@ -50,6 +65,7 @@ const app = await buildApp({
   verifier,
   configuration,
   content,
+  geography,
   // Critical for serving requests: Postgres only. Valkey/NATS/OpenSearch/flagd outages must not take the API down.
   readiness: async () => ({ postgres: (await database.health()).ok ? 'up' : 'down' }),
   diagnostics: () => runDiagnostics(adapters),

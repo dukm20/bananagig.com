@@ -115,7 +115,14 @@ describe('content API workflow (HTTP, real database)', () => {
     );
 
     // locales: authoring needs registration, serving needs activation
-    expect((await api('POST', '/locales', author, { locale: 'es-US', reason: 'http test' })).body.data).toMatchObject({ locale: 'es-US', isActive: false });
+    expect((await api('POST', '/locales', author, { locale: 'es-US', reason: 'http test' })).body.data).toMatchObject({
+      locale: 'es-US',
+      displayName: 'Spanish (United States)',
+      language: 'es',
+      script: null,
+      region: 'US',
+      isActive: false,
+    });
     const unregistered = await api('POST', `/entries/${k}/versions`, author, { locale: 'fr-FR', body: 'Bonjour {name}', reason: 'r' });
     expect(unregistered.status).toBe(404);
     expect(unregistered.body.error.code).toBe('CONTENT_LOCALE_NOT_FOUND');
@@ -344,5 +351,37 @@ describe('content API workflow (HTTP, real database)', () => {
     expect((await api('POST', '/resolve', undefined, { key: k, locale: 'en-US' })).status).toBe(404);
     expect((await api('POST', `/entries/${k}/activation`, author, { active: true, reason: 'restore' })).body.data.isActive).toBe(true);
     expect((await api('POST', '/resolve', undefined, { key: k, locale: 'en-US' })).status).toBe(200);
+  });
+
+  it('activation bodies are validated raw: {"active":1}, "true", "false" and null are 400 and change nothing (no ajv coercion of booleans)', async () => {
+    const k = key('coerce');
+    await api('POST', '/entries', author, { key: k, contentType: 'PLAIN_TEXT', ownerRole: 'CONTENT', description: 'coercion test' });
+    await publish(k, 'coerce text');
+    const auditCount = async () => (await iso.database.query<{ n: number }>('SELECT count(*)::int AS n FROM content.audit_events', []))[0]!.n;
+    const before = await auditCount();
+    // an ACTIVE entry: {"active":"false"} / 0 / null would have DEACTIVATED it through coercion
+    for (const active of [0, '0', 'false', null, '']) {
+      const r = await api('POST', `/entries/${k}/activation`, author, { active, reason: 'must not apply' });
+      expect(r.status, JSON.stringify(active)).toBe(400);
+      expect(r.body.error.code).toBe('VALIDATION_FAILED');
+    }
+    expect((await api('POST', '/resolve', undefined, { key: k, locale: 'en-US' })).status).toBe(200);
+    // an INACTIVE locale: {"active":1} / "true" would have ACTIVATED it
+    const loc = await api('POST', '/locales', author, { locale: 'qae', active: false, reason: 'coercion test' });
+    expect(loc.status, JSON.stringify(loc.body)).toBe(201);
+    for (const active of [1, '1', 'true', null]) {
+      expect((await api('POST', '/locales/qae/activation', author, { active, reason: 'must not apply' })).status, JSON.stringify(active)).toBe(400);
+      expect((await api('POST', '/locales', author, { locale: 'qaf', active, reason: 'must not apply' })).status, JSON.stringify(active)).toBe(400);
+    }
+    const stored = await iso.database.query<{ locale: string; is_active: boolean }>(
+      "SELECT locale, is_active FROM content.locales WHERE locale IN ('qae', 'qaf')",
+      [],
+    );
+    expect(stored).toEqual([{ locale: 'qae', is_active: false }]); // qaf was never registered, qae stayed inactive
+    // nothing was audited by any of the refused requests (the only new audit rows are the registration above)
+    expect((await auditCount()) - before).toBe(1);
+    // real booleans still work
+    expect((await api('POST', '/locales/qae/activation', author, { active: true, reason: 'now for real' })).body.data.isActive).toBe(true);
+    expect((await api('POST', `/entries/${k}/activation`, author, { active: false, reason: 'now for real' })).body.data.isActive).toBe(false);
   });
 });

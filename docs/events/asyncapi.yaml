@@ -3,7 +3,7 @@ asyncapi: 3.0.0
 info:
   title: BananaGig Events
   version: 1.0.0
-  description: Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events and the content registry events exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.
+  description: Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events and the geography registry events exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.
 defaultContentType: application/json
 channels:
   infraPing:
@@ -66,6 +66,42 @@ channels:
     messages:
       ContentLegalDocumentPublished:
         $ref: "#/components/messages/ContentLegalDocumentPublished"
+  geography_countryActivated:
+    address: bananagig.geography.country-activated.v1
+    description: A country became ACTIVE. Published through the transactional outbox (aggregate geography_country); payload carries identifiers only, never values.
+    messages:
+      GeographyCountryActivated:
+        $ref: "#/components/messages/GeographyCountryActivated"
+  geography_countryDeactivated:
+    address: bananagig.geography.country-deactivated.v1
+    description: An ACTIVE country was deactivated (ACTIVE to INACTIVE). Retiring a PLANNED country emits no event. Published through the transactional outbox (aggregate geography_country); payload carries identifiers only, never values.
+    messages:
+      GeographyCountryDeactivated:
+        $ref: "#/components/messages/GeographyCountryDeactivated"
+  geography_marketCreated:
+    address: bananagig.geography.market-created.v1
+    description: A market was created (PLANNED). Published through the transactional outbox (aggregate geography_market); payload carries identifiers only, never values.
+    messages:
+      GeographyMarketCreated:
+        $ref: "#/components/messages/GeographyMarketCreated"
+  geography_marketActivated:
+    address: bananagig.geography.market-activated.v1
+    description: A market became ACTIVE. Published through the transactional outbox (aggregate geography_market); payload carries identifiers only, never values.
+    messages:
+      GeographyMarketActivated:
+        $ref: "#/components/messages/GeographyMarketActivated"
+  geography_marketDeactivated:
+    address: bananagig.geography.market-deactivated.v1
+    description: An ACTIVE market was deactivated (ACTIVE to INACTIVE). Retiring a PLANNED market emits no event. Published through the transactional outbox (aggregate geography_market); payload carries identifiers only, never values.
+    messages:
+      GeographyMarketDeactivated:
+        $ref: "#/components/messages/GeographyMarketDeactivated"
+  geography_marketDefaultsChanged:
+    address: bananagig.geography.market-defaults-changed.v1
+    description: "The defaults of a market changed: its default locale, currency or time zone (cause MARKET), or the distance unit, first day of week, date format or time format of its country (cause COUNTRY). changedFields names the fields, never their values. Published through the transactional outbox (aggregate geography_market); payload carries identifiers only, never values."
+    messages:
+      GeographyMarketDefaultsChanged:
+        $ref: "#/components/messages/GeographyMarketDefaultsChanged"
 operations:
   receiveInfraPing:
     action: receive
@@ -117,6 +153,36 @@ operations:
     channel:
       $ref: "#/channels/content_legalDocumentPublished"
     summary: A legal document version became effective (emitted in addition to ContentVersionPublished); bodySha256 lets consent records bind to the exact text.
+  sendGeographyCountryActivated:
+    action: send
+    channel:
+      $ref: "#/channels/geography_countryActivated"
+    summary: A country became ACTIVE.
+  sendGeographyCountryDeactivated:
+    action: send
+    channel:
+      $ref: "#/channels/geography_countryDeactivated"
+    summary: An ACTIVE country was deactivated (ACTIVE to INACTIVE). Retiring a PLANNED country emits no event.
+  sendGeographyMarketCreated:
+    action: send
+    channel:
+      $ref: "#/channels/geography_marketCreated"
+    summary: A market was created (PLANNED).
+  sendGeographyMarketActivated:
+    action: send
+    channel:
+      $ref: "#/channels/geography_marketActivated"
+    summary: A market became ACTIVE.
+  sendGeographyMarketDeactivated:
+    action: send
+    channel:
+      $ref: "#/channels/geography_marketDeactivated"
+    summary: An ACTIVE market was deactivated (ACTIVE to INACTIVE). Retiring a PLANNED market emits no event.
+  sendGeographyMarketDefaultsChanged:
+    action: send
+    channel:
+      $ref: "#/channels/geography_marketDefaultsChanged"
+    summary: "The defaults of a market changed: its default locale, currency or time zone (cause MARKET), or the distance unit, first day of week, date format or time format of its country (cause COUNTRY). changedFields names the fields, never their values."
 components:
   messages:
     EventEnvelope:
@@ -219,6 +285,66 @@ components:
             type: string
       payload:
         $ref: "#/components/schemas/ContentLegalDocumentPublished"
+    GeographyCountryActivated:
+      name: GeographyCountryActivated
+      title: A country became ACTIVE.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/GeographyCountryActivated"
+    GeographyCountryDeactivated:
+      name: GeographyCountryDeactivated
+      title: An ACTIVE country was deactivated (ACTIVE to INACTIVE). Retiring a PLANNED country emits no event.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/GeographyCountryDeactivated"
+    GeographyMarketCreated:
+      name: GeographyMarketCreated
+      title: A market was created (PLANNED).
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/GeographyMarketCreated"
+    GeographyMarketActivated:
+      name: GeographyMarketActivated
+      title: A market became ACTIVE.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/GeographyMarketActivated"
+    GeographyMarketDeactivated:
+      name: GeographyMarketDeactivated
+      title: An ACTIVE market was deactivated (ACTIVE to INACTIVE). Retiring a PLANNED market emits no event.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/GeographyMarketDeactivated"
+    GeographyMarketDefaultsChanged:
+      name: GeographyMarketDefaultsChanged
+      title: "The defaults of a market changed: its default locale, currency or time zone (cause MARKET), or the distance unit, first day of week, date format or time format of its country (cause COUNTRY). changedFields names the fields, never their values."
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/GeographyMarketDefaultsChanged"
   schemas:
     EventEnvelope:
       type: object
@@ -1112,6 +1238,444 @@ components:
             - version
             - effectiveFrom
             - bodySha256
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    GeographyCountryActivated:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.geography.country-activated.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            countryCode:
+              type: string
+          required:
+            - countryCode
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    GeographyCountryDeactivated:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.geography.country-deactivated.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            countryCode:
+              type: string
+          required:
+            - countryCode
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    GeographyMarketCreated:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.geography.market-created.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            marketCode:
+              type: string
+            countryCode:
+              type: string
+            changedFields:
+              type: array
+              items:
+                type: string
+            cause:
+              type: string
+              enum:
+                - MARKET
+                - COUNTRY
+          required:
+            - marketCode
+            - countryCode
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    GeographyMarketActivated:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.geography.market-activated.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            marketCode:
+              type: string
+            countryCode:
+              type: string
+            changedFields:
+              type: array
+              items:
+                type: string
+            cause:
+              type: string
+              enum:
+                - MARKET
+                - COUNTRY
+          required:
+            - marketCode
+            - countryCode
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    GeographyMarketDeactivated:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.geography.market-deactivated.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            marketCode:
+              type: string
+            countryCode:
+              type: string
+            changedFields:
+              type: array
+              items:
+                type: string
+            cause:
+              type: string
+              enum:
+                - MARKET
+                - COUNTRY
+          required:
+            - marketCode
+            - countryCode
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    GeographyMarketDefaultsChanged:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.geography.market-defaults-changed.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            marketCode:
+              type: string
+            countryCode:
+              type: string
+            changedFields:
+              type: array
+              items:
+                type: string
+            cause:
+              type: string
+              enum:
+                - MARKET
+                - COUNTRY
+          required:
+            - marketCode
+            - countryCode
           additionalProperties: false
       required:
         - eventId

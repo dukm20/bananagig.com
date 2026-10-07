@@ -3,4 +3,5 @@ export * from './errors';
 export * from './values';
 export * from './resolver';
 export * from './cache';
+export * from './scope-reference';
 export * from './service';

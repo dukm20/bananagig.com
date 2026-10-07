@@ -80,6 +80,7 @@ This skill is the data-model process: see the review gate above, `DATABASE_CONVE
 - Local dev runs the app as the Postgres superuser (DEV ONLY, DEBT-0012); the target least-privilege role model is in `DATABASE_CONVENTIONS.md`.
 - For history that must be immutable and non-overlapping, store a half-open range, add a gist exclusion constraint (`btree_gist`), and allow exactly one closure of the open end through a guard trigger (LRN-0015, ADR-0016). Reference tables for structural enums (for example `configuration.scope_levels`) are seeded by migration; business values are never seeded.
 - When the unit of history is a document, keep one versions table that carries its own lifecycle and a guard trigger for the state machine (content, ADR-0018). Compute integrity hashes in an insert trigger (`content.versions.body_sha256`), use `UNIQUE NULLS NOT DISTINCT` for holder keys with a nullable scope reference, and seed product text through the real lifecycle inside a `DO` block so guards, audit and the exclusion constraint all apply (migration `0006`); never insert PUBLISHED rows directly or disable triggers.
+- For reference data with an activation status (geography, ADR-0021): a guard trigger makes the initial status one-way (PLANNED is never written back) and refuses ACTIVE without its ACTIVE dependencies; the activation reads dependency rows with `FOR SHARE` while a deactivation needs the row lock, so exactly one of two racing changes wins; link rows are immutable (a BEFORE UPDATE `forbid_mutation` trigger, add or delete only). Use one lock order in triggers and service (children first by id order, then the owner, then the dependency rows), lock a row with a bare `SELECT 1 ... FOR UPDATE|SHARE` and read it in a second statement (joined and `ARRAY(subselect)` columns are stale after a lock wait in READ COMMITTED), and let a rule that reads sibling rows lock the owning row first. Give every guard `RAISE` a machine-readable `DETAIL = 'geography_rule:<KEY>'` so the service classifies on the key, never on message text; accept that a raw SQL update locks its row before its trigger can run, so some inversions remain and surface as retryable `40P01`. Express "a child may only use what its parent supports" with composite foreign keys (`uq_markets__market_country`, `market_locales (country_id, locale)`) and "default is one of the members" with a DEFERRABLE INITIALLY DEFERRED composite key to the membership table. Validate names against the engine's own data (`pg_timezone_names` for IANA zones) and derive parts of a code with generated columns (`content.locales.language`, `script`, `region`) instead of parsing in code. Seed reference rows in the same order the service would (created PLANNED, linked, then activated) so the guards run.
 
 ## Do not
 
@@ -92,8 +93,8 @@ This skill is the data-model process: see the review gate above, `DATABASE_CONVE
 
 ## Related ADRs
 
-ADR-0001, ADR-0004, ADR-0008, ADR-0009, ADR-0010, ADR-0011, ADR-0012
+ADR-0001, ADR-0004, ADR-0008, ADR-0009, ADR-0010, ADR-0011, ADR-0012, ADR-0021
 
 ## Last reviewed
 
-2026-10-06 (CFG-002)
+2026-10-07 (GEO-001)

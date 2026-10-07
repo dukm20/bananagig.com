@@ -57,3 +57,7 @@ None beyond migration `0005_content_registry.sql` (policy columns and CHECKs). R
 - `apps/web/src/lib/content.ts`
 - `apps/web/src/lib/locale.ts`
 - `docs/engineering/CONTENT.md`
+
+## Updated by GEO-001
+
+"The market default is supplied by the caller in the context until geography exists" is no longer the whole story. With the geography registry present, when the context names a `market` and no `marketDefaultLocale`, the content service derives the market default locale through the optional `MarketDefaultsProvider` port and merges it into the effective context before hashing, caching and snapshotting; an explicit `marketDefaultLocale` still wins; a missing or failing provider degrades to no market default (ADR-0022). The chain, precedence, cache rules and the rule that an inactive market default is skipped and not cached are unchanged.

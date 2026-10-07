@@ -40,12 +40,13 @@ const seeded = (): Promise<SeedRow[]> =>
   iso.database.query<SeedRow>(
     `SELECT e.entry_id, e.key, v.version_id, v.body, v.body_sha256, v.status, v.effective_from, v.effective_to
        FROM content.entries e JOIN content.versions v ON v.entry_id = e.entry_id
-      WHERE v.locale = 'en-US' AND v.status IN ('SCHEDULED', 'PUBLISHED', 'SUPERSEDED') ORDER BY e.key`,
+      WHERE v.locale = 'en-US' AND v.status IN ('SCHEDULED', 'PUBLISHED', 'SUPERSEDED') AND e.key = ANY($1) ORDER BY e.key`,
+    [KEYS],
   );
 
 describe('migration 0006 seeded shell copy', () => {
   it('creates exactly the eight representative entries with the governance the seed promises', async () => {
-    const rows = await iso.database.query<Record<string, unknown>>('SELECT * FROM content.entries ORDER BY key');
+    const rows = await iso.database.query<Record<string, unknown>>('SELECT * FROM content.entries WHERE key = ANY($1) ORDER BY key', [KEYS]);
     expect(rows.map((r) => r.key)).toEqual([...KEYS].sort());
     for (const r of rows) {
       expect(r).toMatchObject({
@@ -61,7 +62,16 @@ describe('migration 0006 seeded shell copy', () => {
       });
     }
     expect(Number((await iso.database.query<{ n: string }>('SELECT count(*) AS n FROM content.entry_variables'))[0]!.n)).toBe(0);
-    expect(Number((await iso.database.query<{ n: string }>('SELECT count(*) AS n FROM content.versions'))[0]!.n)).toBe(KEYS.length);
+    expect(
+      Number(
+        (
+          await iso.database.query<{ n: string }>(
+            'SELECT count(*) AS n FROM content.versions v JOIN content.entries e ON e.entry_id = v.entry_id WHERE e.key = ANY($1)',
+            [KEYS],
+          )
+        )[0]!.n,
+      ),
+    ).toBe(KEYS.length);
   });
 
   it('has exactly one PUBLISHED en-US PLATFORM version per key, effective now or earlier, with the expected body', async () => {
@@ -75,7 +85,8 @@ describe('migration 0006 seeded shell copy', () => {
       expect(r.body).toBe(SEEDED[r.key]!.body);
     }
     const detail = await iso.database.query<{ locale: string; scope_type: string; scope_ref: string | null; version: number; approval_policy: string }>(
-      'SELECT locale, scope_type, scope_ref, version, approval_policy FROM content.versions',
+      'SELECT v.locale, v.scope_type, v.scope_ref, v.version, v.approval_policy FROM content.versions v JOIN content.entries e ON e.entry_id = v.entry_id WHERE e.key = ANY($1)',
+      [KEYS],
     );
     for (const d of detail) expect(d).toEqual({ locale: 'en-US', scope_type: 'PLATFORM', scope_ref: null, version: 1, approval_policy: 'NONE' });
   });
@@ -97,7 +108,8 @@ describe('migration 0006 seeded shell copy', () => {
     }>(
       // ordered by time ALONE: the seed must not rely on the random audit_event_id to break ties
       `SELECT e.key, a.action, a.actor, a.correlation_id, a.locale, a.version_id, a.previous_version_id, a.occurred_at
-         FROM content.audit_events a JOIN content.entries e ON e.entry_id = a.entry_id ORDER BY e.key, a.occurred_at`,
+         FROM content.audit_events a JOIN content.entries e ON e.entry_id = a.entry_id WHERE e.key = ANY($1) ORDER BY e.key, a.occurred_at`,
+      [KEYS],
     );
     expect(audit).toHaveLength(KEYS.length * 5);
     const versionByKey = new Map((await seeded()).map((r) => [r.key, r.version_id]));
@@ -121,7 +133,16 @@ describe('migration 0006 seeded shell copy', () => {
     );
     expect(Number(distinct[0]!.n)).toBe(5);
     // no audit rows that do not belong to a seeded entry (the seed does not touch locales)
-    expect(Number((await iso.database.query<{ n: string }>('SELECT count(*) AS n FROM content.audit_events'))[0]!.n)).toBe(KEYS.length * 5);
+    expect(
+      Number(
+        (
+          await iso.database.query<{ n: string }>(
+            'SELECT count(*) AS n FROM content.audit_events a JOIN content.entries e ON e.entry_id = a.entry_id WHERE e.key = ANY($1)',
+            [KEYS],
+          )
+        )[0]!.n,
+      ),
+    ).toBe(KEYS.length * 5);
   });
 
   it('seeded versions emit no outbox events (consumers read current state; documented in the migration)', async () => {
@@ -208,7 +229,8 @@ describe('migration 0006 seeded shell copy', () => {
 
   it('seeds no business values: no price, fee, legal or marketplace copy', async () => {
     const rows = await iso.database.query<{ key: string; content_type: string; owner_role: string }>(
-      'SELECT key, content_type, owner_role FROM content.entries',
+      'SELECT key, content_type, owner_role FROM content.entries WHERE key = ANY($1)',
+      [KEYS],
     );
     expect(rows.every((r) => r.content_type !== 'LEGAL' && r.owner_role === 'CONTENT')).toBe(true);
     expect(rows.some((r) => /price|fee|legal|terms|privacy|commission|marketplace/i.test(r.key))).toBe(false);

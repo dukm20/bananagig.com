@@ -7,4 +7,5 @@ export * from './template';
 export * from './markup';
 export * from './resolver';
 export * from './cache';
+export * from './market-defaults';
 export * from './service';

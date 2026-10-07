@@ -47,6 +47,8 @@ describe('identity realm (infra/keycloak/bananagig-realm.json)', () => {
       'content-legal',
       'content-read',
       'content-write',
+      'geography-read',
+      'geography-write',
     ]);
     expect(r.roles.realm.map((x) => x.name).sort()).toEqual(['customer', 'provider']);
   });
@@ -133,6 +135,17 @@ describe('production realm build', () => {
     const otp = prod.authenticationFlows.find((f) => f.alias === 'bananagig-admin-browser-otp');
     expect(otp.authenticationExecutions.map((e) => e.authenticator)).toEqual(['auth-otp-form']);
     expect(lintRealm(prod, { production: true })).toEqual([]);
+  });
+  it('defines the geography-* roles as client roles of bananagig-admin only (never realm roles) and keeps them out of production users', () => {
+    const r = dev();
+    const adminRoles = r.roles.client['bananagig-admin'].map((x) => x.name);
+    for (const n of ['geography-read', 'geography-write']) {
+      expect(adminRoles).toContain(n);
+      expect(r.roles.realm.map((x) => x.name)).not.toContain(n);
+    }
+    const prod = buildProductionRealm(r, ORIGINS);
+    expect(prod.roles.client['bananagig-admin'].map((x) => x.name)).toEqual(expect.arrayContaining(['geography-read', 'geography-write']));
+    expect(prod.users).toEqual([]);
   });
   it('keeps the content-* role definitions in production but creates no users to hold them', () => {
     const prod = buildProductionRealm(dev(), ORIGINS);

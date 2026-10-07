@@ -125,6 +125,11 @@ Eight entries, seeded by `db/migrations/0006_content_seed_shell_copy.sql`, each 
 
 No translations were invented: only en-US exists, other locales resolve through the fallback chain to en-US (DEBT-0026). The seeded versions emit no outbox events and have five audit rows each (`ENTRY_CREATED`, `VERSION_DRAFTED`, `VERSION_APPROVED`, `VERSION_PUBLISHED`, `VERSION_ACTIVATED`). Seeded wording is changed by publishing a new version, never by editing the migration. Everything else in section 3 marked DEFERRED stays a code literal until its owning checkpoint (DEBT-0029).
 
+### GEO-001 additions
+
+- Country display name. `db/migrations/0007_geography_registry.sql` seeds one more entry through the real lifecycle (UI_LABEL, owner CONTENT, PUBLIC, STANDARD, approval policy NONE, CHAIN, PLATFORM scope; five audit rows, no outbox events): `geography.country.us.name`, en-US body `United States`. A country's display name is managed content, not a column: `geography.countries.display_name_content_key` is a foreign key to `content.entries (key)`, and consumers resolve it with the content API. Convention for later countries: `geography.country.<alpha-2 lower case>.name`, authored through the lifecycle (create the entry, then the country). Currency display names stay a column on `geography.currencies` (a stable English reference label, not localized copy). Locale display names (`content.locales.display_name`) are reference data, not copy.
+- `marketDefaultLocale` is derived, not supplied. A caller that names a market in the context no longer needs to pass `marketDefaultLocale`: the content service derives it from the geography registry (an ACTIVE market in effect) and an explicit value, when given, wins (`docs/engineering/CONTENT.md`, ADR-0022). Do not build a market-to-locale table in a caller. Public callers also cannot see copy of a market that is not live: for anonymous resolution a `market` or `country` in the context that geography does not show publicly (PLANNED, INACTIVE, out of window or unknown) is dropped, so it behaves like no market; preparing MARKET-scoped copy for a PLANNED market is allowed (the reference validates) and becomes visible when the market is activated, within about a minute.
+
 ## 5. Migration strategy for later checkpoints
 
 Apply these seven steps to every string a checkpoint touches:

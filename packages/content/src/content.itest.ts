@@ -9,7 +9,16 @@ import { CONTENT_EVENTS, ContentEventPayload } from '@bananagig/contracts';
 import { createDatabase, sql } from '@bananagig/database';
 import { runWithCorrelation } from '@bananagig/observability';
 import { createIsolatedDatabase, deferred, rejection, sleep, type IsolatedDatabase } from '@bananagig/testing';
-import { ContentError, ContentService, mapDbError, type ContentVersion, type CreateEntryInput } from './index';
+import {
+  ContentError,
+  ContentService,
+  mapDbError,
+  type ContentVersion,
+  type CreateEntryInput,
+  type MarketDefaultsProvider,
+  type ScopeReferenceCheck,
+  type ScopeReferenceValidator,
+} from './index';
 
 let iso: IsolatedDatabase;
 let svc: ContentService;
@@ -129,7 +138,9 @@ describe('entries (13)', () => {
   it('has the content schema, the seeded en-US platform default and the seeded shell entries', async () => {
     const tables = (await q<{ t: string }>("SELECT table_name AS t FROM information_schema.tables WHERE table_schema = 'content' ORDER BY 1")).map((r) => r.t);
     expect(tables).toEqual(['audit_events', 'entries', 'entry_variables', 'locales', 'snapshot_items', 'snapshots', 'version_approvals', 'versions']);
-    expect(await svc.listLocales()).toEqual([{ locale: 'en-US', isActive: true, isPlatformDefault: true }]);
+    expect(await svc.listLocales()).toEqual([
+      { locale: 'en-US', displayName: 'English (United States)', language: 'en', script: null, region: 'US', isActive: true, isPlatformDefault: true },
+    ]);
     const seeded = (await svc.listEntries()).map((e) => e.key);
     expect(seeded).toEqual(expect.arrayContaining(['brand.name', 'common.action.sign_in', 'session.error.login_failed']));
     expect((await svc.resolve('brand.name', { locale: 'en-US' })).body).toBe('BananaGig'); // seeded copy resolves through the real lifecycle rows
@@ -236,7 +247,15 @@ describe('locales and versions (14)', () => {
   it('registers locales (inactive by default), audits them with no entry, and cannot deactivate the platform default', async () => {
     const cid = `corr-locale-${seq}`;
     await runWithCorrelation(cid, async () => {
-      expect(await svc.registerLocale({ locale: 'fr-ca', reason: 'launch Quebec' }, A)).toEqual({ locale: 'fr-CA', isActive: false, isPlatformDefault: false });
+      expect(await svc.registerLocale({ locale: 'fr-ca', reason: 'launch Quebec' }, A)).toEqual({
+        locale: 'fr-CA',
+        displayName: 'French (Canada)',
+        language: 'fr',
+        script: null,
+        region: 'CA',
+        isActive: false,
+        isPlatformDefault: false,
+      });
       expect(await svc.registerLocale({ locale: 'it-IT', active: true, reason: 'launch Italy' }, A)).toMatchObject({ isActive: true });
     });
     expect(await code(svc.registerLocale({ locale: 'fr-CA', reason: 'dup' }, A))).toBe('CONFLICT');
@@ -246,8 +265,8 @@ describe('locales and versions (14)', () => {
     await svc.setLocaleActive('fr-CA', false, 'no-op', B);
     expect(await code(svc.setLocaleActive('en-US', false, 'no', A))).toBe('VALIDATION_FAILED');
     expect(await code(svc.setLocaleActive('xx-YY', true, 'no', A))).toBe('LOCALE_NOT_FOUND');
-    // the database refuses it independently of the service
-    expect(await dbCode(q("UPDATE content.locales SET is_active = false WHERE locale = 'en-US'"))).toBe('23514');
+    // the database refuses it independently of the service (since GEO-001 the geography guard fires first because en-US is the default of the ACTIVE country US: 23000; before it was the check constraint, 23514)
+    expect(await dbCode(q("UPDATE content.locales SET is_active = false WHERE locale = 'en-US'"))).toBe('23000');
     expect(await dbCode(q("DELETE FROM content.locales WHERE locale = 'fr-CA'"))).toBe('23000');
     expect(await dbCode(q("UPDATE content.locales SET locale = 'fr-FR' WHERE locale = 'fr-CA'"))).toBe('23000');
     const la = await q<{ action: string; locale: string; entry_id: string | null; version_id: string | null; actor: string; correlation_id: string }>(
@@ -2031,4 +2050,268 @@ describe('exactly one platform default locale (R2#7, R3#3)', () => {
       expect(await code(s.resolveMany([k, 'devtest.unknown.key'], { locale: 'es-MX' }))).toBe('UNAVAILABLE');
       expect(await code(s.createSnapshot({ keys: [k], locale: 'en-US', purpose: 'p' }, A))).toBe('UNAVAILABLE');
     }));
+});
+
+// ---------------------------------------------------------------- GEO-001: ports against the real database (fake geography)
+describe('geography ports (GEO-001): fake MarketDefaultsProvider and ScopeReferenceValidator over real PostgreSQL', () => {
+  let geo: IsolatedDatabase;
+  const MARKET = 'devtest-m1';
+  const answers: Record<string, string | null | Error> = {};
+  const providerCalls: string[] = [];
+  const markets: MarketDefaultsProvider = {
+    defaultLocale: async (m) => {
+      providerCalls.push(m);
+      const a = answers[m];
+      if (a instanceof Error) throw a;
+      return a ?? null;
+    },
+  };
+  /** Accepts COUNTRY US and MARKET devtest-m1 only; `mode` simulates a retired reference or an outage. */
+  let mode: 'ok' | 'retired' | 'down' = 'ok';
+  const validator: ScopeReferenceValidator = {
+    validate: async (t, r): Promise<ScopeReferenceCheck> => {
+      if (mode === 'down') throw new Error('geography unavailable');
+      if (mode === 'retired') return { valid: false, reason: 'INACTIVE' };
+      return (t === 'COUNTRY' && r === 'US') || (t === 'MARKET' && r === MARKET) ? { valid: true } : { valid: false, reason: 'NOT_FOUND' };
+    },
+  };
+  const make = (extra: Partial<ConstructorParameters<typeof ContentService>[0]> = {}) =>
+    new ContentService({ database: geo.database, env: 'test', allowTestKeys: true, markets, scopeReferences: validator, ...extra });
+  let s: ContentService;
+  const versionCount = async (entryKey: string) =>
+    Number(
+      (
+        await geo.database.query<{ n: string }>(
+          'SELECT count(*) AS n FROM content.versions v JOIN content.entries e ON e.entry_id = v.entry_id WHERE e.key = $1',
+          [entryKey],
+        )
+      )[0]!.n,
+    );
+  /** An entry with copy in en-US (platform default), es-MX, pt-BR (active) and de-DE (registered, inactive). */
+  async function localized(maxScopeType: 'PLATFORM' | 'MARKET' = 'PLATFORM'): Promise<string> {
+    const k = key();
+    await s.createEntry(entryReq(k, { maxScopeType }), A);
+    for (const [locale, body] of [
+      ['en-US', 'english'],
+      ['es-MX', 'mexico'],
+      ['pt-BR', 'brasil'],
+      ['de-DE', 'german'],
+    ] as const)
+      await publishNew(s, k, { locale, body });
+    return k;
+  }
+
+  beforeAll(async () => {
+    geo = await createIsolatedDatabase();
+    s = make();
+    for (const l of ['es-MX', 'pt-BR', 'fr-CA']) await s.registerLocale({ locale: l, active: true, reason: 'geo test' }, A);
+    await s.registerLocale({ locale: 'de-DE', reason: 'geo test (inactive)' }, A);
+  });
+  afterAll(async () => geo.drop());
+
+  describe('market default precedence: requested locale -> market default -> platform default', () => {
+    it('a requested locale with content wins over any market default', async () => {
+      const k = await localized();
+      answers[MARKET] = 'pt-BR';
+      expect(await s.resolve(k, { locale: 'es-MX', context: { market: MARKET } })).toMatchObject({ resolvedLocale: 'es-MX', body: 'mexico' });
+    });
+    it('a requested locale without content falls to the provider market default, then to the platform default when there is none', async () => {
+      const k = await localized();
+      answers[MARKET] = 'es-MX';
+      const viaMarket = await s.resolve(k, { locale: 'fr-CA', context: { market: MARKET } });
+      expect(viaMarket).toMatchObject({
+        resolvedLocale: 'es-MX',
+        body: 'mexico',
+        fallback: { applied: true, chain: ['fr-CA', 'es-MX', 'es', 'en-US'].filter((l) => l !== 'es') },
+      });
+      answers[MARKET] = null;
+      const viaPlatform = await s.resolve(k, { locale: 'fr-CA', context: { market: MARKET } });
+      expect(viaPlatform).toMatchObject({ resolvedLocale: 'en-US', body: 'english', fallback: { chain: ['fr-CA', 'en-US'] } });
+      expect(await s.resolve(k, { locale: 'fr-CA', context: { market: 'devtest-unknown' } })).toMatchObject({ resolvedLocale: 'en-US' }); // provider: no such market
+    });
+    it('an explicit marketDefaultLocale wins over the provider', async () => {
+      const k = await localized();
+      answers[MARKET] = 'es-MX';
+      providerCalls.length = 0;
+      expect(await s.resolve(k, { locale: 'fr-CA', context: { market: MARKET, marketDefaultLocale: 'pt-BR' } })).toMatchObject({
+        resolvedLocale: 'pt-BR',
+        body: 'brasil',
+      });
+      expect(providerCalls).toEqual([]);
+    });
+    it('a failing provider degrades to the platform default; an inactive market default locale is skipped', async () => {
+      const k = await localized();
+      answers[MARKET] = new Error('geography is down');
+      expect(await s.resolve(k, { locale: 'fr-CA', context: { market: MARKET } })).toMatchObject({ resolvedLocale: 'en-US', body: 'english' });
+      answers[MARKET] = 'de-DE'; // registered with content, but not active
+      expect(await s.resolve(k, { locale: 'fr-CA', context: { market: MARKET } })).toMatchObject({
+        resolvedLocale: 'en-US',
+        fallback: { chain: ['fr-CA', 'en-US'] },
+      });
+      answers[MARKET] = 'ja-JP'; // not registered at all
+      expect((await s.resolve(k, { locale: 'fr-CA', context: { market: MARKET } })).resolvedLocale).toBe('en-US');
+    });
+    it('LANGUAGE_ONLY and EXACT entries never use a market default (the chain policy is unchanged)', async () => {
+      answers[MARKET] = 'es-MX';
+      for (const policy of ['LANGUAGE_ONLY', 'EXACT'] as const) {
+        const k = key();
+        await s.createEntry(entryReq(k, { fallbackPolicy: policy }), A);
+        await publishNew(s, k, { locale: 'es-MX', body: 'mexico' });
+        await publishNew(s, k, { locale: 'en-US', body: 'english' });
+        const r = await s.resolveMany([k], { locale: 'fr-CA', context: { market: MARKET } });
+        expect(r.items.has(k), policy).toBe(false);
+        expect(r.missing.get(k), policy).toBe('NO_CONTENT');
+      }
+    });
+  });
+
+  describe('cache and snapshots use the derived default', () => {
+    it('cache keys differ per derived default and a changed provider answer takes effect on the next resolve', async () => {
+      const cache = new MemoryConfigCache();
+      const cs = make({ cache });
+      const k = await localized('MARKET');
+      await publishNew(s, k, { scopeType: 'MARKET', scopeRef: MARKET, locale: 'en-US', body: 'market english' }); // makes the market reference "matched": cacheable
+      const ask = () => cs.resolveMany([k], { locale: 'fr-CA', context: { market: MARKET } });
+      const resolutionKeys = () => [...cache.data.keys()].filter((x) => x.includes(':v1:') && x.includes(k));
+      answers[MARKET] = 'es-MX';
+      expect((await ask()).items.get(k)).toMatchObject({ body: 'mexico' });
+      expect((await ask()).sources.get(k)).toBe('cache');
+      expect(resolutionKeys()).toHaveLength(1);
+      answers[MARKET] = 'pt-BR';
+      const changed = await ask();
+      expect(changed.items.get(k)).toMatchObject({ body: 'brasil', resolvedLocale: 'pt-BR' });
+      expect(changed.sources.get(k)).toBe('db');
+      expect(resolutionKeys()).toHaveLength(2);
+    });
+
+    it('a snapshot records the market default locale that was actually used', async () => {
+      const k = await localized();
+      answers[MARKET] = 'es-MX';
+      const snap = await s.createSnapshot({ keys: [k], locale: 'fr-CA', context: { market: MARKET }, purpose: 'geo precedence' }, A);
+      expect(snap.context).toEqual({ market: MARKET, marketDefaultLocale: 'es-MX' });
+      expect(snap.requestedLocale).toBe('fr-CA');
+      expect(snap.items[0]).toMatchObject({ resolvedLocale: 'es-MX', body: 'mexico' });
+      expect(await s.getSnapshot(snap.snapshotId)).toEqual(snap);
+    });
+    it('a snapshot does not claim a derived default that resolution skipped (inactive locale) or one the provider could not give', async () => {
+      const k = await localized();
+      for (const answer of ['de-DE', null, new Error('down')]) {
+        answers[MARKET] = answer;
+        const snap = await s.createSnapshot({ keys: [k], locale: 'fr-CA', context: { market: MARKET }, purpose: 'geo skipped' }, A);
+        expect(snap.context).toEqual({ market: MARKET });
+        expect(snap.items[0]).toMatchObject({ resolvedLocale: 'en-US' });
+      }
+      answers[MARKET] = 'es-MX';
+      const explicit = await s.createSnapshot(
+        { keys: [k], locale: 'fr-CA', context: { market: MARKET, marketDefaultLocale: 'pt-BR' }, purpose: 'geo explicit' },
+        A,
+      );
+      expect(explicit.context).toEqual({ market: MARKET, marketDefaultLocale: 'pt-BR' });
+      expect(explicit.items[0]).toMatchObject({ resolvedLocale: 'pt-BR' });
+    });
+    it('`at` lookups and CRITICAL entries keep their behaviour (never cached) with the derived default applied', async () => {
+      const cache = new MemoryConfigCache();
+      const cs = make({ cache });
+      answers[MARKET] = 'es-MX';
+      const k = await localized();
+      const past = await cs.resolveMany([k], { locale: 'fr-CA', context: { market: MARKET }, at: inMs(60_000) });
+      expect(past.items.get(k)).toMatchObject({ body: 'mexico' });
+      expect(past.sources.get(k)).toBe('db');
+      const crit = key();
+      await s.createEntry(entryReq(crit, { criticality: 'CRITICAL' }), A);
+      await publishNew(s, crit, { locale: 'es-MX', body: 'critical mexico' });
+      await publishNew(s, crit, { locale: 'en-US', body: 'critical english' });
+      for (let i = 0; i < 2; i++) {
+        const r = await cs.resolveMany([crit], { locale: 'fr-CA', context: { market: MARKET } });
+        expect(r.items.get(crit)).toMatchObject({ body: 'critical mexico' });
+        expect(r.sources.get(crit)).toBe('db');
+      }
+      expect([...cache.data.keys()].filter((x) => x.includes(crit))).toEqual([]);
+    });
+  });
+
+  describe('COUNTRY/MARKET scope reference validation', () => {
+    it('createVersion accepts a valid reference and refuses an invalid one without writing anything', async () => {
+      mode = 'ok';
+      const k = key();
+      await s.createEntry(entryReq(k, { maxScopeType: 'MARKET' }), A);
+      const ok = await s.createVersion(k, { locale: 'en-US', scopeType: 'COUNTRY', scopeRef: 'US', body: 'us copy', reason: 'r' }, A);
+      expect(ok).toMatchObject({ scopeType: 'COUNTRY', scopeRef: 'US', status: 'DRAFT' });
+      const bad = await err(s.createVersion(k, { locale: 'en-US', scopeType: 'MARKET', scopeRef: 'nowhere', body: 'x', reason: 'r' }, A));
+      expect(bad).toMatchObject({ code: 'VALIDATION_FAILED', details: { reason: 'SCOPE_REFERENCE_INVALID', scopeType: 'MARKET', check: 'NOT_FOUND' } });
+      expect(await versionCount(k)).toBe(1);
+      expect((await s.createVersion(k, { locale: 'en-US', body: 'platform copy', reason: 'r' }, A)).scopeRef).toBeNull(); // PLATFORM skipped
+    });
+    it('publish re-validates: a reference retired after drafting blocks publication until it is valid again', async () => {
+      mode = 'ok';
+      const k = key();
+      await s.createEntry(entryReq(k, { maxScopeType: 'MARKET' }), A);
+      const approved = await authorVersion(s, k, { scopeType: 'MARKET', scopeRef: MARKET, body: 'market copy' });
+      mode = 'retired';
+      const blocked = await err(s.publish(approved.versionId, A));
+      expect(blocked).toMatchObject({ code: 'VALIDATION_FAILED', details: { reason: 'SCOPE_REFERENCE_INVALID', check: 'INACTIVE' } });
+      expect((await s.getVersion(approved.versionId)).status).toBe('APPROVED');
+      mode = 'ok';
+      expect((await s.publish(approved.versionId, A)).status).toBe('PUBLISHED');
+    });
+    it('a validator outage fails writes closed with UNAVAILABLE and leaves no trace', async () => {
+      mode = 'ok';
+      const k = key();
+      await s.createEntry(entryReq(k, { maxScopeType: 'MARKET' }), A);
+      const approved = await authorVersion(s, k, { scopeType: 'COUNTRY', scopeRef: 'US' });
+      mode = 'down';
+      expect(await err(s.createVersion(k, { locale: 'en-US', scopeType: 'COUNTRY', scopeRef: 'US', body: 'x', reason: 'r' }, A))).toMatchObject({
+        code: 'UNAVAILABLE',
+        details: { reason: 'SCOPE_REFERENCE_UNAVAILABLE' },
+      });
+      expect(await code(s.publish(approved.versionId, A))).toBe('UNAVAILABLE');
+      expect(await versionCount(k)).toBe(1);
+      expect((await s.getVersion(approved.versionId)).status).toBe('APPROVED');
+      mode = 'ok';
+    });
+    it('without the validator the same service accepts any well-formed reference (unchanged behaviour)', async () => {
+      const plain = make({ markets: undefined, scopeReferences: undefined });
+      const k = key();
+      await plain.createEntry(entryReq(k, { maxScopeType: 'MARKET' }), A);
+      expect((await plain.createVersion(k, { locale: 'en-US', scopeType: 'MARKET', scopeRef: 'anything-goes', body: 'x', reason: 'r' }, A)).scopeRef).toBe(
+        'anything-goes',
+      );
+    });
+  });
+
+  describe('locale display name and derived columns through the service', () => {
+    it('derives the display name with Intl and returns the generated language, script and region', async () => {
+      const r = await s.registerLocale({ locale: 'es-419', reason: 'derived' }, A);
+      expect(r).toMatchObject({ locale: 'es-419', language: 'es', script: null, region: '419', isActive: false, isPlatformDefault: false });
+      expect(r.displayName).toMatch(/^Spanish/);
+      const hant = await s.registerLocale({ locale: 'zh-Hant-TW', reason: 'derived' }, A);
+      expect(hant).toMatchObject({ language: 'zh', script: 'Hant', region: 'TW' });
+      expect(hant.displayName).toMatch(/Chinese/);
+      const bare = await s.registerLocale({ locale: 'fil', reason: 'derived' }, A);
+      expect(bare).toMatchObject({ language: 'fil', script: null, region: null });
+    });
+    it('keeps an explicit display name (trimmed) and the seeded en-US name; list returns the new columns', async () => {
+      const r = await s.registerLocale({ locale: 'it-IT', displayName: '  Italiano (Italia)  ', reason: 'explicit' }, A);
+      expect(r.displayName).toBe('Italiano (Italia)');
+      expect(await s.getLocale('en-US')).toMatchObject({
+        displayName: 'English (United States)',
+        language: 'en',
+        script: null,
+        region: 'US',
+        isPlatformDefault: true,
+      });
+      const all = await s.listLocales();
+      expect(all.find((l) => l.locale === 'it-IT')).toEqual(r);
+      expect(all.every((l) => typeof l.displayName === 'string' && l.displayName.length > 0 && typeof l.language === 'string')).toBe(true);
+      expect((await s.listLocales({ activeOnly: true })).map((l) => l.locale)).not.toContain('it-IT');
+    });
+    it('rejects blank and oversized display names, and the database defaults a name-less insert to the tag', async () => {
+      expect(await code(s.registerLocale({ locale: 'nl-NL', displayName: '   ', reason: 'r' }, A))).toBe('VALIDATION_FAILED');
+      expect(await code(s.registerLocale({ locale: 'nl-NL', displayName: 'x'.repeat(101), reason: 'r' }, A))).toBe('VALIDATION_FAILED');
+      await geo.database.query("INSERT INTO content.locales (locale) VALUES ('sv-SE')");
+      expect((await s.getLocale('sv-SE')).displayName).toBe('sv-SE');
+      expect(await dbCode(geo.database.query("UPDATE content.locales SET display_name = '  ' WHERE locale = 'sv-SE'"))).toBe('23514');
+      expect(await dbCode(geo.database.query("UPDATE content.locales SET region = 'XX' WHERE locale = 'sv-SE'"))).toBe('428C9'); // generated columns cannot drift
+    });
+  });
 });

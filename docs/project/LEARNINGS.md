@@ -583,3 +583,103 @@ Before pushing a schema change, run `pnpm data-model:check --base=<full previous
 
 ### Evidence
 `scripts/data-model-check.mjs` (`inferCheckpoints`), `scripts/lib/governance.mjs` (`explicitBaseProblem`), `scripts/governance.test.mjs` ("CI mode" tests and the explicit-base tests), `.github/workflows/ci.yml` (Governance checks step).
+
+## LRN-0024 — A shared contract change must be typechecked on every consumer, and parallel work must be re-verified after merging
+
+Date: 2026-10-07
+Checkpoint: GEO-001
+Domain: testing / contracts
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/testing/SKILL.md
+
+### Context
+Extending `LocaleDto` (new required fields) updated the API tests but not the web fixtures, so `apps/web` stopped typechecking and five tests failed; this would have failed `next build` and the Docker web image. Separately, two fix agents working in parallel tightened validation (a real ISO region check) and rewrote tests independently, and their combined result broke ten integration tests that each had passed alone.
+
+### Learning
+Contract and DTO changes are checked by the workspace-wide `pnpm typecheck` and the complete test suites, never only by the packages that were edited; work done in parallel is only verified after it has been merged and the whole suite has run.
+
+### Why it matters
+Package-scoped green runs hide consumers (web fixtures) and interactions between independent changes.
+
+### Reuse rule
+After changing anything exported from `packages/contracts`, run `pnpm typecheck` and `pnpm test` for the whole workspace before reporting; after merging parallel changes, run `pnpm test:integration` alone once. Build test fixtures through one helper so they cannot drift from the contract.
+
+### Evidence
+`apps/web/src/web.test.tsx` (the `locale()` fixture helper), `packages/contracts/src/content.ts` (`LocaleDto`).
+
+## LRN-0025 — `SELECT ... FOR UPDATE` over a join or an aggregate is stale after a lock wait in READ COMMITTED
+
+Date: 2026-10-07
+Checkpoint: GEO-001
+Domain: database
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/database/SKILL.md
+
+### Context
+`loadCountry` and `loadMarket` read a row together with joined data and `ARRAY(subselect)` columns in one statement ending in `FOR UPDATE`. When another transaction held the row, PostgreSQL re-evaluated only the locked row after the wait: joined and array columns came from the old snapshot. Symptoms reproduced by review: a spurious `MARKET_NOT_FOUND` for an existing market, a wrong audit diff, and identical concurrent updates returning 409.
+
+### Learning
+Lock first with a bare single-table `SELECT 1 FROM t WHERE ... FOR UPDATE|SHARE`, and only then run the full read as a second statement, which gets a fresh snapshot.
+
+### Why it matters
+The bug only appears under contention, so ordinary tests and single-connection runs pass.
+
+### Reuse rule
+Never combine `FOR UPDATE` with joins, aggregates or subselects whose values the transaction then relies on; keep one documented lock order per aggregate and test overlaps with two connections.
+
+### Evidence
+`packages/geography/src/service.ts` (load-then-lock), `packages/geography/src/geography.itest.ts` (concurrent update tests).
+
+## LRN-0026 — A trigger that enforces an invariant over a set must lock the parent row, not only read the siblings
+
+Date: 2026-10-07
+Checkpoint: GEO-001
+Domain: database
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/database/SKILL.md
+
+### Context
+"An ACTIVE country has at least one ACTIVE time zone" was enforced by guards that read the sibling zones without locks. Review proved two violations with two connections: two concurrent deactivations of two different zones each saw the other zone ACTIVE and both committed; and a country activation raced a delete of its only zone link.
+
+### Learning
+A guard that protects an invariant spanning several rows must serialize the writers by locking the parent row (`FOR UPDATE`, in a fixed order) or the rows it relies on (`FOR SHARE`) before it reads the siblings. Prove each guard with a deterministic two-connection test (wait for the second session to block in `pg_stat_activity`, release the first) and mutate the lock away to see the test fail.
+
+### Why it matters
+Each session's guard is correct against the data it sees, so the invariant breaks only through the interleaving.
+
+### Reuse rule
+For every invariant over a set write a barrier race test before trusting the trigger; document the lock order next to the trigger.
+
+### Evidence
+`db/migrations/0007_geography_registry.sql` (`guard_time_zones`, `guard_country_links`, `guard_countries`), `packages/testing/src/geography-seed.itest.ts` (race tests).
+
+## LRN-0027 — A seed migration's tests must scope to their own rows
+
+Date: 2026-10-07
+Checkpoint: GEO-001
+Domain: testing
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/testing/SKILL.md
+
+### Context
+Migration 0007 added one more content entry (the US display name), and the CFG-002 seed test that asserted "exactly the eight entries and 40 audit rows" failed, though migration 0006 was untouched.
+
+### Learning
+Tests of a seed migration assert about the rows that migration created (by key or correlation id), not about table totals, because later migrations legitimately add rows to the same tables.
+
+### Why it matters
+Total-based assertions turn every later seed into a failure of an unrelated, older test.
+
+### Reuse rule
+Filter seed assertions by `key = ANY(<the migration's keys>)` or by the migration's correlation id.
+
+### Evidence
+`packages/testing/src/content-seed.itest.ts`, `packages/testing/src/geography-seed.itest.ts`.

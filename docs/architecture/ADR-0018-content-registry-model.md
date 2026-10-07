@@ -50,3 +50,7 @@ New schema; no existing data affected. Migration `0005_content_registry.sql` (st
 - `apps/api/src/modules/content/`
 - `docs/engineering/CONTENT.md`
 - `docs/data/NORMALIZATION_LOG.md`
+
+## Updated by GEO-001
+
+Two statements above changed. (1) `locales` is no longer only `locale`, `is_active` and `is_platform_default`: migration `0007_geography_registry.sql` added `display_name` (NOT NULL) and the generated columns `language`, `script` and `region`, and `content.locales` is now also the single locale authority of the geography registry (ADR-0021), referenced by foreign key; a geography-owned trigger additionally refuses deactivating a locale that is the default of an ACTIVE country or market. (2) `scope_ref` is no longer simply opaque for content: COUNTRY and MARKET references are validated against the geography registry through the optional `ScopeReferenceValidator` port at `createVersion` and `publish` (ADR-0022); DEBT-0024 is IN_PROGRESS. The content package still does not import geography.

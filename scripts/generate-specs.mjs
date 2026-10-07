@@ -10,9 +10,12 @@ import {
   CONTENT_EVENTS,
   ConfigurationEventPayload,
   ContentEventPayload,
+  CountryEventPayload,
   EventEnvelope,
+  GEOGRAPHY_EVENTS,
   INFRA_PING_EVENT_TYPE,
   LegalDocumentPublishedPayload,
+  MarketEventPayload,
 } from '@bananagig/contracts';
 import { createTokenVerifier } from '@bananagig/identity';
 import { buildApp } from '../apps/api/src/app.ts';
@@ -29,7 +32,7 @@ const verifier = createTokenVerifier({
     throw new Error('not used');
   },
 });
-const app = await buildApp({ cfg, verifier, configuration: {}, content: {}, readiness: async () => ({}) });
+const app = await buildApp({ cfg, verifier, configuration: {}, content: {}, geography: {}, readiness: async () => ({}) });
 await app.ready();
 const openapi = app.swagger();
 await app.close();
@@ -59,6 +62,29 @@ const CONTENT_MESSAGES = {
     'ContentLegalDocumentPublished',
     'A legal document version became effective (emitted in addition to ContentVersionPublished); bodySha256 lets consent records bind to the exact text.',
     LegalDocumentPublishedPayload,
+  ],
+};
+const GEOGRAPHY_MESSAGES = {
+  countryActivated: ['GeographyCountryActivated', 'A country became ACTIVE.', CountryEventPayload, 'geography_country'],
+  countryDeactivated: [
+    'GeographyCountryDeactivated',
+    'An ACTIVE country was deactivated (ACTIVE to INACTIVE). Retiring a PLANNED country emits no event.',
+    CountryEventPayload,
+    'geography_country',
+  ],
+  marketCreated: ['GeographyMarketCreated', 'A market was created (PLANNED).', MarketEventPayload, 'geography_market'],
+  marketActivated: ['GeographyMarketActivated', 'A market became ACTIVE.', MarketEventPayload, 'geography_market'],
+  marketDeactivated: [
+    'GeographyMarketDeactivated',
+    'An ACTIVE market was deactivated (ACTIVE to INACTIVE). Retiring a PLANNED market emits no event.',
+    MarketEventPayload,
+    'geography_market',
+  ],
+  marketDefaultsChanged: [
+    'GeographyMarketDefaultsChanged',
+    'The defaults of a market changed: its default locale, currency or time zone (cause MARKET), or the distance unit, first day of week, date format or time format of its country (cause COUNTRY). changedFields names the fields, never their values.',
+    MarketEventPayload,
+    'geography_market',
   ],
 };
 const channels = {
@@ -110,13 +136,29 @@ for (const [k, [name, summary, payload]] of Object.entries(CONTENT_MESSAGES)) {
   };
   schemas[name] = typedEnvelope(type, payload);
 }
+for (const [k, [name, summary, payload, aggregate]] of Object.entries(GEOGRAPHY_MESSAGES)) {
+  const type = GEOGRAPHY_EVENTS[k];
+  channels[`geography_${k}`] = {
+    address: type,
+    description: `${summary} Published through the transactional outbox (aggregate ${aggregate}); payload carries identifiers only, never values.`,
+    messages: { [name]: { $ref: `#/components/messages/${name}` } },
+  };
+  operations[`send${name}`] = { action: 'send', channel: { $ref: `#/channels/geography_${k}` }, summary };
+  messages[name] = {
+    name,
+    title: summary,
+    headers: { type: 'object', properties: { 'x-correlation-id': { type: 'string' } } },
+    payload: { $ref: `#/components/schemas/${name}` },
+  };
+  schemas[name] = typedEnvelope(type, payload);
+}
 const asyncapi = {
   asyncapi: '3.0.0',
   info: {
     title: 'BananaGig Events',
     version: '1.0.0',
     description:
-      'Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events and the content registry events exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.',
+      'Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events and the geography registry events exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.',
   },
   defaultContentType: 'application/json',
   channels,

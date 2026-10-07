@@ -15,6 +15,7 @@
     "@bananagig/content": "workspace:*",
     "@bananagig/contracts": "workspace:*",
     "@bananagig/database": "workspace:*",
+    "@bananagig/geography": "workspace:*",
     "@bananagig/identity": "workspace:*",
     "@bananagig/observability": "workspace:*",
     "@bananagig/platform": "workspace:*",

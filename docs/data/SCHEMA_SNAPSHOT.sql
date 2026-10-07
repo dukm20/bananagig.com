@@ -4,6 +4,7 @@
 
 CREATE SCHEMA configuration;
 CREATE SCHEMA content;
+CREATE SCHEMA geography;
 CREATE SCHEMA integration;
 
 CREATE TABLE configuration.audit_events (
@@ -245,9 +246,14 @@ CREATE TABLE content.locales (
   is_platform_default boolean NOT NULL DEFAULT false,
   created_at timestamp with time zone NOT NULL DEFAULT now(),
   updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  display_name text NOT NULL,
+  language text GENERATED ALWAYS AS (split_part(locale, '-'::text, 1)) STORED,
+  script text GENERATED ALWAYS AS ("substring"(locale, '^[a-z]{2,3}-([A-Z][a-z]{3})'::text)) STORED,
+  region text GENERATED ALWAYS AS ("substring"(locale, '-([A-Z]{2}|[0-9]{3})$'::text)) STORED,
   CONSTRAINT pk_locales PRIMARY KEY (locale),
   CONSTRAINT ck_locales__bcp47_format CHECK ((locale ~ '^[a-z]{2,3}(-[A-Z][a-z]{3})?(-([A-Z]{2}|[0-9]{3}))?$'::text)),
-  CONSTRAINT ck_locales__default_is_active CHECK (((NOT is_platform_default) OR is_active))
+  CONSTRAINT ck_locales__default_is_active CHECK (((NOT is_platform_default) OR is_active)),
+  CONSTRAINT ck_locales__display_name_not_blank CHECK ((length(btrim(display_name)) > 0))
 );
 CREATE UNIQUE INDEX uq_locales__platform_default ON content.locales USING btree (is_platform_default) WHERE is_platform_default;
 
@@ -324,6 +330,148 @@ CREATE INDEX idx_versions__entry ON content.versions USING btree (entry_id, crea
 CREATE INDEX idx_versions__in_review ON content.versions USING btree (created_at) WHERE (status = 'IN_REVIEW'::text);
 CREATE INDEX idx_versions__resolution ON content.versions USING btree (entry_id, locale, scope_type, effective_from DESC) WHERE (status = ANY (ARRAY['SCHEDULED'::text, 'PUBLISHED'::text, 'SUPERSEDED'::text]));
 CREATE INDEX idx_versions__scheduled ON content.versions USING btree (effective_from) WHERE (status = 'SCHEDULED'::text);
+
+CREATE TABLE geography.audit_events (
+  audit_event_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  occurred_at timestamp with time zone NOT NULL DEFAULT clock_timestamp(),
+  actor text NOT NULL,
+  action text NOT NULL,
+  country_id uuid,
+  market_id uuid,
+  changes jsonb,
+  reason text,
+  correlation_id text NOT NULL,
+  CONSTRAINT pk_audit_events PRIMARY KEY (audit_event_id),
+  CONSTRAINT fk_audit_events__country_id FOREIGN KEY (country_id) REFERENCES geography.countries(country_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_audit_events__market_id FOREIGN KEY (market_id) REFERENCES geography.markets(market_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_audit_events__action CHECK ((action = ANY (ARRAY['COUNTRY_CREATED'::text, 'COUNTRY_UPDATED'::text, 'COUNTRY_ACTIVATED'::text, 'COUNTRY_DEACTIVATED'::text, 'MARKET_CREATED'::text, 'MARKET_UPDATED'::text, 'MARKET_ACTIVATED'::text, 'MARKET_DEACTIVATED'::text]))),
+  CONSTRAINT ck_audit_events__changes_object CHECK (((changes IS NULL) OR (jsonb_typeof(changes) = 'object'::text))),
+  CONSTRAINT ck_audit_events__subject CHECK ((((action ~~ 'COUNTRY\_%'::text) AND (country_id IS NOT NULL) AND (market_id IS NULL)) OR ((action ~~ 'MARKET\_%'::text) AND (market_id IS NOT NULL) AND (country_id IS NULL))))
+);
+CREATE INDEX idx_audit_events__country ON geography.audit_events USING btree (country_id, occurred_at DESC) WHERE (country_id IS NOT NULL);
+CREATE INDEX idx_audit_events__market ON geography.audit_events USING btree (market_id, occurred_at DESC) WHERE (market_id IS NOT NULL);
+
+CREATE TABLE geography.countries (
+  country_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  iso_alpha2 character(2) NOT NULL,
+  iso_alpha3 character(3) NOT NULL,
+  iso_numeric character(3) NOT NULL,
+  display_name_content_key text NOT NULL,
+  status text NOT NULL DEFAULT 'PLANNED'::text,
+  dialing_code text NOT NULL,
+  default_currency_code character(3) NOT NULL,
+  default_locale text NOT NULL,
+  distance_unit text NOT NULL,
+  first_day_of_week text NOT NULL,
+  date_format_code text NOT NULL,
+  time_format_code text NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_countries PRIMARY KEY (country_id),
+  CONSTRAINT uq_countries__iso_alpha2 UNIQUE (iso_alpha2),
+  CONSTRAINT uq_countries__iso_alpha3 UNIQUE (iso_alpha3),
+  CONSTRAINT uq_countries__iso_numeric UNIQUE (iso_numeric),
+  CONSTRAINT fk_countries__default_currency_code FOREIGN KEY (default_currency_code) REFERENCES geography.currencies(currency_code) ON DELETE RESTRICT,
+  CONSTRAINT fk_countries__default_locale FOREIGN KEY (country_id, default_locale) REFERENCES geography.country_locales(country_id, locale) DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT fk_countries__display_name_content_key FOREIGN KEY (display_name_content_key) REFERENCES content.entries(key) ON DELETE RESTRICT,
+  CONSTRAINT ck_countries__content_key_format CHECK ((display_name_content_key ~ '^[a-z][a-z0-9_]*([.][a-z][a-z0-9_]*)+$'::text)),
+  CONSTRAINT ck_countries__date_format_code CHECK ((date_format_code = ANY (ARRAY['MDY'::text, 'DMY'::text, 'YMD'::text]))),
+  CONSTRAINT ck_countries__dialing_code_format CHECK ((dialing_code ~ '^[+][0-9]{1,4}$'::text)),
+  CONSTRAINT ck_countries__distance_unit CHECK ((distance_unit = ANY (ARRAY['MILES'::text, 'KILOMETERS'::text]))),
+  CONSTRAINT ck_countries__first_day_of_week CHECK ((first_day_of_week = ANY (ARRAY['MONDAY'::text, 'TUESDAY'::text, 'WEDNESDAY'::text, 'THURSDAY'::text, 'FRIDAY'::text, 'SATURDAY'::text, 'SUNDAY'::text]))),
+  CONSTRAINT ck_countries__iso_alpha2_format CHECK ((iso_alpha2 ~ '^[A-Z]{2}$'::text)),
+  CONSTRAINT ck_countries__iso_alpha3_format CHECK ((iso_alpha3 ~ '^[A-Z]{3}$'::text)),
+  CONSTRAINT ck_countries__iso_numeric_format CHECK ((iso_numeric ~ '^[0-9]{3}$'::text)),
+  CONSTRAINT ck_countries__status CHECK ((status = ANY (ARRAY['PLANNED'::text, 'ACTIVE'::text, 'INACTIVE'::text]))),
+  CONSTRAINT ck_countries__time_format_code CHECK ((time_format_code = ANY (ARRAY['12_HOUR'::text, '24_HOUR'::text])))
+);
+CREATE INDEX idx_countries__active ON geography.countries USING btree (iso_alpha2) WHERE (status = 'ACTIVE'::text);
+
+CREATE TABLE geography.country_locales (
+  country_id uuid NOT NULL,
+  locale text NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_country_locales PRIMARY KEY (country_id, locale),
+  CONSTRAINT fk_country_locales__country_id FOREIGN KEY (country_id) REFERENCES geography.countries(country_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_country_locales__locale FOREIGN KEY (locale) REFERENCES content.locales(locale) ON DELETE RESTRICT
+);
+
+CREATE TABLE geography.country_time_zones (
+  country_id uuid NOT NULL,
+  time_zone_id uuid NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_country_time_zones PRIMARY KEY (country_id, time_zone_id),
+  CONSTRAINT fk_country_time_zones__country_id FOREIGN KEY (country_id) REFERENCES geography.countries(country_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_country_time_zones__time_zone_id FOREIGN KEY (time_zone_id) REFERENCES geography.time_zones(time_zone_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE geography.currencies (
+  currency_code character(3) NOT NULL,
+  numeric_code character(3) NOT NULL,
+  minor_unit_digits smallint NOT NULL,
+  display_name text NOT NULL,
+  symbol text,
+  status text NOT NULL DEFAULT 'PLANNED'::text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_currencies PRIMARY KEY (currency_code),
+  CONSTRAINT uq_currencies__numeric_code UNIQUE (numeric_code),
+  CONSTRAINT ck_currencies__currency_code_format CHECK ((currency_code ~ '^[A-Z]{3}$'::text)),
+  CONSTRAINT ck_currencies__display_name_not_blank CHECK ((length(btrim(display_name)) > 0)),
+  CONSTRAINT ck_currencies__minor_unit_digits CHECK (((minor_unit_digits >= 0) AND (minor_unit_digits <= 4))),
+  CONSTRAINT ck_currencies__numeric_code_format CHECK ((numeric_code ~ '^[0-9]{3}$'::text)),
+  CONSTRAINT ck_currencies__status CHECK ((status = ANY (ARRAY['PLANNED'::text, 'ACTIVE'::text, 'INACTIVE'::text]))),
+  CONSTRAINT ck_currencies__symbol_length CHECK (((symbol IS NULL) OR ((length(symbol) >= 1) AND (length(symbol) <= 8))))
+);
+
+CREATE TABLE geography.market_locales (
+  market_id uuid NOT NULL,
+  country_id uuid NOT NULL,
+  locale text NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_market_locales PRIMARY KEY (market_id, locale),
+  CONSTRAINT fk_market_locales__country_locale FOREIGN KEY (country_id, locale) REFERENCES geography.country_locales(country_id, locale) ON DELETE RESTRICT,
+  CONSTRAINT fk_market_locales__market_country FOREIGN KEY (market_id, country_id) REFERENCES geography.markets(market_id, country_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE geography.markets (
+  market_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  code text NOT NULL,
+  name text NOT NULL,
+  country_id uuid NOT NULL,
+  status text NOT NULL DEFAULT 'PLANNED'::text,
+  default_locale text NOT NULL,
+  currency_code character(3) NOT NULL,
+  default_time_zone_id uuid NOT NULL,
+  effective_from timestamp with time zone NOT NULL,
+  effective_to timestamp with time zone,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_markets PRIMARY KEY (market_id),
+  CONSTRAINT uq_markets__code UNIQUE (code),
+  CONSTRAINT uq_markets__market_country UNIQUE (market_id, country_id),
+  CONSTRAINT fk_markets__country_id FOREIGN KEY (country_id) REFERENCES geography.countries(country_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_markets__country_time_zone FOREIGN KEY (country_id, default_time_zone_id) REFERENCES geography.country_time_zones(country_id, time_zone_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_markets__currency_code FOREIGN KEY (currency_code) REFERENCES geography.currencies(currency_code) ON DELETE RESTRICT,
+  CONSTRAINT fk_markets__default_locale FOREIGN KEY (market_id, default_locale) REFERENCES geography.market_locales(market_id, locale) DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT ck_markets__code_format CHECK (((code ~ '^[a-z][a-z0-9]*(-[a-z0-9]+)*$'::text) AND (length(code) <= 60))),
+  CONSTRAINT ck_markets__effective_range CHECK (((effective_to IS NULL) OR (effective_to > effective_from))),
+  CONSTRAINT ck_markets__name_not_blank CHECK (((length(btrim(name)) > 0) AND (length(name) <= 120))),
+  CONSTRAINT ck_markets__status CHECK ((status = ANY (ARRAY['PLANNED'::text, 'ACTIVE'::text, 'INACTIVE'::text])))
+);
+CREATE INDEX idx_markets__active ON geography.markets USING btree (country_id, code) WHERE (status = 'ACTIVE'::text);
+
+CREATE TABLE geography.time_zones (
+  time_zone_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  iana_name text NOT NULL,
+  status text NOT NULL DEFAULT 'PLANNED'::text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_time_zones PRIMARY KEY (time_zone_id),
+  CONSTRAINT uq_time_zones__iana_name UNIQUE (iana_name),
+  CONSTRAINT ck_time_zones__iana_name_format CHECK (((iana_name ~ '^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+)*$'::text) AND (length(iana_name) <= 64))),
+  CONSTRAINT ck_time_zones__status CHECK ((status = ANY (ARRAY['PLANNED'::text, 'ACTIVE'::text, 'INACTIVE'::text])))
+);
 
 CREATE TABLE integration.outbox_events (
   outbox_event_id uuid NOT NULL DEFAULT gen_random_uuid(),

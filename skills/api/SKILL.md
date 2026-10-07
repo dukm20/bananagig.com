@@ -69,6 +69,7 @@ Services never write SQL in routes. Persistence changes go through the database 
 - OpenAPI `security-defined` lint is off until the first protected endpoint exists (`redocly.yaml`).
 - Put authorization guards in `preValidation` so 401 precedes 400 (LRN-0017), keep `removeAdditional: false` so unknown fields are rejected (LRN-0016), and map domain errors through a module `toAppError`. Configuration permissions use `requireConfigurationPermission(read|write|approve)`.
 - Content permissions use `requireContentPermission(read|write|approve)` plus `assertContentLegal` for LEGAL-owned entries (looked up from the stored entry, never from the request). The content resolve routes and active-locale list are public (`security: []`) behind `optionalAuthenticated()`: no Authorization header means anonymous, a presented token must be valid (401 otherwise), and a valid token without `content-read` is still anonymous. Anonymous callers get PUBLIC entries only and never `at` or the template. Batch endpoints omit keys they cannot serve instead of failing the batch (see `docs/engineering/CONTENT.md`).
+- Geography follows the same pattern (`requireGeographyPermission(read|write)`, `hasGeographyPermission`, public reads behind `optionalAuthenticated()`; `docs/engineering/GEOGRAPHY.md`): a caller without the admin context plus `geography-read` (or `geography-write`, which implies read) is anonymous and sees ACTIVE rows and public fields only (`effectiveTo` is null publicly), and the DTO mappers build every response field by field. `optionalAuthenticated()` adds `Vary: Authorization` to every response of the route (401 and 404 included). Management bodies are validated by a strict zod `preValidation` hook (`strictBody`, after the guard) before ajv can coerce them, so `{"active":1}` is a 400; administrator free text uses the contracts `adminText` rule. Error codes are `GEOGRAPHY_<code>`. Path parameters are validated by the route schema, so a non-canonical code (`/countries/us`, `/markets/LA-OC`) is a 400, not a 404.
 
 ## Do not
 
@@ -84,4 +85,4 @@ ADR-0006, ADR-0004, ADR-0013
 
 ## Last reviewed
 
-2026-10-06 (CFG-002)
+2026-10-07 (GEO-001)

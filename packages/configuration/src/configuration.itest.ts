@@ -5,7 +5,14 @@ import { CONFIGURATION_EVENTS, SCOPE_TYPES, type CreateParameterRequest, type Sc
 import { createDatabase } from '@bananagig/database';
 import { runWithCorrelation } from '@bananagig/observability';
 import { createIsolatedDatabase, rejection, sleep, type IsolatedDatabase } from '@bananagig/testing';
-import { ConfigurationError, ConfigurationService, MemoryConfigCache, ValkeyConfigCache } from './index';
+import {
+  ConfigurationError,
+  ConfigurationService,
+  MemoryConfigCache,
+  ValkeyConfigCache,
+  type ScopeReferenceCheck,
+  type ScopeReferenceValidator,
+} from './index';
 
 let iso: IsolatedDatabase;
 let svc: ConfigurationService;
@@ -702,5 +709,105 @@ describe('audit, events and sensitivity', () => {
     await svc.submit(cr.changeRequestId, A);
     expect(await count('integration.outbox_events')).toBe(outboxBefore + 1);
     expect(await count('configuration.audit_events')).toBe(auditBefore + 1);
+  });
+});
+
+// ---------------------------------------------------------------- GEO-001: COUNTRY/MARKET scope reference validation (fake geography)
+describe('scope reference validator port (GEO-001): fake validator over real PostgreSQL', () => {
+  let mode: 'ok' | 'retired' | 'down' = 'ok';
+  const calls: [ScopeType, string][] = [];
+  /** Accepts COUNTRY US and MARKET la-oc only; `mode` simulates a retired reference or an outage. */
+  const validator: ScopeReferenceValidator = {
+    validate: async (t, r): Promise<ScopeReferenceCheck> => {
+      calls.push([t, r]);
+      if (mode === 'down') throw new Error('geography unavailable');
+      if (mode === 'retired') return { valid: false, reason: 'INACTIVE' };
+      return (t === 'COUNTRY' && r === 'US') || (t === 'MARKET' && r === 'la-oc') ? { valid: true } : { valid: false, reason: 'NOT_FOUND' };
+    },
+  };
+  let guarded: ConfigurationService;
+  const crCount = async (k: string) =>
+    Number(
+      (
+        await q<{ n: string }>(
+          'SELECT count(*) AS n FROM configuration.change_requests cr JOIN configuration.parameters p ON p.parameter_id = cr.parameter_id WHERE p.key = $1',
+          [k],
+        )
+      )[0]!.n,
+    );
+  const draft = (k: string, scopeType: ScopeType, scopeRef: string | null) => ({ parameterKey: k, scopeType, scopeRef, value: 5, reason: 'geo test' });
+  beforeAll(() => {
+    guarded = new ConfigurationService({ database: db(), env: 'test', allowTestKeys: true, scopeReferences: validator });
+  });
+
+  it('createChangeRequest accepts valid COUNTRY and MARKET references and refuses unknown ones without writing', async () => {
+    mode = 'ok';
+    const k = key();
+    await guarded.createParameter(param(k), A);
+    expect((await guarded.createChangeRequest(draft(k, 'COUNTRY', 'US'), A)).scopeRef).toBe('US');
+    expect((await guarded.createChangeRequest(draft(k, 'MARKET', 'la-oc'), A)).scopeRef).toBe('la-oc');
+    const e = (await rejection(guarded.createChangeRequest(draft(k, 'COUNTRY', 'us'), A))) as ConfigurationError;
+    expect(e).toMatchObject({
+      code: 'VALIDATION_FAILED',
+      message: 'the scope reference is not valid',
+      details: { reason: 'SCOPE_REFERENCE_INVALID', scopeType: 'COUNTRY', check: 'NOT_FOUND' },
+    });
+    expect(await crCount(k)).toBe(2);
+  });
+  it('PLATFORM and non-geography scopes: PLATFORM is never validated; the validator decides the rest (the service has no opinion)', async () => {
+    mode = 'ok';
+    const k = key();
+    await guarded.createParameter(param(k), A);
+    calls.length = 0;
+    expect((await guarded.createChangeRequest(draft(k, 'PLATFORM', null), A)).scopeType).toBe('PLATFORM');
+    expect(calls).toEqual([]);
+    expect(await code(guarded.createChangeRequest(draft(k, 'GIG', 'some-gig'), A))).toBe('VALIDATION_FAILED'); // this fake only knows geography
+    expect(calls).toEqual([['GIG', 'some-gig']]);
+  });
+  it('publish re-validates the stored reference: a retired reference blocks publication, nothing is published, and it works again once valid', async () => {
+    mode = 'ok';
+    const k = key();
+    await guarded.createParameter(param(k), A);
+    const cr = await guarded.createChangeRequest(draft(k, 'MARKET', 'la-oc'), A);
+    await guarded.submit(cr.changeRequestId, A);
+    mode = 'retired';
+    const e = (await rejection(guarded.publish(cr.changeRequestId, A))) as ConfigurationError;
+    expect(e).toMatchObject({ code: 'VALIDATION_FAILED', details: { reason: 'SCOPE_REFERENCE_INVALID', scopeType: 'MARKET', check: 'INACTIVE' } });
+    expect((await guarded.getChangeRequest(cr.changeRequestId)).state).toBe('APPROVED');
+    expect(
+      Number(
+        (
+          await q<{ n: string }>(
+            'SELECT count(*) AS n FROM configuration.value_versions vv JOIN configuration.parameter_values pv ON pv.parameter_value_id = vv.parameter_value_id JOIN configuration.parameters p ON p.parameter_id = pv.parameter_id WHERE p.key = $1',
+            [k],
+          )
+        )[0]!.n,
+      ),
+    ).toBe(0);
+    mode = 'ok';
+    expect((await guarded.publish(cr.changeRequestId, A)).state).toBe('ACTIVE');
+    expect((await guarded.value<number>(k, {}).catch(() => null)) ?? null).toBeNull(); // MARKET value does not apply without that market in the context
+    expect(await guarded.value<number>(k, { market: 'la-oc' })).toBe(5);
+  });
+  it('a validator outage fails writes closed as UNAVAILABLE and leaves no trace', async () => {
+    mode = 'ok';
+    const k = key();
+    await guarded.createParameter(param(k), A);
+    const cr = await guarded.createChangeRequest(draft(k, 'COUNTRY', 'US'), A);
+    await guarded.submit(cr.changeRequestId, A);
+    mode = 'down';
+    expect(await rejection(guarded.createChangeRequest(draft(k, 'COUNTRY', 'US'), A))).toMatchObject({
+      code: 'UNAVAILABLE',
+      details: { reason: 'SCOPE_REFERENCE_UNAVAILABLE', scopeType: 'COUNTRY' },
+    });
+    expect(await code(guarded.publish(cr.changeRequestId, A))).toBe('UNAVAILABLE');
+    expect(await crCount(k)).toBe(1);
+    expect((await guarded.getChangeRequest(cr.changeRequestId)).state).toBe('APPROVED');
+    mode = 'ok';
+  });
+  it('without a validator the same database accepts any scope reference (unchanged behaviour)', async () => {
+    const k = key();
+    await svc.createParameter(param(k), A);
+    expect((await svc.createChangeRequest(draft(k, 'COUNTRY', 'anything'), A)).scopeRef).toBe('anything');
   });
 });

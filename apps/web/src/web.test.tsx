@@ -96,10 +96,14 @@ describe('pages', () => {
     expect((stub.calls.at(-1)!.body as { locale: string }).locale).toBe('en-US');
   });
   describe('(29) negotiation against the active locales', () => {
-    const ACTIVE = [
-      { locale: 'en-US', isActive: true, isPlatformDefault: true },
-      { locale: 'es-US', isActive: true, isPlatformDefault: false },
-    ];
+    /** A complete LocaleDto as the API returns it (display name and derived language/script/region), so fixtures cannot drift from the contract. */
+    const locale = (tag: string, isActive: boolean, isPlatformDefault: boolean) => {
+      const [language = tag, ...rest] = tag.split('-');
+      const script = rest.find((x) => /^[A-Z][a-z]{3}$/.test(x)) ?? null;
+      const region = rest.find((x) => /^([A-Z]{2}|[0-9]{3})$/.test(x)) ?? null;
+      return { locale: tag, displayName: tag, language, script, region, isActive, isPlatformDefault };
+    };
+    const ACTIVE = [locale('en-US', true, true), locale('es-US', true, false)];
     const requested = () => (stub.calls.at(-1)!.body as { locale: string }).locale;
 
     it('requests the first ACTIVE preference: es-US when fr is inactive (fr-FR, es-US;q=0.8)', async () => {
@@ -113,7 +117,7 @@ describe('pages', () => {
       expect(html).toContain('Etiqueta es-US');
     });
     it('truncates variants and regions to an active language and ignores a locale list entry that is not active', async () => {
-      stub.locales = [...ACTIVE, { locale: 'fr-FR', isActive: false, isPlatformDefault: false }, { locale: 'de', isActive: true, isPlatformDefault: false }];
+      stub.locales = [...ACTIVE, locale('fr-FR', false, false), locale('de', true, false)];
       state.acceptLanguage = 'fr-FR, de-CH-1996;q=0.9';
       await getContent('brand.tagline');
       expect(requested()).toBe('de');
@@ -187,7 +191,7 @@ describe('pages', () => {
       await getContent('brand.tagline');
       expect(stub.localeCalls).toBe(1);
       expect(ACTIVE_LOCALES_TTL_MS).toBe(30_000);
-      stub.locales = [...ACTIVE, { locale: 'fr', isActive: true, isPlatformDefault: false }];
+      stub.locales = [...ACTIVE, locale('fr', true, false)];
       now.mockReturnValue(t0 + ACTIVE_LOCALES_TTL_MS);
       await getContent('brand.tagline');
       expect(stub.localeCalls).toBe(2);

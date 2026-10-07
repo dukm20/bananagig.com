@@ -23,6 +23,7 @@ import {
   Locale,
   MARKUP_CONTENT_TYPES,
   PUBLISHED_STATUSES,
+  LocaleDto,
   RegisterLocaleRequest,
   ResolveContentRequest,
   ResolvedContentDto,
@@ -34,6 +35,38 @@ import {
   VARIABLE_TYPES,
   canonicalizeLocale,
   isSafeCorrelationId,
+  CountryAlpha3,
+  CountryCode,
+  CountryDto,
+  CountryEventPayload,
+  CountryNumeric,
+  CreateCountryRequest,
+  CreateMarketRequest,
+  CurrencyCode,
+  CurrencyDto,
+  DATE_FORMAT_CODES,
+  DISTANCE_UNITS,
+  DateFormatCode,
+  DialingCode,
+  DistanceUnit,
+  GEOGRAPHY_ERROR_CODES,
+  GEOGRAPHY_EVENTS,
+  GEO_STATUSES,
+  GeoActivationRequest,
+  GeoStatus,
+  IanaTimeZone,
+  MarketCode,
+  MarketDefaultsDto,
+  MarketDto,
+  MarketEventPayload,
+  MarketReadinessDto,
+  TIME_FORMAT_CODES,
+  TimeFormatCode,
+  TimeZoneDto,
+  UpdateCountryRequest,
+  UpdateMarketRequest,
+  WEEKDAYS,
+  Weekday,
 } from './index';
 
 const event = () => ({
@@ -221,6 +254,31 @@ describe('content contracts', () => {
       expect(CreateVersionRequest.safeParse({ ...v, effectiveFrom: '2026-06-01T00:00:00' }).success).toBe(false); // an instant needs an offset
       expect(CreateVersionRequest.safeParse({ ...v, reason: '' }).success).toBe(false);
     });
+    it('accepts an optional display name when registering a locale and rejects blank or oversized ones', () => {
+      expect(RegisterLocaleRequest.parse({ locale: 'es-US', reason: 'r' }).displayName).toBeUndefined();
+      expect(RegisterLocaleRequest.parse({ locale: 'es-US', reason: 'r', displayName: '  Spanish (US)  ' }).displayName).toBe('Spanish (US)');
+      expect(RegisterLocaleRequest.safeParse({ locale: 'es-US', reason: 'r', displayName: '   ' }).success).toBe(false);
+      expect(RegisterLocaleRequest.safeParse({ locale: 'es-US', reason: 'r', displayName: '' }).success).toBe(false);
+      expect(RegisterLocaleRequest.safeParse({ locale: 'es-US', reason: 'r', displayName: 'x'.repeat(101) }).success).toBe(false);
+      expect(RegisterLocaleRequest.safeParse({ locale: 'es-US', reason: 'r', displayName: 5 }).success).toBe(false);
+    });
+    it('LocaleDto carries the display name and the derived language, script and region', () => {
+      const full = {
+        locale: 'zh-Hant-TW',
+        displayName: 'Chinese (Traditional, Taiwan)',
+        language: 'zh',
+        script: 'Hant',
+        region: 'TW',
+        isActive: false,
+        isPlatformDefault: false,
+      };
+      expect(LocaleDto.parse(full)).toEqual(full);
+      expect(LocaleDto.parse({ ...full, locale: 'fil', language: 'fil', script: null, region: null }).script).toBeNull();
+      for (const missing of ['displayName', 'language', 'script', 'region'] as const) {
+        const { [missing]: _omitted, ...rest } = full;
+        expect(LocaleDto.safeParse(rest).success).toBe(false);
+      }
+    });
     it('registers locales inactive by default and requires a reason', () => {
       expect(RegisterLocaleRequest.parse({ locale: 'es-US', reason: 'r' }).active).toBe(false);
       expect(RegisterLocaleRequest.safeParse({ locale: 'es-US' }).success).toBe(false);
@@ -345,5 +403,391 @@ describe('content contracts', () => {
       };
       expect(EventEnvelope.safeParse(env).success).toBe(true);
     });
+  });
+});
+
+describe('geography contracts', () => {
+  const ok = (schema: { safeParse(v: unknown): { success: boolean } }, v: unknown) => schema.safeParse(v).success;
+
+  describe('codes', () => {
+    it('accepts upper-case ISO 3166-1 alpha-2 country codes only (the canonical COUNTRY scope reference)', () => {
+      for (const good of ['US', 'ZZ', 'CA']) expect(ok(CountryCode, good)).toBe(true);
+      for (const bad of ['us', 'Us', 'USA', 'U', '', 'U1', '1U', ' US', 'US ', 'U-', 'ÜS']) expect(ok(CountryCode, bad), bad).toBe(false);
+    });
+    it('validates alpha-3, numeric, currency and dialing codes', () => {
+      expect(ok(CountryAlpha3, 'USA')).toBe(true);
+      for (const bad of ['us', 'USAA', 'US', 'U1A']) expect(ok(CountryAlpha3, bad), bad).toBe(false);
+      expect(ok(CountryNumeric, '840')).toBe(true);
+      for (const bad of ['84', '8400', 'abc', '08 ']) expect(ok(CountryNumeric, bad), bad).toBe(false);
+      expect(ok(CurrencyCode, 'USD')).toBe(true);
+      for (const bad of ['usd', 'US', 'USDD', 'U$D']) expect(ok(CurrencyCode, bad), bad).toBe(false);
+      for (const good of ['+1', '+44', '+1684', '+999']) expect(ok(DialingCode, good), good).toBe(true);
+      for (const bad of ['1', '+', '+12345', '+1a', '001', '+ 1']) expect(ok(DialingCode, bad), bad).toBe(false);
+    });
+    it('accepts lower-case kebab market codes of at most 60 characters (the canonical MARKET scope reference)', () => {
+      for (const good of ['la-oc', 'us-sf', 'devtest-m1', 'a', 'a1', 'new-york-city', 'x'.repeat(60)]) expect(ok(MarketCode, good), good).toBe(true);
+      for (const bad of ['LA-OC', 'La-Oc', 'la_oc', '-la', 'la-', 'la--oc', '1la', '', 'la oc', 'la.oc', 'x'.repeat(61)])
+        expect(ok(MarketCode, bad), bad).toBe(false);
+    });
+    it('accepts IANA time zone identifiers and rejects offsets and malformed names (existence in the tz database is checked by the service and the database)', () => {
+      for (const good of ['America/Los_Angeles', 'America/Argentina/Buenos_Aires', 'UTC', 'Etc/GMT+5', 'Asia/Tokyo'])
+        expect(ok(IanaTimeZone, good), good).toBe(true);
+      for (const bad of ['', '+05:00', '/UTC', 'America//Denver', 'America/', 'Los Angeles', '1/2', 'a'.repeat(65)])
+        expect(ok(IanaTimeZone, bad), bad).toBe(false);
+    });
+  });
+
+  describe('enumerations', () => {
+    it('exposes the normalized vocabularies', () => {
+      expect([...GEO_STATUSES]).toEqual(['PLANNED', 'ACTIVE', 'INACTIVE']);
+      expect([...DISTANCE_UNITS]).toEqual(['MILES', 'KILOMETERS']);
+      expect([...WEEKDAYS]).toEqual(['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY']);
+      expect([...DATE_FORMAT_CODES]).toEqual(['MDY', 'DMY', 'YMD']);
+      expect([...TIME_FORMAT_CODES]).toEqual(['12_HOUR', '24_HOUR']);
+    });
+    it('rejects anything outside them (case sensitive)', () => {
+      for (const [schema, good, bad] of [
+        [GeoStatus, 'ACTIVE', 'active'],
+        [DistanceUnit, 'MILES', 'miles'],
+        [DistanceUnit, 'KILOMETERS', 'KM'],
+        [Weekday, 'SUNDAY', 'Sunday'],
+        [DateFormatCode, 'YMD', 'ISO'],
+        [TimeFormatCode, '24_HOUR', '24'],
+      ] as const) {
+        expect(ok(schema, good)).toBe(true);
+        expect(ok(schema, bad), String(bad)).toBe(false);
+      }
+    });
+  });
+
+  describe('requests', () => {
+    const country = {
+      code: 'ZZ',
+      alpha3: 'ZZZ',
+      numeric: '999',
+      displayNameContentKey: 'geography.country.zz.name',
+      dialingCode: '+999',
+      defaultCurrencyCode: 'USD',
+      defaultLocale: 'en-US',
+      supportedLocales: ['en-US'],
+      timeZones: ['America/Denver'],
+      distanceUnit: 'MILES',
+      firstDayOfWeek: 'SUNDAY',
+      dateFormat: 'MDY',
+      timeFormat: '12_HOUR',
+      reason: 'new market',
+    };
+    const market = {
+      code: 'la-oc',
+      name: 'LA & OC',
+      countryCode: 'US',
+      defaultLocale: 'en-US',
+      currencyCode: 'USD',
+      defaultTimeZone: 'America/Los_Angeles',
+      reason: 'launch',
+    };
+
+    it('CreateCountryRequest is strict and validates every field', () => {
+      expect(ok(CreateCountryRequest, country)).toBe(true);
+      expect(ok(CreateCountryRequest, { ...country, extra: 1 })).toBe(false);
+      expect(ok(CreateCountryRequest, { ...country, status: 'ACTIVE' })).toBe(false);
+      for (const key of Object.keys(country)) {
+        const { [key]: _omitted, ...rest } = country as Record<string, unknown>;
+        expect(ok(CreateCountryRequest, rest), `missing ${key}`).toBe(false);
+      }
+      for (const bad of [
+        { code: 'zz' },
+        { alpha3: 'ZZ' },
+        { numeric: '99' },
+        { displayNameContentKey: 'Not A Key' },
+        { dialingCode: '999' },
+        { defaultCurrencyCode: 'usd' },
+        { defaultLocale: 'en_US' },
+        { supportedLocales: [] },
+        { supportedLocales: ['en_US'] },
+        { timeZones: [] },
+        { timeZones: ['+05:00'] },
+        { distanceUnit: 'FURLONGS' },
+        { firstDayOfWeek: 'Monday' },
+        { dateFormat: 'DD/MM' },
+        { timeFormat: '36_HOUR' },
+        { reason: '' },
+        { reason: 'x'.repeat(1001) },
+      ])
+        expect(ok(CreateCountryRequest, { ...country, ...bad }), JSON.stringify(bad)).toBe(false);
+    });
+
+    it('UpdateCountryRequest changes the provided fields only: ISO codes are identity, unknown fields and a missing reason are rejected', () => {
+      expect(ok(UpdateCountryRequest, { dialingCode: '+1', reason: 'r' })).toBe(true);
+      expect(ok(UpdateCountryRequest, { reason: 'r' })).toBe(true);
+      for (const bad of [
+        { dialingCode: '+1' },
+        { code: 'US', reason: 'r' },
+        { alpha3: 'USA', reason: 'r' },
+        { numeric: '840', reason: 'r' },
+        { status: 'ACTIVE', reason: 'r' },
+        { distanceUnit: 'MI', reason: 'r' },
+      ])
+        expect(ok(UpdateCountryRequest, bad), JSON.stringify(bad)).toBe(false);
+    });
+
+    it('CreateMarketRequest is strict; supportedLocales and the effective window are optional; dates need an offset', () => {
+      expect(ok(CreateMarketRequest, market)).toBe(true);
+      expect(
+        ok(CreateMarketRequest, {
+          ...market,
+          supportedLocales: ['en-US', 'es-US'],
+          effectiveFrom: '2026-01-01T00:00:00Z',
+          effectiveTo: '2027-01-01T00:00:00+01:00',
+        }),
+      ).toBe(true);
+      expect(ok(CreateMarketRequest, { ...market, effectiveTo: null })).toBe(true);
+      for (const bad of [
+        { extra: 1 },
+        { status: 'ACTIVE' },
+        { code: 'LA-OC' },
+        { code: 'la_oc' },
+        { name: '' },
+        { name: 'x'.repeat(121) },
+        { countryCode: 'us' },
+        { currencyCode: 'usd' },
+        { defaultTimeZone: '+05:00' },
+        { effectiveFrom: 'yesterday' },
+        { effectiveFrom: '2026-01-01T00:00:00' },
+        { effectiveTo: '2026-13-01T00:00:00Z' },
+        { supportedLocales: [] },
+        { reason: '' },
+      ])
+        expect(ok(CreateMarketRequest, { ...market, ...bad }), JSON.stringify(bad)).toBe(false);
+      for (const key of ['code', 'name', 'countryCode', 'defaultLocale', 'currencyCode', 'defaultTimeZone', 'reason']) {
+        const { [key]: _omitted, ...rest } = market as Record<string, unknown>;
+        expect(ok(CreateMarketRequest, rest), `missing ${key}`).toBe(false);
+      }
+    });
+
+    it('UpdateMarketRequest: code and country are identity; effectiveTo may be cleared with null', () => {
+      expect(ok(UpdateMarketRequest, { name: 'New', reason: 'r' })).toBe(true);
+      expect(ok(UpdateMarketRequest, { effectiveTo: null, reason: 'r' })).toBe(true);
+      for (const bad of [
+        { name: 'New' },
+        { code: 'x', reason: 'r' },
+        { countryCode: 'US', reason: 'r' },
+        { status: 'ACTIVE', reason: 'r' },
+        { effectiveFrom: null, reason: 'r' },
+        { name: '', reason: 'r' },
+      ])
+        expect(ok(UpdateMarketRequest, bad), JSON.stringify(bad)).toBe(false);
+    });
+
+    it('GeoActivationRequest needs a boolean and a reason and nothing else', () => {
+      expect(ok(GeoActivationRequest, { active: true, reason: 'r' })).toBe(true);
+      expect(ok(GeoActivationRequest, { active: false, reason: 'r' })).toBe(true);
+      for (const bad of [
+        { active: true },
+        { reason: 'r' },
+        { active: 'true', reason: 'r' },
+        { active: true, reason: '' },
+        { active: true, reason: 'r', extra: 1 },
+      ])
+        expect(ok(GeoActivationRequest, bad), JSON.stringify(bad)).toBe(false);
+    });
+
+    describe('administrator free text (market name and every reason)', () => {
+      // Each case is built from escapes so the test file itself contains no invisible characters.
+      const rejected: [string, string][] = [
+        ['NUL', 'before\u0000after'],
+        ['newline', 'line one\nline two'],
+        ['carriage return', 'a\rb'],
+        ['tab', 'a\tb'],
+        ['escape', 'a\u001Bb'],
+        ['DEL', 'a\u007Fb'],
+        ['C1 NEL', 'a\u0085b'],
+        ['C1 upper bound', 'a\u009Fb'],
+        ['bidi override RLO', 'abc\u202Edef'],
+        ['bidi embedding LRE', 'abc\u202Adef'],
+        ['bidi isolate LRI', 'abc\u2066def'],
+        ['bidi isolate PDI', 'abc\u2069def'],
+        ['lone high surrogate', 'abc\uD800def'],
+        ['lone low surrogate', 'abc\uDC00def'],
+        ['high surrogate at the end', 'abc\uD83D'],
+        ['blank', '   '],
+        ['NBSP only', '\u00A0\u00A0'],
+        ['mixed whitespace only', ' \u00A0\u2003\u3000 '],
+        ['zero-width space only', '\u200B'],
+        ['byte order mark only', '\uFEFF'],
+      ];
+      const accepted: [string, string][] = [
+        ['plain', 'LA & OC'],
+        ['accented', 'São Paulo'],
+        ['German', 'Zürich Altstadt'],
+        ['CJK', '東京'],
+        ['Arabic with LRM', '\u0645\u0635\u0631\u200E'],
+        ['emoji (a valid surrogate pair)', 'Beach \uD83C\uDFD6\uFE0F'],
+        ['inner punctuation and spaces', "Winston-Salem, N.C. (O'Brien's)"],
+        ['one visible character among blanks', ' \u00A0x\u00A0 '],
+      ];
+      const fields: [string, (v: string) => unknown, { safeParse(v: unknown): { success: boolean } }][] = [
+        ['CreateMarketRequest.name', (v) => ({ ...market, name: v }), CreateMarketRequest],
+        ['CreateMarketRequest.reason', (v) => ({ ...market, reason: v }), CreateMarketRequest],
+        ['UpdateMarketRequest.name', (v) => ({ name: v, reason: 'r' }), UpdateMarketRequest],
+        ['UpdateMarketRequest.reason', (v) => ({ name: 'New', reason: v }), UpdateMarketRequest],
+        ['CreateCountryRequest.reason', (v) => ({ ...country, reason: v }), CreateCountryRequest],
+        ['UpdateCountryRequest.reason', (v) => ({ dialingCode: '+1', reason: v }), UpdateCountryRequest],
+        ['GeoActivationRequest.reason', (v) => ({ active: true, reason: v }), GeoActivationRequest],
+      ];
+      it.each(fields)('%s rejects control, bidirectional, surrogate and blank values', (_name, build, schema) => {
+        for (const [label, value] of rejected) expect(ok(schema, build(value)), label).toBe(false);
+      });
+      it.each(fields)('%s still accepts ordinary text in any script', (_name, build, schema) => {
+        for (const [label, value] of accepted) expect(ok(schema, build(value)), label).toBe(true);
+      });
+      it('keeps the length limits (1 to 120 for the name, 1 to 1000 for a reason)', () => {
+        expect(ok(CreateMarketRequest, { ...market, name: 'x'.repeat(120) })).toBe(true);
+        expect(ok(CreateMarketRequest, { ...market, name: 'x'.repeat(121) })).toBe(false);
+        expect(ok(GeoActivationRequest, { active: true, reason: 'x'.repeat(1000) })).toBe(true);
+        expect(ok(GeoActivationRequest, { active: true, reason: 'x'.repeat(1001) })).toBe(false);
+        expect(ok(GeoActivationRequest, { active: true, reason: '' })).toBe(false);
+      });
+      it('reports a message that never echoes the rejected value', () => {
+        const r = CreateMarketRequest.safeParse({ ...market, name: 'SECRET-SENTINEL\u0000' });
+        expect(r.success).toBe(false);
+        expect(JSON.stringify(r.error?.issues)).not.toContain('SECRET-SENTINEL');
+      });
+    });
+  });
+
+  describe('read models', () => {
+    it('keep the management-only fields optional so the public view is a valid subset', () => {
+      const publicCountry = {
+        code: 'US',
+        alpha3: 'USA',
+        numeric: '840',
+        displayNameContentKey: 'geography.country.us.name',
+        dialingCode: '+1',
+        defaultCurrencyCode: 'USD',
+        defaultLocale: 'en-US',
+        supportedLocales: ['en-US'],
+        timeZones: ['America/Denver'],
+        distanceUnit: 'MILES',
+        firstDayOfWeek: 'SUNDAY',
+        dateFormat: 'MDY',
+        timeFormat: '12_HOUR',
+      };
+      expect(ok(CountryDto, publicCountry)).toBe(true);
+      expect(ok(CountryDto, { ...publicCountry, status: 'ACTIVE', createdAt: 'x', updatedAt: 'y' })).toBe(true);
+      expect(ok(CountryDto, { ...publicCountry, status: 'DELETED' })).toBe(false);
+      expect(ok(CountryDto, { ...publicCountry, distanceUnit: 'FEET' })).toBe(false);
+      const publicMarket = {
+        code: 'la-oc',
+        name: 'LA & OC',
+        countryCode: 'US',
+        defaultLocale: 'en-US',
+        supportedLocales: ['en-US'],
+        currencyCode: 'USD',
+        defaultTimeZone: 'America/Los_Angeles',
+        effectiveFrom: '2026-01-01T00:00:00.000Z',
+        effectiveTo: null,
+      };
+      expect(ok(MarketDto, publicMarket)).toBe(true);
+      expect(ok(MarketDto, { ...publicMarket, status: 'PLANNED' })).toBe(true);
+      expect(ok(MarketDto, { ...publicMarket, effectiveTo: undefined })).toBe(false); // null, not absent
+      expect(ok(CurrencyDto, { code: 'USD', numericCode: '840', minorUnitDigits: 2, displayName: 'US Dollar', symbol: '$' })).toBe(true);
+      expect(ok(CurrencyDto, { code: 'XTS', numericCode: '963', minorUnitDigits: 2, displayName: 'Test', symbol: null })).toBe(true);
+      expect(ok(CurrencyDto, { code: 'USD', numericCode: '840', minorUnitDigits: 5, displayName: 'x', symbol: null })).toBe(false); // 0 to 4 digits
+      expect(ok(CurrencyDto, { code: 'USD', numericCode: '840', minorUnitDigits: -1, displayName: 'x', symbol: null })).toBe(false);
+      expect(ok(TimeZoneDto, { ianaName: 'America/Denver' })).toBe(true);
+    });
+    it('market defaults and readiness have fixed shapes', () => {
+      const defaults = {
+        market: { code: 'la-oc', name: 'LA & OC', countryCode: 'US' },
+        country: { code: 'US', dialingCode: '+1' },
+        currency: { code: 'USD', minorUnitDigits: 2, symbol: '$' },
+        locale: 'en-US',
+        supportedLocales: ['en-US'],
+        timeZone: 'America/Los_Angeles',
+        distanceUnit: 'MILES',
+        firstDayOfWeek: 'SUNDAY',
+        dateFormat: 'MDY',
+        timeFormat: '12_HOUR',
+        effectiveFrom: '2026-01-01T00:00:00.000Z',
+        effectiveTo: null,
+      };
+      expect(ok(MarketDefaultsDto, defaults)).toBe(true);
+      expect(ok(MarketDefaultsDto, { ...defaults, timeFormat: 'AM_PM' })).toBe(false);
+      expect(
+        ok(MarketReadinessDto, { market: 'la-oc', ready: false, checks: [{ code: 'COUNTRY_ACTIVE', passed: false, detail: 'country US is PLANNED' }] }),
+      ).toBe(true);
+      expect(ok(MarketReadinessDto, { market: 'la-oc', ready: true, checks: [{ code: 'X', passed: 'yes', detail: 'd' }] })).toBe(false);
+    });
+  });
+
+  describe('events', () => {
+    it('names the six events bananagig.geography.<event>.v1', () => {
+      expect(GEOGRAPHY_EVENTS).toEqual({
+        countryActivated: 'bananagig.geography.country-activated.v1',
+        countryDeactivated: 'bananagig.geography.country-deactivated.v1',
+        marketCreated: 'bananagig.geography.market-created.v1',
+        marketActivated: 'bananagig.geography.market-activated.v1',
+        marketDeactivated: 'bananagig.geography.market-deactivated.v1',
+        marketDefaultsChanged: 'bananagig.geography.market-defaults-changed.v1',
+      });
+      for (const type of Object.values(GEOGRAPHY_EVENTS)) expect(EVENT_TYPE_PATTERN.test(type), type).toBe(true);
+    });
+    it('carry identifiers only: country events need the country code; market events the market and country codes', () => {
+      expect(ok(CountryEventPayload, { countryCode: 'ZZ' })).toBe(true);
+      expect(ok(CountryEventPayload, {})).toBe(false);
+      expect(ok(MarketEventPayload, { marketCode: 'la-oc', countryCode: 'US' })).toBe(true);
+      expect(ok(MarketEventPayload, { marketCode: 'la-oc' })).toBe(false);
+      expect(ok(MarketEventPayload, { marketCode: 'la-oc', countryCode: 'US', changedFields: ['defaultLocale'], cause: 'MARKET' })).toBe(true);
+      expect(ok(MarketEventPayload, { marketCode: 'la-oc', countryCode: 'US', changedFields: ['distanceUnit'], cause: 'COUNTRY' })).toBe(true);
+      expect(ok(MarketEventPayload, { marketCode: 'la-oc', countryCode: 'US', cause: 'USER' })).toBe(false);
+      expect(ok(MarketEventPayload, { marketCode: 'la-oc', countryCode: 'US', changedFields: [1] })).toBe(false);
+    });
+    it('have no field that could carry values, names or reasons', () => {
+      const fields = [...Object.keys(CountryEventPayload.shape), ...Object.keys(MarketEventPayload.shape)];
+      for (const forbidden of ['reason', 'name', 'value', 'values', 'locale', 'currencyCode', 'timeZone', 'actor']) expect(fields).not.toContain(forbidden);
+    });
+    it('fit inside the event envelope', () => {
+      const env = (eventType: string, aggregateType: string, payload: unknown) => ({
+        eventId: randomUUID(),
+        eventType,
+        eventVersion: 1,
+        occurredAt: new Date().toISOString(),
+        correlationId: 'corr-12345678',
+        causationId: null,
+        actor: { type: 'user', id: 'admin-a' },
+        aggregateType,
+        aggregateId: randomUUID(),
+        payload,
+      });
+      expect(EventEnvelope.safeParse(env(GEOGRAPHY_EVENTS.countryActivated, 'geography_country', { countryCode: 'ZZ' })).success).toBe(true);
+      expect(
+        EventEnvelope.safeParse(
+          env(GEOGRAPHY_EVENTS.marketDefaultsChanged, 'geography_market', {
+            marketCode: 'la-oc',
+            countryCode: 'US',
+            changedFields: ['currencyCode'],
+            cause: 'MARKET',
+          }),
+        ).success,
+      ).toBe(true);
+    });
+  });
+
+  it('lists the typed geography error codes', () => {
+    expect([...GEOGRAPHY_ERROR_CODES].sort()).toEqual(
+      [
+        'COUNTRY_NOT_FOUND',
+        'MARKET_NOT_FOUND',
+        'CURRENCY_NOT_FOUND',
+        'TIME_ZONE_NOT_FOUND',
+        'LOCALE_NOT_FOUND',
+        'VALIDATION_FAILED',
+        'CONFLICT',
+        'INVALID_STATE',
+        'NOT_READY',
+        'UNAVAILABLE',
+      ].sort(),
+    );
   });
 });

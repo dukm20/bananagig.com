@@ -198,9 +198,25 @@ export const EntryDetailDto = z.object({ entry: EntryDto, versions: z.array(Cont
 export type EntryDetailDto = z.infer<typeof EntryDetailDto>;
 
 // ---------------------------------------------------------------- locales management
-export const RegisterLocaleRequest = z.object({ locale: Locale, active: z.boolean().default(false), reason: z.string().min(1).max(1000) });
+export const RegisterLocaleRequest = z.object({
+  locale: Locale,
+  active: z.boolean().default(false),
+  /** Optional human-readable name; when omitted the service derives one (Intl.DisplayNames in English, the tag itself when Intl has none). */
+  displayName: z.string().trim().min(1).max(100).optional(),
+  reason: z.string().min(1).max(1000),
+});
 export type RegisterLocaleRequest = z.infer<typeof RegisterLocaleRequest>;
-export const LocaleDto = z.object({ locale: z.string(), isActive: z.boolean(), isPlatformDefault: z.boolean() });
+export const LocaleDto = z.object({
+  locale: z.string(),
+  /** Human-readable name, for example English (United States). */
+  displayName: z.string(),
+  /** Derived from the tag (cannot drift): the language subtag, the ISO 15924 script (or null) and the region (or null). */
+  language: z.string(),
+  script: z.string().nullable(),
+  region: z.string().nullable(),
+  isActive: z.boolean(),
+  isPlatformDefault: z.boolean(),
+});
 export type LocaleDto = z.infer<typeof LocaleDto>;
 
 // ---------------------------------------------------------------- resolution

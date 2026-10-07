@@ -385,7 +385,7 @@ await check('Web App session', async () => {
 });
 
 await check('Configuration Registry', async () => {
-  // DEV/TEST-only records (devtest.* keys are refused in production). Two real administrators, real PKCE logins, real HTTP.
+  // DEV/TEST-only records (devtest.* keys are refused in production); market references are validated, so the seeded market la-oc is used. Two real administrators, real PKCE logins, real HTTP.
   const tokenFor = async (user: keyof typeof DEV_USERS): Promise<string> => {
     const login = await authorizationCodeLogin(kc, { clientId: 'bananagig-admin', redirectUri: ADMIN_REDIRECT_URI, ...DEV_USERS[user] });
     return (
@@ -441,20 +441,20 @@ await check('Configuration Registry', async () => {
   };
   const base = 10 + (Date.now() % 500);
   await publish('PLATFORM', null, base); // 2. platform value
-  await publish('MARKET', 'smoke-market', base + 1); // 3. market override
+  await publish('MARKET', 'la-oc', base + 1); // 3. market override
   const resolve = async (market?: string) =>
     (await call(a, 'POST', '/resolve', { keys: [key], context: market ? { market } : {} })).json.data.values[0] as {
       value: number;
       sourceScope: string;
       version: number;
     };
-  const inMarket = await resolve('smoke-market'); // 4. resolve with market context
+  const inMarket = await resolve('la-oc'); // 4. resolve with market context
   if (inMarket.value !== base + 1 || inMarket.sourceScope !== 'MARKET') throw new Error('market override did not win'); // 5.
   const elsewhere = await resolve('other-market');
   if (elsewhere.value !== base || elsewhere.sourceScope !== 'PLATFORM') throw new Error('platform value should apply outside the override market');
-  const snap = (await call(a, 'POST', '/snapshots', { keys: [key], context: { market: 'smoke-market' }, purpose: 'smoke test' })).json.data; // 6.
-  await publish('MARKET', 'smoke-market', base + 2); // 7. change active configuration
-  const now = await resolve('smoke-market');
+  const snap = (await call(a, 'POST', '/snapshots', { keys: [key], context: { market: 'la-oc' }, purpose: 'smoke test' })).json.data; // 6.
+  await publish('MARKET', 'la-oc', base + 2); // 7. change active configuration
+  const now = await resolve('la-oc');
   if (now.value !== base + 2) throw new Error('new market value is not effective');
   const again = (await call(a, 'GET', `/snapshots/${snap.snapshotId}`)).json.data; // 8. old snapshot unchanged
   if (again.items[0].value !== base + 1 || again.items[0].version !== inMarket.version) throw new Error('snapshot changed after a configuration change');
@@ -556,6 +556,241 @@ await check('Content Registry', async () => {
   return `seeded copy + es-MX fallback to en-US, scheduled v2 invisible before and effective after its instant, snapshot kept v1 (${key})`;
 });
 
+await check('Geography', async () => {
+  // Reference data: countries, markets, currencies, time zones. DEV/TEST-only records (country ZZ, locale qaa, devtest-* markets) are refused in production.
+  // Idempotent across runs: ZZ and qaa are reused, the market and content entry are unique per run (entities cannot be deleted).
+  const login = await authorizationCodeLogin(kc, { clientId: 'bananagig-admin', redirectUri: ADMIN_REDIRECT_URI, ...DEV_USERS.admin });
+  const admin = (
+    await exchangeAuthorizationCode({
+      tokenEndpoint: ep.token,
+      clientId: 'bananagig-admin',
+      redirectUri: ADMIN_REDIRECT_URI,
+      code: login.code,
+      codeVerifier: login.verifier,
+    })
+  ).accessToken;
+  type Method = 'GET' | 'POST' | 'PUT';
+  const request =
+    (module: 'geography' | 'content' | 'configuration') =>
+    async (token: string | null, method: Method, path: string, body?: unknown, okStatuses = [200, 201]) => {
+      const r = await get(`${api}/api/v1/${module}${path}`, {
+        method,
+        headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      });
+      const json = (await r.json().catch(() => ({}))) as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+      if (!okStatuses.includes(r.status)) throw new Error(`${method} /${module}${path} -> ${r.status} ${json?.error?.code ?? ''}`);
+      return { status: r.status, json };
+    };
+  const geo = request('geography');
+  const content = request('content');
+  const configuration = request('configuration');
+  const assert = (ok: boolean, what: string): void => {
+    if (!ok) throw new Error(what);
+  };
+  type MarketRow = { code: string; status?: string };
+  const listed = async (token: string | null, code: string): Promise<boolean> =>
+    ((await geo(token, 'GET', '/markets')).json.data as MarketRow[]).some((m) => m.code === code);
+
+  // (1) anonymous reference data: ACTIVE and public fields only
+  const us = (await geo(null, 'GET', '/countries/US')).json.data;
+  assert(
+    us.distanceUnit === 'MILES' && us.defaultLocale === 'en-US' && us.defaultCurrencyCode === 'USD' && us.dialingCode === '+1',
+    `US country data wrong (${JSON.stringify(us)})`,
+  );
+  assert(!('status' in us) && !('createdAt' in us) && !('updatedAt' in us), 'anonymous country response must not expose status or timestamps');
+  const usd = ((await geo(null, 'GET', '/currencies')).json.data as { code: string; minorUnitDigits: number }[]).find((c) => c.code === 'USD');
+  assert(usd?.minorUnitDigits === 2, 'USD with 2 minor unit digits is not listed');
+  const publicLocales = (await content(null, 'GET', '/locales')).json.data as { locale: string }[];
+  assert(
+    publicLocales.some((l) => l.locale === 'en-US'),
+    'en-US is not in the public content locale list',
+  );
+  const anonReadiness = await get(`${api}/api/v1/geography/markets/la-oc/readiness`);
+  assert(anonReadiness.status === 401, `market readiness must require authentication (got ${anonReadiness.status})`);
+
+  // (2) the seeded market la-oc: its status is owner data (seeded PLANNED; the owner may activate or retire it), so the proof adapts. PLANNED or INACTIVE
+  // (or ACTIVE but outside its effective period): invisible to anonymous callers. ACTIVE and in effect: publicly visible and listed. Management always sees defaults.
+  // The "inactive market is not returned as active" proof does not depend on la-oc: it is also covered by the devtest market below.
+  const laoc = (await geo(admin, 'GET', '/markets/la-oc')).json.data;
+  assert(['PLANNED', 'ACTIVE', 'INACTIVE'].includes(laoc.status), `la-oc has an unknown status (${laoc.status})`);
+  const nowMs = Date.now();
+  const laocPublic =
+    laoc.status === 'ACTIVE' &&
+    Date.parse(laoc.effectiveFrom) <= nowMs &&
+    (laoc.effectiveTo === null || laoc.effectiveTo === undefined || nowMs < Date.parse(laoc.effectiveTo));
+  await geo(null, 'GET', '/markets/la-oc', undefined, laocPublic ? [200] : [404]);
+  assert(
+    (await listed(null, 'la-oc')) === laocPublic,
+    laocPublic ? 'la-oc is ACTIVE and in effect but missing from the anonymous list' : `la-oc is ${laoc.status} but appears in the anonymous list`,
+  );
+  const laDefaults = (await geo(admin, 'GET', '/markets/la-oc/defaults')).json.data;
+  assert(
+    laDefaults.locale === 'en-US' &&
+      laDefaults.currency.code === 'USD' &&
+      laDefaults.timeZone === 'America/Los_Angeles' &&
+      laDefaults.distanceUnit === 'MILES' &&
+      laDefaults.firstDayOfWeek === 'SUNDAY' &&
+      laDefaults.dateFormat === 'MDY' &&
+      laDefaults.timeFormat === '12_HOUR',
+    `la-oc defaults wrong (${JSON.stringify(laDefaults)})`,
+  );
+  await geo(null, 'GET', '/markets/la-oc/defaults', undefined, laocPublic ? [200] : [404]);
+
+  // (3) DEV/TEST market flow: private-use locale qaa, DEV/TEST country ZZ, a unique devtest market
+  const runId = `r${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  const locales = (await content(admin, 'GET', '/locales')).json.data as { locale: string; isActive: boolean }[];
+  const qaa = locales.find((l) => l.locale === 'qaa');
+  if (!qaa) await content(admin, 'POST', '/locales', { locale: 'qaa', active: false, displayName: 'DEV/TEST private-use', reason: 'smoke test' }, [201, 409]);
+  if (!qaa?.isActive) await content(admin, 'POST', '/locales/qaa/activation', { active: true, reason: 'smoke test' });
+  const activeLocales = (await content(null, 'GET', '/locales')).json.data as { locale: string }[];
+  assert(
+    activeLocales.some((l) => l.locale === 'qaa'),
+    'locale qaa is not active',
+  );
+
+  const zzLookup = await geo(admin, 'GET', '/countries/ZZ', undefined, [200, 404]);
+  if (zzLookup.status === 404)
+    await geo(
+      admin,
+      'POST',
+      '/countries',
+      {
+        code: 'ZZ',
+        alpha3: 'ZZZ',
+        numeric: '999',
+        displayNameContentKey: 'geography.country.us.name',
+        dialingCode: '+999',
+        defaultCurrencyCode: 'USD',
+        defaultLocale: 'qaa',
+        supportedLocales: ['en-US', 'qaa'],
+        timeZones: ['America/Los_Angeles'],
+        distanceUnit: 'KILOMETERS',
+        firstDayOfWeek: 'MONDAY',
+        dateFormat: 'DMY',
+        timeFormat: '24_HOUR',
+        reason: 'DEV/TEST ONLY smoke country',
+      },
+      [201, 409],
+    );
+  const zz = (await geo(admin, 'GET', '/countries/ZZ')).json.data;
+  if (zz.status !== 'ACTIVE') await geo(admin, 'POST', '/countries/ZZ/activation', { active: true, reason: 'smoke test' });
+  const zzActive = (await geo(admin, 'GET', '/countries/ZZ')).json.data;
+  assert(zzActive.status === 'ACTIVE', `country ZZ should be ACTIVE (got ${zzActive.status})`);
+
+  const marketCode = `devtest-${runId}`;
+  await geo(admin, 'POST', '/markets', {
+    code: marketCode,
+    name: `DEV/TEST smoke market ${runId}`,
+    countryCode: 'ZZ',
+    defaultLocale: 'qaa',
+    currencyCode: 'USD',
+    defaultTimeZone: 'America/Los_Angeles',
+    reason: 'DEV/TEST ONLY smoke market',
+  });
+  const created = (await geo(admin, 'GET', `/markets/${marketCode}`)).json.data;
+  assert(created.status === 'PLANNED', `new market should be PLANNED (got ${created.status})`);
+  await geo(null, 'GET', `/markets/${marketCode}`, undefined, [404]);
+  assert(!(await listed(null, marketCode)), 'a PLANNED market must not appear in the anonymous market list');
+  const readiness = (await geo(admin, 'GET', `/markets/${marketCode}/readiness`)).json.data;
+  assert(readiness.market === marketCode && readiness.ready === true, `market should be ready to activate (${JSON.stringify(readiness)})`);
+  await geo(admin, 'POST', `/markets/${marketCode}/activation`, { active: true, reason: 'smoke test' });
+  assert(await listed(null, marketCode), 'an ACTIVE market must appear in the anonymous market list');
+  const defaults = (await geo(null, 'GET', `/markets/${marketCode}/defaults`)).json.data;
+  assert(
+    defaults.market.code === marketCode &&
+      defaults.locale === 'qaa' &&
+      defaults.timeZone === 'America/Los_Angeles' &&
+      defaults.currency.code === 'USD' &&
+      defaults.distanceUnit === 'KILOMETERS' &&
+      defaults.firstDayOfWeek === 'MONDAY' &&
+      defaults.dateFormat === 'DMY' &&
+      defaults.timeFormat === '24_HOUR',
+    `public market defaults wrong (${JSON.stringify(defaults)})`,
+  );
+
+  // (4) content integration: requested locale (fr-CA, no copy) -> market default (qaa) -> platform default (en-US)
+  const key = `devtest.smoke.geo.${runId}`;
+  const enText = `Geo en-US ${runId}`;
+  const qaaText = `Geo qaa ${runId}`;
+  await content(admin, 'POST', '/entries', {
+    key,
+    contentType: 'UI_LABEL',
+    ownerRole: 'CONTENT',
+    description: 'DEV/TEST ONLY geography smoke entry',
+    approvalPolicy: 'NONE',
+  });
+  for (const [locale, body] of [
+    ['en-US', enText],
+    ['qaa', qaaText],
+  ] as const) {
+    const v = (await content(admin, 'POST', `/entries/${key}/versions`, { locale, body, reason: 'smoke test' })).json.data;
+    await content(admin, 'POST', `/versions/${v.versionId}/submit`, {});
+    const published = (await content(admin, 'POST', `/versions/${v.versionId}/publish`, {})).json.data;
+    assert(published.status === 'PUBLISHED', `${locale} version should be PUBLISHED (got ${published.status})`);
+  }
+  type Resolved = { value: string; resolvedLocale: string; fallback: { applied: boolean; chain: string[] } };
+  const withMarket = (await content(null, 'POST', '/resolve', { key, locale: 'fr-CA', context: { market: marketCode } })).json.data as Resolved;
+  assert(
+    withMarket.resolvedLocale === 'qaa' && withMarket.fallback.applied === true && withMarket.value === qaaText,
+    `fr-CA in market ${marketCode} should resolve to the market default qaa (got ${withMarket.resolvedLocale}, applied ${withMarket.fallback.applied})`,
+  );
+  const withoutMarket = (await content(null, 'POST', '/resolve', { key, locale: 'fr-CA', context: {} })).json.data as Resolved;
+  assert(
+    withoutMarket.resolvedLocale === 'en-US' && withoutMarket.fallback.applied === true && withoutMarket.value === enText,
+    `fr-CA without a market should resolve to the platform default en-US (got ${withoutMarket.resolvedLocale})`,
+  );
+
+  // (5) configuration scope integration: market references are validated against the registry
+  const paramKey = 'devtest.smoke.window_hours';
+  await configuration(
+    admin,
+    'POST',
+    '/parameters',
+    {
+      key: paramKey,
+      dataType: 'INTEGER',
+      description: 'DEV/TEST ONLY smoke parameter',
+      ownerRole: 'platform',
+      approvalPolicy: 'SECOND_APPROVER',
+      validationRules: { min: 1, max: 1000 },
+      allowedOverrideScopes: ['MARKET'],
+    },
+    [201, 409],
+  );
+  const value = 10 + (Date.now() % 500);
+  // PLANNED and ACTIVE references are accepted, an INACTIVE (retired) one is not: la-oc follows the owner's data, the verdict follows its status.
+  const accepted = await configuration(
+    admin,
+    'POST',
+    '/change-requests',
+    { parameterKey: paramKey, scopeType: 'MARKET', scopeRef: 'la-oc', value, reason: 'smoke test' },
+    laoc.status === 'INACTIVE' ? [400] : [200, 201],
+  );
+  assert(
+    laoc.status === 'INACTIVE' ? accepted.json?.error?.details?.reason === 'SCOPE_REFERENCE_INVALID' : !!accepted.json.data?.changeRequestId,
+    `change request for the real market la-oc (${laoc.status}) was not handled as expected (${JSON.stringify(accepted.json)})`,
+  );
+  const rejected = await configuration(
+    admin,
+    'POST',
+    '/change-requests',
+    { parameterKey: paramKey, scopeType: 'MARKET', scopeRef: 'no-such-market', value, reason: 'smoke test' },
+    [400],
+  );
+  assert(
+    rejected.json?.error?.details?.reason === 'SCOPE_REFERENCE_INVALID',
+    `unknown market should be rejected with SCOPE_REFERENCE_INVALID (got ${JSON.stringify(rejected.json?.error)})`,
+  );
+
+  // (6) deactivation removes the market from public view; ZZ and qaa stay in place
+  await geo(admin, 'POST', `/markets/${marketCode}/activation`, { active: false, reason: 'smoke test cleanup' });
+  assert(!(await listed(null, marketCode)), 'a deactivated market must disappear from the anonymous market list');
+  await geo(null, 'GET', `/markets/${marketCode}`, undefined, [404]);
+  assert((await geo(admin, 'GET', `/markets/${marketCode}`)).json.data.status === 'INACTIVE', 'the deactivated market should be INACTIVE for geography-read');
+  return `US/USD public data, la-oc ${laoc.status} (${laocPublic ? 'public and listed' : 'hidden publicly'}, defaults for admin), ${marketCode} on ZZ/qaa: PLANNED hidden -> ACTIVE listed -> INACTIVE hidden; fr-CA -> qaa with market, en-US without; MARKET scope la-oc ${laoc.status === 'INACTIVE' ? 'rejected (retired)' : 'accepted'}, no-such-market rejected`;
+});
+
 // Caddy routes are exercised exactly as a browser would reach them (Host header), from inside the network.
 const proxy = (host: string, path: string, method = 'GET'): Promise<{ status: number; body: string }> =>
   new Promise((resolve, reject) => {
@@ -618,6 +853,7 @@ const order = [
   'Caddy Proxy auth routes',
   'Configuration Registry',
   'Content Registry',
+  'Geography',
   'NATS Events',
   'JetStream',
   'SeaweedFS Storage',

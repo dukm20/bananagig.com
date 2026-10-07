@@ -176,7 +176,8 @@ export async function resolveBatch(db: Kysely<DatabaseSchema>, keys: string[], i
                  WHERE ce.key = ANY(${keys}::text[]) AND cv.scope_type = c.t AND cv.scope_ref = c.r AND cv.status IN ('SCHEDULED', 'PUBLISHED', 'SUPERSEDED'))
            ) AS context_matched,
            clock_timestamp() AS db_now
-      FROM unnest(${keys}::text[]) AS req(key) LEFT JOIN content.entries e ON e.key = req.key`.execute(db);
+      FROM unnest(${keys}::text[]) WITH ORDINALITY AS req(key, ord) LEFT JOIN content.entries e ON e.key = req.key
+     ORDER BY req.ord`.execute(db);
   const at = atInput ?? (entries.rows[0]?.db_now as Date | undefined) ?? new Date();
   const platformDefault = (entries.rows[0]?.platform_default as string | null | undefined) ?? null;
   // "Exactly one platform default locale" is a database invariant (guard_locales + the unique index). If it is ever violated the last leg of every

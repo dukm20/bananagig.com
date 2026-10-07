@@ -16,6 +16,7 @@ import {
   PiiClass as PiiClassSchema,
   VariableName,
   VariableType as VariableTypeSchema,
+  canonicalizeLocale,
   type ApprovalPolicy,
   type ContentContext,
   type ContentOwnerRole,
@@ -29,13 +30,14 @@ import {
   type VariableType,
   type VersionStatus,
 } from '@bananagig/contracts';
-import type { ConfigCache } from '@bananagig/configuration';
+import type { ConfigCache, ScopeReferenceCheck } from '@bananagig/configuration';
 import { sql, type Database, type Trx } from '@bananagig/database';
-import { getCorrelationId } from '@bananagig/observability';
+import { getCorrelationId, log } from '@bananagig/observability';
 import { insertOutboxEvent } from '@bananagig/platform';
 import { invalidateEntry, invalidateLocales, isDatabaseOutage, resolveWithPolicy, type MissingCode, type Source } from './cache';
 import { ContentError } from './errors';
 import { formatVariable } from './format';
+import type { MarketDefaultsProvider, ScopeReferenceValidator } from './market-defaults';
 import { ENTRY_VARIABLES_SQL, mapVariables, normalizeContext, normalizeLocale, resolveBatch, type ResolvedContent } from './resolver';
 import { renderTemplate, validateTemplate } from './template';
 
@@ -85,6 +87,12 @@ export interface EntryDetail {
 }
 export interface ContentLocale {
   locale: string;
+  /** Human-readable name (for example English (United States)). */
+  displayName: string;
+  /** Derived from the tag by the database (cannot drift). */
+  language: string;
+  script: string | null;
+  region: string | null;
   isActive: boolean;
   isPlatformDefault: boolean;
 }
@@ -179,6 +187,27 @@ export interface ServiceDeps {
   lkgMaxAgeSeconds?: number;
   /** DEV/TEST only: permits `devtest.*` entry keys. Must be false in production. */
   allowTestKeys?: boolean;
+  /**
+   * Optional: supplies a market's default locale when a context names a market but no `marketDefaultLocale`. The derived value joins the effective
+   * context before hashing, caching and snapshotting. A failing provider never fails a request (no market default is used).
+   */
+  markets?: MarketDefaultsProvider;
+  /** Optional: proves COUNTRY/MARKET scope references exist (at createVersion and again at publish). Absent: references are not validated. */
+  scopeReferences?: ScopeReferenceValidator;
+}
+
+/**
+ * The display name stored for a newly registered locale when the caller gives none: Intl.DisplayNames in English (for example
+ * English (United States)), or the tag itself when Intl yields nothing useful.
+ */
+export function defaultLocaleDisplayName(tag: string): string {
+  try {
+    const name = new Intl.DisplayNames(['en'], { type: 'language', languageDisplay: 'standard' }).of(tag);
+    if (typeof name === 'string' && name.trim().length > 0) return name.trim().slice(0, 100);
+  } catch {
+    // structurally unsupported by this runtime's ICU data: fall through to the tag
+  }
+  return tag;
 }
 
 // ---------------------------------------------------------------- rendering
@@ -200,7 +229,7 @@ export function renderResolved(resolved: ResolvedContent, values: Record<string,
 /** Translates database constraint failures into typed errors. Messages never contain copy text; only constraint names are passed on. */
 export function mapDbError(err: unknown): never {
   if (err instanceof ContentError) throw err;
-  const e = err as { code?: string; message?: string; constraint?: string };
+  const e = err as { code?: string; message?: string; constraint?: string; detail?: string };
   if (e.code === '23P01')
     throw new ContentError('CONFLICT', 'the effective period overlaps a published version of the same locale and scope', { constraint: e.constraint });
   if (e.code === '23505')
@@ -214,7 +243,14 @@ export function mapDbError(err: unknown): never {
     throw new ContentError('VALIDATION_FAILED', 'the text contains characters that cannot be stored', { reason: 'FORBIDDEN_CHARACTER' });
   if (e.code === '23000' && /own version/.test(e.message ?? ''))
     throw new ContentError('FORBIDDEN_APPROVER', 'the author cannot approve their own version when a second approver is required');
-  if (e.code === '23000') throw new ContentError('INVALID_STATE', 'the operation violates an immutability or workflow rule');
+  if (e.code === '23000') {
+    // Geography guards (migration 0007) name the rule in the error DETAIL ('geography_rule:<KEY>'); only the key is read, never the message text.
+    if (/^geography_rule:LOCALE_IS_ACTIVE_DEFAULT\b/.test(e.detail ?? ''))
+      throw new ContentError('INVALID_STATE', 'the locale is the default locale of an active country or market and cannot be deactivated', {
+        reason: 'LOCALE_IN_USE_BY_GEOGRAPHY',
+      });
+    throw new ContentError('INVALID_STATE', 'the operation violates an immutability or workflow rule');
+  }
   // The cause is the driver's connection/timeout message; it never contains copy.
   if (isDatabaseOutage(err))
     throw new ContentError('UNAVAILABLE', 'the content database is unavailable', { cause: err instanceof Error ? err.message : String(err) });
@@ -264,8 +300,13 @@ const mapVersion = (r: Row): ContentVersion => ({
   bodySha256: r.body_sha256 as string,
   body: r.body as string,
 });
+const LOCALE_COLUMNS = sql`locale, display_name, language, script, region, is_active, is_platform_default`;
 const mapLocale = (r: Row): ContentLocale => ({
   locale: r.locale as string,
+  displayName: r.display_name as string,
+  language: r.language as string,
+  script: (r.script as string | null) ?? null,
+  region: (r.region as string | null) ?? null,
   isActive: r.is_active as boolean,
   isPlatformDefault: r.is_platform_default as boolean,
 });
@@ -406,10 +447,79 @@ export class ContentService {
     if (contentType === 'LEGAL') await this.event(trx, cid, CONTENT_EVENTS.legalDocumentPublished, v, actor, actorType);
   }
 
+  // ------------------------------------------------------------------ geography ports
+  /**
+   * Asks the optional validator whether a COUNTRY/MARKET reference is real. Fails closed: an invalid reference is VALIDATION_FAILED, a validator that
+   * throws is UNAVAILABLE (a write is never accepted on an unverifiable reference). PLATFORM has no reference and is never validated.
+   */
+  private async checkScopeReference(scopeType: ContentScopeType, scopeRef: string | null): Promise<void> {
+    const validator = this.d.scopeReferences;
+    if (!validator || scopeType === 'PLATFORM' || scopeRef === null) return;
+    let check: ScopeReferenceCheck;
+    try {
+      check = await validator.validate(scopeType, scopeRef);
+    } catch {
+      throw new ContentError('UNAVAILABLE', 'the scope reference could not be verified', { reason: 'SCOPE_REFERENCE_UNAVAILABLE', scopeType });
+    }
+    if (!check.valid) throw invalid('the scope reference is not valid', { reason: 'SCOPE_REFERENCE_INVALID', scopeType, check: check.reason });
+  }
+
+  /**
+   * The PUBLIC view of a context (`includeInternal: false`): a country or market the public geography API would not show (unknown, PLANNED,
+   * INACTIVE, out of effect) is dropped BEFORE anything is hashed, cached or queried, so it behaves exactly like a context without it. Otherwise an
+   * anonymous caller could read MARKET-scoped copy of a market that is not live yet, and tell an unknown market from a PLANNED one. Fails closed:
+   * a provider that throws makes the member invisible (warning without the reference). Without a provider, or a provider without `isVisible`, the
+   * context is returned unchanged. Management callers never reach this.
+   */
+  private async publicContext(context: ContentContext): Promise<ContentContext> {
+    const provider = this.d.markets;
+    if (!provider?.isVisible || (context.country === undefined && context.market === undefined)) return context;
+    const check = provider.isVisible.bind(provider);
+    const visible = async (scopeType: 'COUNTRY' | 'MARKET', ref: string): Promise<boolean> => {
+      try {
+        return (await check(scopeType, ref)) === true;
+      } catch {
+        log('warn', 'scope visibility unavailable; treating the context member as not visible', { scopeType, reason: 'PROVIDER_FAILED' });
+        return false;
+      }
+    };
+    const [country, market] = await Promise.all([
+      context.country === undefined ? true : visible('COUNTRY', context.country),
+      context.market === undefined ? true : visible('MARKET', context.market),
+    ]);
+    if (country && market) return context;
+    const { country: c, market: m, ...rest } = context;
+    return { ...rest, ...(country && c !== undefined ? { country: c } : {}), ...(market && m !== undefined ? { market: m } : {}) };
+  }
+
+  /**
+   * The effective context of one call. When the context names a market but no marketDefaultLocale, the provider is asked once and a usable answer
+   * is merged in BEFORE anything is hashed, cached, queried or snapshotted. An explicit marketDefaultLocale always wins. Any provider problem
+   * (null, malformed answer, throw) degrades to "no market default": a warning with the market code only, never a failed request.
+   */
+  private async effectiveContext(context: ContentContext): Promise<{ context: ContentContext; derived: boolean }> {
+    const market = context.market;
+    if (!this.d.markets || market === undefined || context.marketDefaultLocale !== undefined) return { context, derived: false };
+    let answer: string | null;
+    try {
+      answer = await this.d.markets.defaultLocale(market);
+    } catch {
+      log('warn', 'market default locale unavailable; resolving without a market default', { market, reason: 'PROVIDER_FAILED' });
+      return { context, derived: false };
+    }
+    if (answer === null || answer === undefined) return { context, derived: false };
+    const canonical = canonicalizeLocale(answer);
+    if (!canonical) {
+      log('warn', 'market default locale is not a valid locale tag; resolving without a market default', { market, reason: 'INVALID_LOCALE' });
+      return { context, derived: false };
+    }
+    return { context: { ...context, marketDefaultLocale: canonical }, derived: true };
+  }
+
   // ------------------------------------------------------------------ locales
   async listLocales(opts: { activeOnly?: boolean } = {}): Promise<ContentLocale[]> {
     const r = await this.read(() =>
-      sql<Row>`SELECT locale, is_active, is_platform_default FROM content.locales WHERE (${opts.activeOnly ?? false} = false OR is_active) ORDER BY locale`.execute(
+      sql<Row>`SELECT ${LOCALE_COLUMNS} FROM content.locales WHERE (${opts.activeOnly ?? false} = false OR is_active) ORDER BY locale`.execute(
         this.d.database.db,
       ),
     );
@@ -417,14 +527,15 @@ export class ContentService {
   }
 
   /** Registers a locale (inactive unless `active: true`). Authoring needs registration; serving needs activation. */
-  async registerLocale(req: { locale: string; active?: boolean; reason: string }, actor: string): Promise<ContentLocale> {
+  async registerLocale(req: { locale: string; active?: boolean; displayName?: string; reason: string }, actor: string): Promise<ContentLocale> {
     const locale = normalizeLocale(req.locale);
     const reason = requireText(req.reason, 'reason', 1000);
+    const displayName = req.displayName === undefined ? defaultLocaleDisplayName(locale) : requireText(req.displayName, 'displayName', 100).trim();
     const active = req.active ?? false;
     const cid = getCorrelationId() ?? randomUUID();
     await this.tx(async (trx) => {
       const r =
-        await sql<Row>`INSERT INTO content.locales (locale, is_active) VALUES (${locale}, ${active}) ON CONFLICT (locale) DO NOTHING RETURNING locale`.execute(
+        await sql<Row>`INSERT INTO content.locales (locale, display_name, is_active) VALUES (${locale}, ${displayName}, ${active}) ON CONFLICT (locale) DO NOTHING RETURNING locale`.execute(
           trx,
         );
       if (!r.rows[0]) throw new ContentError('CONFLICT', 'the locale is already registered', { locale });
@@ -437,9 +548,7 @@ export class ContentService {
 
   async getLocale(locale: string): Promise<ContentLocale> {
     const tag = normalizeLocale(locale);
-    const r = await this.read(() =>
-      sql<Row>`SELECT locale, is_active, is_platform_default FROM content.locales WHERE locale = ${tag}`.execute(this.d.database.db),
-    );
+    const r = await this.read(() => sql<Row>`SELECT ${LOCALE_COLUMNS} FROM content.locales WHERE locale = ${tag}`.execute(this.d.database.db));
     if (!r.rows[0]) throw new ContentError('LOCALE_NOT_FOUND', 'the locale is not registered', { locale: tag });
     return mapLocale(r.rows[0]);
   }
@@ -572,6 +681,7 @@ export class ContentService {
     if (typeof req.body !== 'string' || req.body.length === 0) throw invalid('body must not be empty', { reason: 'INVALID_FIELD', field: 'body' });
     const proposedFrom = req.effectiveFrom !== undefined ? parseInstant(req.effectiveFrom, 'effectiveFrom') : undefined;
     const proposedTo = req.effectiveTo ? parseInstant(req.effectiveTo, 'effectiveTo') : null;
+    await this.checkScopeReference(scopeType, scopeRef);
     const entry = await this.findEntry(entryKey);
     // Entry contract (type, variables) is immutable, so the (potentially heavy) validation runs before the lock is taken.
     validateTemplate(req.body, entry.variables, entry.contentType);
@@ -723,6 +833,12 @@ export class ContentService {
    */
   async publish(versionId: string, actor: string): Promise<ContentVersion> {
     requireUuid(versionId, 'version');
+    // The stored reference is re-validated (it may have been retired since the draft). The check runs before the transaction so that no lock is
+    // held while the validator does its own I/O; every other state error is still raised under the locks below.
+    if (this.d.scopeReferences) {
+      const pre = await this.getVersion(versionId);
+      if (pre.status === 'APPROVED') await this.checkScopeReference(pre.scopeType, pre.scopeRef);
+    }
     const cid = getCorrelationId() ?? randomUUID();
     const touched = await this.tx(async (trx) => {
       const v = await this.lockVersion(trx, versionId);
@@ -867,7 +983,8 @@ export class ContentService {
    */
   async resolveMany(keys: string[], opts: ResolveOptions): Promise<ResolveManyResult> {
     const locale = normalizeLocale(opts.locale);
-    const context = normalizeContext(opts.context);
+    const requested = normalizeContext(opts.context);
+    const context = (await this.effectiveContext(opts.includeInternal === false ? await this.publicContext(requested) : requested)).context;
     const unique = [...new Set(keys)];
     const r = await resolveWithPolicy({
       keys: unique,
@@ -931,13 +1048,21 @@ export class ContentService {
     actor: string,
   ): Promise<ContentSnapshot> {
     const locale = normalizeLocale(args.locale);
-    const context = normalizeContext(args.context);
     const purpose = requireText(args.purpose, 'purpose', 200);
     const keys = [...new Set(args.keys)];
     if (!keys.length) throw invalid('a snapshot needs at least one key', { reason: 'INVALID_FIELD', field: 'keys' });
     if (args.at !== undefined && (!(args.at instanceof Date) || Number.isNaN(args.at.getTime())))
       throw invalid('at is not a valid instant', { reason: 'INVALID_FIELD', field: 'at' });
+    const requestContext = normalizeContext(args.context);
+    const derived = await this.effectiveContext(requestContext);
     const id = await this.tx(async (trx) => {
+      let context = derived.context;
+      // A DERIVED market default that is not an ACTIVE locale was not used by resolution (the chain skips it), so the snapshot must not claim it.
+      // (An explicitly supplied marketDefaultLocale is recorded as given, exactly as before.)
+      if (derived.derived && context.marketDefaultLocale !== undefined) {
+        const live = await sql`SELECT 1 FROM content.locales WHERE locale = ${context.marketDefaultLocale} AND is_active`.execute(trx);
+        if (!live.rows.length) context = requestContext;
+      }
       if (args.at) {
         // A snapshot records what APPLIED. A future instant is only a prediction (a later-published, earlier-starting successor would falsify it).
         const dbNow = (await sql<{ t: Date }>`SELECT clock_timestamp() AS t`.execute(trx)).rows[0]!.t;

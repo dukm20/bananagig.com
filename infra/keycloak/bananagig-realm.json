@@ -85,6 +85,14 @@
         {
           "name": "content-legal",
           "description": "TEMPORARY infrastructure permission: additionally required to author, review and publish legal documents (entries owned by LEGAL). To be mapped to application permissions."
+        },
+        {
+          "name": "geography-read",
+          "description": "TEMPORARY infrastructure permission: read geography reference data with all statuses and management fields (internal API). To be mapped to application permissions."
+        },
+        {
+          "name": "geography-write",
+          "description": "TEMPORARY infrastructure permission: create and update countries and markets and activate or deactivate them. To be mapped to application permissions."
         }
       ]
     }
@@ -117,7 +125,9 @@
           "content-read",
           "content-write",
           "content-approve",
-          "content-legal"
+          "content-legal",
+          "geography-read",
+          "geography-write"
         ]
       }
     ]
@@ -519,7 +529,9 @@
           "content-read",
           "content-write",
           "content-approve",
-          "content-legal"
+          "content-legal",
+          "geography-read",
+          "geography-write"
         ]
       },
       "credentials": [
@@ -551,7 +563,9 @@
           "content-read",
           "content-write",
           "content-approve",
-          "content-legal"
+          "content-legal",
+          "geography-read",
+          "geography-write"
         ]
       },
       "credentials": [

@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { SCOPE_TYPES, scopeRank } from '@bananagig/contracts';
+import { SCOPE_TYPES, scopeRank, type ScopeType } from '@bananagig/contracts';
+import type { Database, DatabaseSchema, Kysely } from '@bananagig/database';
 import { MemoryConfigCache, contextHash, resolveWithPolicy, type PolicyArgs } from './cache';
 import { ConfigurationError } from './errors';
 import { assertComplete, contextPairs, pickWinners, type BatchResult, type Candidate, type Resolved } from './resolver';
+import type { ScopeReferenceCheck, ScopeReferenceValidator } from './scope-reference';
+import { ConfigurationService } from './service';
 import { compareDecimal, redactValue, validateDefinitionRules, validateValue } from './values';
 
 const def = (dataType: Parameters<typeof validateValue>[0]['dataType'], validationRules: Record<string, unknown> = {}) => ({ dataType, validationRules });
@@ -253,5 +256,172 @@ describe('sensitive values', () => {
     expect(redactValue('SENSITIVE', 'secret-ish')).toEqual({ value: null, redacted: true });
     expect(redactValue('INTERNAL', 5)).toEqual({ value: 5, redacted: false });
     expect(redactValue('PUBLIC', 'x')).toEqual({ value: 'x', redacted: false });
+  });
+});
+
+// ---------------------------------------------------------------- scope reference validation (a port; geography implements it)
+describe('scope reference validation', () => {
+  const STOP = new Error('reached the transaction');
+  /** A scripted database: answers the parameter and change-request reads and stops at the first transaction. */
+  function scripted(changeRow: Record<string, unknown> = {}): Database {
+    const executor = {
+      transformQuery: (node: unknown) => node,
+      compileQuery: (node: unknown) => ({ sql: '', parameters: [], query: node, queryId: {} }),
+      executeQuery: async (compiled: { query: { sqlFragments: string[] } }) => {
+        const text = compiled.query.sqlFragments.join('?');
+        if (text.includes('GROUP BY p.parameter_id'))
+          return {
+            rows: [
+              {
+                parameter_id: 'p1',
+                key: 'devtest.geo.value',
+                data_type: 'STRING',
+                unit: null,
+                description: 'd',
+                owner_role: 'OPS',
+                validation_rules: {},
+                sensitivity: 'INTERNAL',
+                approval_policy: 'NONE',
+                criticality: 'STANDARD',
+                is_required: true,
+                is_active: true,
+                allowed_scopes: ['PLATFORM', 'COUNTRY', 'MARKET'],
+                created_at: new Date(),
+                updated_at: new Date(),
+              },
+            ],
+          };
+        return {
+          rows: [
+            {
+              change_request_id: 'c1',
+              parameter_id: 'p1',
+              key: 'devtest.geo.value',
+              sensitivity: 'INTERNAL',
+              scope_type: 'COUNTRY',
+              scope_ref: 'US',
+              proposed_value: 'v',
+              effective_from: new Date(),
+              effective_to: null,
+              reason: 'r',
+              requested_by: 'a',
+              approval_policy: 'NONE',
+              state: 'APPROVED',
+              version: null,
+              created_at: new Date(),
+              updated_at: new Date(),
+              ...changeRow,
+            },
+          ],
+        };
+      },
+      withPlugins: () => executor,
+    };
+    return {
+      db: { getExecutor: () => executor } as unknown as Kysely<DatabaseSchema>,
+      transaction: async () => {
+        throw STOP;
+      },
+    } as unknown as Database;
+  }
+  const recording = (answer: (t: ScopeType, r: string) => ScopeReferenceCheck | Error) => {
+    const calls: [ScopeType, string][] = [];
+    const validator: ScopeReferenceValidator = {
+      validate: async (t, r) => {
+        calls.push([t, r]);
+        const a = answer(t, r);
+        if (a instanceof Error) throw a;
+        return a;
+      },
+    };
+    return { validator, calls };
+  };
+  const draft = (scopeType: ScopeType, scopeRef: string | null) => ({
+    parameterKey: 'devtest.geo.value',
+    scopeType,
+    scopeRef,
+    value: 'v',
+    reason: 'r',
+  });
+  const failure = async (p: Promise<unknown>) =>
+    (await p.then(
+      () => undefined,
+      (e: unknown) => e,
+    )) as ConfigurationError;
+
+  it('createChangeRequest: a valid reference proceeds to the write', async () => {
+    const { validator, calls } = recording(() => ({ valid: true }));
+    const svc = new ConfigurationService({ database: scripted(), env: 'test', allowTestKeys: true, scopeReferences: validator });
+    expect(await failure(svc.createChangeRequest(draft('COUNTRY', 'US'), 'a'))).toBe(STOP);
+    expect(calls).toEqual([['COUNTRY', 'US']]);
+  });
+  it('createChangeRequest: an invalid reference is VALIDATION_FAILED with a reason and no values', async () => {
+    const { validator } = recording(() => ({ valid: false, reason: 'NOT_FOUND' }));
+    const svc = new ConfigurationService({ database: scripted(), env: 'test', allowTestKeys: true, scopeReferences: validator });
+    const e = await failure(svc.createChangeRequest(draft('MARKET', 'la-oc'), 'a'));
+    expect(e).toBeInstanceOf(ConfigurationError);
+    expect(e).toMatchObject({
+      code: 'VALIDATION_FAILED',
+      message: 'the scope reference is not valid',
+      details: { reason: 'SCOPE_REFERENCE_INVALID', scopeType: 'MARKET', check: 'NOT_FOUND' },
+    });
+    expect(JSON.stringify([e.message, e.details])).not.toContain('la-oc');
+  });
+  it('PLATFORM is never validated', async () => {
+    const { validator, calls } = recording(() => ({ valid: false, reason: 'NEVER' }));
+    const svc = new ConfigurationService({ database: scripted(), env: 'test', allowTestKeys: true, scopeReferences: validator });
+    expect(await failure(svc.createChangeRequest(draft('PLATFORM', null), 'a'))).toBe(STOP);
+    expect(calls).toEqual([]);
+  });
+  it('the existing scope shape checks still come first (no validator call for a missing or forbidden reference)', async () => {
+    const { validator, calls } = recording(() => ({ valid: true }));
+    const svc = new ConfigurationService({ database: scripted(), env: 'test', allowTestKeys: true, scopeReferences: validator });
+    expect((await failure(svc.createChangeRequest(draft('COUNTRY', null), 'a'))).code).toBe('VALIDATION_FAILED');
+    expect((await failure(svc.createChangeRequest(draft('GIG', 'g'), 'a'))).code).toBe('SCOPE_NOT_ALLOWED');
+    expect(calls).toEqual([]);
+  });
+  it('a validator that throws fails closed as UNAVAILABLE without leaking its message', async () => {
+    const { validator } = recording(() => new Error('connection to geography failed: secret-host'));
+    const svc = new ConfigurationService({ database: scripted(), env: 'test', allowTestKeys: true, scopeReferences: validator });
+    const e = await failure(svc.createChangeRequest(draft('COUNTRY', 'US'), 'a'));
+    expect(e).toMatchObject({ code: 'UNAVAILABLE', details: { reason: 'SCOPE_REFERENCE_UNAVAILABLE', scopeType: 'COUNTRY' } });
+    expect(JSON.stringify([e.message, e.details])).not.toContain('secret-host');
+    const p = await failure(svc.publish('c1', 'a'));
+    expect(p.code).toBe('UNAVAILABLE');
+  });
+  it('without a validator the service behaves exactly as before', async () => {
+    const svc = new ConfigurationService({ database: scripted(), env: 'test', allowTestKeys: true });
+    expect(await failure(svc.createChangeRequest(draft('COUNTRY', 'anything-at-all'), 'a'))).toBe(STOP);
+    expect(await failure(svc.publish('c1', 'a'))).toBe(STOP);
+  });
+  it('publish re-validates the stored reference of an APPROVED request; other states and PLATFORM requests are left to the transaction', async () => {
+    const bad = recording(() => ({ valid: false, reason: 'INACTIVE' }));
+    const svc = new ConfigurationService({ database: scripted(), env: 'test', allowTestKeys: true, scopeReferences: bad.validator });
+    expect(await failure(svc.publish('c1', 'a'))).toMatchObject({
+      code: 'VALIDATION_FAILED',
+      details: { reason: 'SCOPE_REFERENCE_INVALID', scopeType: 'COUNTRY', check: 'INACTIVE' },
+    });
+    expect(bad.calls).toEqual([['COUNTRY', 'US']]);
+    const ok = recording(() => ({ valid: true }));
+    const good = new ConfigurationService({ database: scripted(), env: 'test', allowTestKeys: true, scopeReferences: ok.validator });
+    expect(await failure(good.publish('c1', 'a'))).toBe(STOP);
+    const draftState = recording(() => ({ valid: false, reason: 'X' }));
+    const notApproved = new ConfigurationService({
+      database: scripted({ state: 'DRAFT' }),
+      env: 'test',
+      allowTestKeys: true,
+      scopeReferences: draftState.validator,
+    });
+    expect(await failure(notApproved.publish('c1', 'a'))).toBe(STOP);
+    const platform = recording(() => ({ valid: false, reason: 'X' }));
+    const plat = new ConfigurationService({
+      database: scripted({ scope_type: 'PLATFORM', scope_ref: null }),
+      env: 'test',
+      allowTestKeys: true,
+      scopeReferences: platform.validator,
+    });
+    expect(await failure(plat.publish('c1', 'a'))).toBe(STOP);
+    expect(draftState.calls).toEqual([]);
+    expect(platform.calls).toEqual([]);
   });
 });

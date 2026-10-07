@@ -15,7 +15,7 @@ Never put business values in environment variables or code. Never put runtime wi
 ## Concepts
 
 - **Parameter**: definition with a unique dotted key (`domain.name`), data type, validation rules, sensitivity, approval policy, criticality, owner. No default column: the PLATFORM value is the default.
-- **Scope**: `PLATFORM < COUNTRY < MARKET < CATEGORY < PLAN < PROVIDER < GIG < DROP` (`configuration.scope_levels`). The most specific applicable scope wins. A parameter permits overrides only at levels listed in `parameter_scopes`. `scope_ref` is an opaque text reference without a foreign key.
+- **Scope**: `PLATFORM < COUNTRY < MARKET < CATEGORY < PLAN < PROVIDER < GIG < DROP` (`configuration.scope_levels`). The most specific applicable scope wins. A parameter permits overrides only at levels listed in `parameter_scopes`. `scope_ref` is a text reference without a foreign key (a polymorphic reference cannot have one). Since GEO-001, COUNTRY and MARKET references are validated against the geography registry through the `ScopeReferenceValidator` port (see Scope references below); the other levels are still unvalidated (DEBT-0024).
 - **Value version**: immutable, validity `[effective_from, effective_to)`. History is never rewritten; corrections are new versions.
 - **Change request**: the only way to change a value. Flow:
 
@@ -37,6 +37,10 @@ stateDiagram-v2
 ```
 
 - **Snapshot**: immutable record of a resolution (context, time, version used per parameter). Store the `snapshotId` on anything that must be reproducible later (for example a future booking).
+
+## Scope references
+
+COUNTRY and MARKET references are checked when a change request is created (`scopeRef` set) and again when it is published (ADR-0022; the port is declared in `packages/configuration/src/scope-reference.ts` and implemented by `@bananagig/geography`, which configuration never imports). The reference must be canonical, because resolution matches `context.country` and `context.market` by exact string: a COUNTRY reference is the upper-case ISO 3166-1 alpha-2 code (`US`) and a MARKET reference the lower-case kebab market code (`la-oc`). It must exist and be PLANNED or ACTIVE (INACTIVE is retired), so values can be prepared for a planned market before it opens. An unknown, INACTIVE or non-canonical reference all get the same generic reason (in `details.check`), because configuration authors do not hold `geography-read` and a specific message would disclose the registry's state; that an accepted reference is PLANNED or ACTIVE is inherent. PLATFORM has no reference and is never validated; the other scope levels are not validated yet. The check fails closed: an invalid reference is `VALIDATION_FAILED` with `details.reason` `SCOPE_REFERENCE_INVALID` (plus `scopeType` and `check`); a validator that cannot answer is `UNAVAILABLE` (service reason `SCOPE_REFERENCE_UNAVAILABLE`, a generic 503 through the API). The publish check runs before the transaction and holds no row lock during the validator's I/O, so an entity deactivated between the check and the commit can still be published (accepted). Existing rows are not re-validated, resolution never validates and configuration resolution never consults geography (unlike public content resolution, which filters out markets that are not publicly visible; see `docs/engineering/CONTENT.md`), and a service built without a validator behaves as before (the API always wires one in `apps/api/src/index.ts`). A MARKET value does not imply its country: the caller supplies `country` and `market` separately.
 
 ## Value encodings (canonical JSON)
 
@@ -99,7 +103,7 @@ Base `/api/v1/configuration`, all routes require an admin-context token with cli
 | POST `/change-requests/:id/submit`, `/cancel`, `/publish` | write |
 | POST `/change-requests/:id/approve`, `/reject` | approve |
 
-Responses use the standard envelope and error model. SENSITIVE values are redacted in responses. Errors: `PARAMETER_NOT_FOUND`, `NO_VALUE`, `VALIDATION_FAILED`, `SCOPE_NOT_ALLOWED`, `CONFLICT`, `INVALID_STATE`, `FORBIDDEN_APPROVER`, `NOT_FOUND`, `UNAVAILABLE`. Unknown request fields are rejected. Spec: `docs/api/openapi.yaml`.
+Responses use the standard envelope and error model. SENSITIVE values are redacted in responses. Errors: `PARAMETER_NOT_FOUND`, `NO_VALUE`, `VALIDATION_FAILED`, `SCOPE_NOT_ALLOWED`, `CONFLICT`, `INVALID_STATE`, `FORBIDDEN_APPROVER`, `NOT_FOUND`, `UNAVAILABLE`. `VALIDATION_FAILED` also covers an invalid COUNTRY or MARKET scope reference (`details.reason` `SCOPE_REFERENCE_INVALID`). Unknown request fields are rejected. Spec: `docs/api/openapi.yaml`.
 
 ## Events
 

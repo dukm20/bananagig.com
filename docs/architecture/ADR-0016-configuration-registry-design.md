@@ -47,3 +47,7 @@ New schema and one extension (`btree_gist`); no existing data affected. Migratio
 - `apps/api/src/modules/configuration/`
 - `docs/engineering/CONFIGURATION.md`
 - `docs/data/NORMALIZATION_LOG.md`
+
+## Updated by GEO-001
+
+The statements above that `scope_ref` is opaque and that existence of a scoped entity is not enforced (DEBT-0024) are no longer true for COUNTRY and MARKET. Since GEO-001 the service validates those references against the geography registry through the optional `ScopeReferenceValidator` port at `createChangeRequest` and again at `publish` (canonical form, existing, PLANNED or ACTIVE; fail-closed; ADR-0022). The column is still text without a foreign key, resolution still never validates, the other scope levels are still unvalidated (DEBT-0024 is IN_PROGRESS), and a registry built without the port behaves as originally decided.

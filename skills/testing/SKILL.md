@@ -66,6 +66,8 @@ Schema changes also need constraint-violation and rollback tests, and the data-m
 - Tests that copy the real migrations must derive numbering from the directory, not hardcode the latest version. Use isolated databases for anything that mutates shared timelines (activation, concurrency). Use `devtest.*` parameter keys, which exist only when `allowTestKeys` is on. The real-Valkey cache test self-skips when Valkey is unreachable; say so in reports.
 - Content tests: count database queries with the `onQuery` hook of `createIsolatedDatabase` (a batch resolve must stay at 3 queries), prove time-derived resolution with a short real delay and `at`, force races with deterministic interleavings, and use `devtest.*` entry keys. Web tests use `apps/web/src/testing/content-stub.ts`, which validates requests and responses with the contracts schemas. Keep an XSS vector corpus (`packages/content/src/markup.test.ts`) and add every new vector to it.
 
+- Race tests for guard triggers (`packages/testing/src/geography-seed.itest.ts`) use two real `pg` clients: the first holds an open transaction, the second statement is started without awaiting it, the test polls `pg_stat_activity` until it is blocked on a lock, then commits the first and asserts the second failed on the committed state; mutation-check such tests by removing the lock. The one lock inversion that remains (a raw SQL zone deactivation against a market activation) is proved as a genuine deadlock in `packages/geography/src/geography.itest.ts`: one side must fail as a retryable `CONFLICT` (`CONCURRENT_UPDATE`), nothing half-written, and the retry succeeds. Guard failures are asserted on the DETAIL key `geography_rule:<KEY>`, never on message text. Reference-data tests create `devtest-*` markets and the country `ZZ` (only with `allowTestKeys`; entities cannot be deleted, so smoke and tests use unique codes per run and reuse `ZZ` and the private-use locale `qaa`).
+
 - Concurrent integration runs collide through the global setup that drops idle test databases; run `pnpm test:integration` alone or use a private config without `globalSetup` for parallel runs (LRN-0022). Cache outage tests need a hanging or slow-failing client and a real client on a dead port, not only an instant-failure fake (LRN-0019).
 
 - Run the CI governance step exactly as CI does before pushing a schema change: `pnpm skills:check`, then `pnpm project-state:check --base=<previous remote head>` and `pnpm data-model:check --base=<previous remote head>` with NO checkpoint id and the full real SHA. The first CI run had an empty base, so the git-diff rules had never run; a mistyped base now fails instead of silently selecting baseline mode (LRN-0023).
@@ -82,4 +84,4 @@ ADR-0004, ADR-0006
 
 ## Last reviewed
 
-2026-10-06 (CI-002)
+2026-10-07 (GEO-001)

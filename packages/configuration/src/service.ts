@@ -20,6 +20,7 @@ import { insertOutboxEvent } from '@bananagig/platform';
 import { invalidateParameter, resolveWithPolicy, type ConfigCache, type Source } from './cache';
 import { ConfigurationError } from './errors';
 import { assertComplete, resolveBatch, type Resolved } from './resolver';
+import type { ScopeReferenceCheck, ScopeReferenceValidator } from './scope-reference';
 import { validateDefinitionRules, validateValue } from './values';
 
 type Row = Record<string, unknown>;
@@ -77,6 +78,8 @@ export interface ServiceDeps {
   lkgMaxAgeSeconds?: number;
   /** DEV/TEST only: permits `devtest.*` parameter keys. Must be false in production. */
   allowTestKeys?: boolean;
+  /** Optional: proves COUNTRY/MARKET scope references exist (at createChangeRequest and again at publish). Absent: references are not validated. */
+  scopeReferences?: ScopeReferenceValidator;
 }
 
 const mapParameter = (r: Row): Parameter => ({
@@ -239,6 +242,7 @@ export class ConfigurationService {
         'VALIDATION_FAILED',
         req.scopeType === 'PLATFORM' ? 'PLATFORM scope takes no scopeRef' : `${req.scopeType} scope requires a scopeRef`,
       );
+    if (req.scopeRef != null) await this.checkScopeReference(req.scopeType, req.scopeRef);
     const value = validateValue(p, req.value);
     const id = await this.tx(async (trx) => {
       const now = (await sql<{ t: Date }>`SELECT clock_timestamp() AS t`.execute(trx)).rows[0]!.t;
@@ -257,6 +261,27 @@ export class ConfigurationService {
       return r.rows[0]!.change_request_id;
     });
     return this.getChangeRequest(id);
+  }
+
+  /**
+   * Asks the optional validator whether the reference is real. Fails closed: an invalid reference is VALIDATION_FAILED, a validator that throws
+   * is UNAVAILABLE (a write is never accepted on an unverifiable reference). PLATFORM has no reference and is never validated. No values in errors.
+   */
+  private async checkScopeReference(scopeType: ScopeType, scopeRef: string): Promise<void> {
+    const validator = this.d.scopeReferences;
+    if (!validator || scopeType === 'PLATFORM') return;
+    let check: ScopeReferenceCheck;
+    try {
+      check = await validator.validate(scopeType, scopeRef);
+    } catch {
+      throw new ConfigurationError('UNAVAILABLE', 'the scope reference could not be verified', { reason: 'SCOPE_REFERENCE_UNAVAILABLE', scopeType });
+    }
+    if (!check.valid)
+      throw new ConfigurationError('VALIDATION_FAILED', 'the scope reference is not valid', {
+        reason: 'SCOPE_REFERENCE_INVALID',
+        scopeType,
+        check: check.reason,
+      });
   }
 
   async getChangeRequest(id: string): Promise<ChangeRequest> {
@@ -356,6 +381,12 @@ export class ConfigurationService {
    * already passed (slow approval) the version starts at publication time. A published version is never withdrawn.
    */
   async publish(id: string, actor: string): Promise<ChangeRequest> {
+    // The stored reference is re-validated (it may have been retired since the draft). The check runs before the transaction so that no row lock
+    // is held while the validator does its own I/O; every other state error is still raised under the lock below.
+    if (this.d.scopeReferences) {
+      const pre = await this.getChangeRequest(id);
+      if (pre.state === 'APPROVED' && pre.scopeRef !== null) await this.checkScopeReference(pre.scopeType, pre.scopeRef);
+    }
     const touched = await this.tx(async (trx) => {
       const cr = await this.lockChange(trx, id);
       this.need(cr, 'APPROVED');

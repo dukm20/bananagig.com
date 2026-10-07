@@ -2,7 +2,7 @@
 // context plus a temporary content permission (content-read | content-write | content-approve) and, for entries owned by LEGAL, content-legal.
 // Resolution and the active locale list are PUBLIC routes with visibility rules: anonymous callers only ever see PUBLIC entries, never the
 // template source and never `at` previews. Routes are thin; all rules live in @bananagig/content.
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyRequest, preValidationAsyncHookHandler } from 'fastify';
 import type { ZodType } from 'zod';
 import {
   ContentDecisionRequest,
@@ -47,6 +47,16 @@ const parse = <T>(schema: ZodType<T>, body: unknown): T => {
   return r.data;
 };
 const run = async <T>(fn: () => Promise<T>): Promise<T> => fn().catch(toAppError);
+/**
+ * preValidation hook for management bodies that carry booleans: validates the RAW parsed body with the contract schema BEFORE Fastify's ajv step,
+ * which coerces types ({"active":1} would become true, {"active":"false"} false). Ajv coercion stays on app-wide (query strings need it); these
+ * bodies must be exactly the contract. Listed after the authorization hook, so 401/403 still win over 400. Same envelope as `parse`.
+ */
+const strictBody =
+  <T>(schema: ZodType<T>): preValidationAsyncHookHandler =>
+  async (req) => {
+    parse(schema, req.body);
+  };
 /** Synchronous variant for the pure rendering step (its typed failures map the same way). */
 const runSync = <T>(fn: () => T): T => {
   try {
@@ -135,7 +145,7 @@ export async function contentRoutes(app: FastifyInstance, deps: { content: Conte
   app.post(
     '/entries',
     {
-      preValidation: requireContentPermission('write'),
+      preValidation: [requireContentPermission('write'), strictBody(CreateEntryRequest)],
       schema: {
         operationId: 'createContentEntry',
         summary: 'Create a content entry (LEGAL-owned entries and LEGAL content type also need content-legal)',
@@ -155,7 +165,7 @@ export async function contentRoutes(app: FastifyInstance, deps: { content: Conte
   app.post(
     '/entries/:key/activation',
     {
-      preValidation: requireContentPermission('write'),
+      preValidation: [requireContentPermission('write'), strictBody(SetActiveRequest)],
       schema: {
         operationId: 'setContentEntryActive',
         summary: 'Activate or deactivate an entry (an inactive entry resolves as unknown; LEGAL-owned entries also need content-legal)',
@@ -265,7 +275,7 @@ export async function contentRoutes(app: FastifyInstance, deps: { content: Conte
   app.post(
     '/locales',
     {
-      preValidation: requireContentPermission('write'),
+      preValidation: [requireContentPermission('write'), strictBody(RegisterLocaleRequest)],
       schema: {
         operationId: 'registerContentLocale',
         summary: 'Register a locale (inactive unless active is true; authoring needs registration, serving needs activation)',
@@ -284,7 +294,7 @@ export async function contentRoutes(app: FastifyInstance, deps: { content: Conte
   app.post(
     '/locales/:locale/activation',
     {
-      preValidation: requireContentPermission('write'),
+      preValidation: [requireContentPermission('write'), strictBody(SetActiveRequest)],
       schema: {
         operationId: 'setContentLocaleActive',
         summary: 'Activate or deactivate a locale (the platform default locale cannot be deactivated)',

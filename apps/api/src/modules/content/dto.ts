@@ -51,7 +51,15 @@ export const versionDto = (v: ContentVersion): ContentVersionDto => ({
   body: v.body,
 });
 
-export const localeDto = (l: ContentLocale): LocaleDto => ({ locale: l.locale, isActive: l.isActive, isPlatformDefault: l.isPlatformDefault });
+export const localeDto = (l: ContentLocale): LocaleDto => ({
+  locale: l.locale,
+  displayName: l.displayName,
+  language: l.language,
+  script: l.script,
+  region: l.region,
+  isActive: l.isActive,
+  isPlatformDefault: l.isPlatformDefault,
+});
 
 /**
  * Public view of a rendered entry. Built field by field: sensitivity, criticality and entry ids are internal and never returned, and the

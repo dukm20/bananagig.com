@@ -63,6 +63,24 @@ const errorOf = (r: { json: () => unknown }) => ErrorResponse.parse(r.json()).er
 
 const ID = '6f1d0c3e-9d1f-4a43-8f64-0a3b6f0f1111';
 const T0 = new Date('2026-01-01T00:00:00Z');
+const EN_US: ContentLocale = {
+  locale: 'en-US',
+  displayName: 'English (United States)',
+  language: 'en',
+  script: null,
+  region: 'US',
+  isActive: true,
+  isPlatformDefault: true,
+};
+const ES_US: ContentLocale = {
+  locale: 'es-US',
+  displayName: 'Spanish (United States)',
+  language: 'es',
+  script: null,
+  region: 'US',
+  isActive: true,
+  isPlatformDefault: false,
+};
 const NAME_VARIABLE = { name: 'name', type: 'STRING' as const, required: true, description: 'Display name', example: 'Ada', piiClass: 'NONE' as const };
 
 const resolved = (over: Partial<ResolvedContent> = {}): ResolvedContent => ({
@@ -319,7 +337,7 @@ describe('content API access control (management routes)', () => {
   });
 
   it('keeps locale activation under content-write only (locales are not entries; recorded as DEBT-0028)', async () => {
-    svc.setLocaleActive.mockResolvedValue({ locale: 'es-US', isActive: false, isPlatformDefault: false });
+    svc.setLocaleActive.mockResolvedValue({ ...ES_US, isActive: false });
     const r = await call('POST', '/locales/es-US/activation', await adminToken(ROLES), { active: false, reason: 'retire' });
     expect(r.statusCode).toBe(200);
   });
@@ -465,10 +483,12 @@ describe('content API visibility of resolution (public routes)', () => {
   });
 
   it('returns only active locales to the public and all locales to content-read', async () => {
-    svc.listLocales.mockResolvedValue([{ locale: 'en-US', isActive: true, isPlatformDefault: true } satisfies ContentLocale]);
+    svc.listLocales.mockResolvedValue([EN_US]);
     const pub = await call('GET', '/locales');
     expect(pub.statusCode).toBe(200);
-    expect(pub.json().data).toEqual([{ locale: 'en-US', isActive: true, isPlatformDefault: true }]);
+    expect(pub.json().data).toEqual([
+      { locale: 'en-US', displayName: 'English (United States)', language: 'en', script: null, region: 'US', isActive: true, isPlatformDefault: true },
+    ]);
     expect(svc.listLocales).toHaveBeenLastCalledWith({ activeOnly: true });
     await call('GET', '/locales', await signToken(keys, { claims: { realm_access: { roles: ['customer'] } } }));
     expect(svc.listLocales).toHaveBeenLastCalledWith({ activeOnly: true });
@@ -500,6 +520,118 @@ describe('content API visibility of resolution (public routes)', () => {
     expect(r.statusCode).toBe(400);
     expect(errorOf(r)).toMatchObject({ category: 'VALIDATION', code: 'CONTENT_VALIDATION_FAILED' });
     expect(svc.resolveMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('content API: Vary: Authorization on the public routes', () => {
+  const vary = (r: { headers: Record<string, unknown> }) =>
+    String(r.headers['vary'] ?? '')
+      .split(',')
+      .map((v) => v.trim().toLowerCase());
+
+  it('is present on resolve, resolve-many and the locale list: successes, errors, anonymous and authenticated (a shared cache must not mix management and public bodies)', async () => {
+    svc.listLocales.mockResolvedValue([EN_US]);
+    const tokens = [undefined, await adminToken(['content-read']), await adminToken(['content-write'])];
+    for (const t of tokens) {
+      const label = t ? 'token' : 'anonymous';
+      expect(vary(await call('POST', '/resolve', t, { key: 'shell.tagline', locale: 'en-US' })), `resolve ${label}`).toContain('authorization');
+      expect(vary(await call('POST', '/resolve', t, { key: 'shell.secret', locale: 'en-US' })), `resolve internal ${label}`).toContain('authorization');
+      expect(vary(await call('POST', '/resolve-many', t, { keys: ['shell.tagline', 'shell.secret'], locale: 'en-US' })), `resolve-many ${label}`).toContain(
+        'authorization',
+      );
+      expect(vary(await call('GET', '/locales', t)), `locales ${label}`).toContain('authorization');
+    }
+    // 404 (unknown key), 400 (invalid body) and 401 (invalid credential) are responses of the same routes
+    const unknown = await call('POST', '/resolve', undefined, { key: 'shell.nope', locale: 'en-US' });
+    expect(unknown.statusCode).toBe(404);
+    expect(vary(unknown)).toContain('authorization');
+    const invalid = await call('POST', '/resolve', undefined, { locale: 'en-US' });
+    expect(invalid.statusCode).toBe(400);
+    expect(vary(invalid)).toContain('authorization');
+    for (const [method, url, payload] of [
+      ['POST', '/resolve', { key: 'shell.tagline', locale: 'en-US' }],
+      ['POST', '/resolve-many', { keys: ['shell.tagline'], locale: 'en-US' }],
+      ['GET', '/locales', undefined],
+    ] as const) {
+      const bad = await call(method, url, 'not.a.token', payload);
+      expect(bad.statusCode, url).toBe(401);
+      expect(vary(bad), `${url} 401`).toContain('authorization');
+    }
+  });
+
+  it('is not added to the management routes', async () => {
+    svc.listEntries.mockResolvedValue([]);
+    const r = await call('GET', '/entries', await adminToken(['content-read']));
+    expect(r.statusCode).toBe(200);
+    expect(vary(r)).not.toContain('authorization');
+  });
+});
+
+describe('content API: boolean bodies are validated raw, before Fastify coerces them', () => {
+  const routes = [
+    ['entry activation', '/entries/shell.tagline/activation', () => svc.setEntryActive, (active: unknown) => ({ active, reason: 'r' })],
+    ['locale activation', '/locales/es-US/activation', () => svc.setLocaleActive, (active: unknown) => ({ active, reason: 'r' })],
+    ['locale registration', '/locales', () => svc.registerLocale, (active: unknown) => ({ locale: 'es-US', active, reason: 'r' })],
+  ] as const;
+  const coerced: [string, unknown][] = [
+    ['number 1', 1],
+    ['number 0', 0],
+    ['string "true"', 'true'],
+    ['string "false"', 'false'],
+    ['null', null],
+    ['empty string', ''],
+    ['array', [true]],
+  ];
+
+  it.each(routes)('%s answers 400 for a non-boolean active and never calls the service', async (_label, url, mock, body) => {
+    const t = await adminToken(['content-write']);
+    for (const [label, active] of coerced) {
+      const res = await call('POST', url, t, body(active));
+      expect(res.statusCode, label).toBe(400);
+      expect(errorOf(res)).toMatchObject({ category: 'VALIDATION', code: 'VALIDATION_FAILED' });
+    }
+    expect(mock()).not.toHaveBeenCalled();
+  });
+
+  it('real booleans are still accepted, in both directions, on all three routes', async () => {
+    const t = await adminToken(['content-write']);
+    svc.setEntryActive.mockResolvedValue(entry());
+    svc.setLocaleActive.mockResolvedValue(ES_US);
+    svc.registerLocale.mockResolvedValue(ES_US);
+    for (const active of [true, false]) {
+      expect((await call('POST', '/entries/shell.tagline/activation', t, { active, reason: 'r' })).statusCode).toBe(200);
+      expect((await call('POST', '/locales/es-US/activation', t, { active, reason: 'r' })).statusCode).toBe(200);
+      expect((await call('POST', '/locales', t, { locale: 'es-US', active, reason: 'r' })).statusCode).toBe(201);
+    }
+    expect(svc.setEntryActive).toHaveBeenNthCalledWith(1, 'shell.tagline', true, 'r', 'admin-a');
+    expect(svc.setEntryActive).toHaveBeenNthCalledWith(2, 'shell.tagline', false, 'r', 'admin-a');
+    expect(svc.setLocaleActive).toHaveBeenNthCalledWith(2, 'es-US', false, 'r', 'admin-a');
+  });
+
+  it('the entry creation body does not coerce its boolean variable flags either', async () => {
+    const t = await adminToken(['content-write']);
+    const variable = (required: unknown) => ({ name: 'name', type: 'STRING', description: 'd', example: 'Ada', required });
+    for (const required of ['false', 0, null]) {
+      const res = await call('POST', '/entries', t, {
+        key: 'shell.tagline',
+        contentType: 'UI_LABEL',
+        ownerRole: 'CONTENT',
+        description: 'd',
+        variables: [variable(required)],
+      });
+      expect(res.statusCode, String(required)).toBe(400);
+    }
+    expect(svc.createEntry).not.toHaveBeenCalled();
+  });
+
+  it('keeps 401 and 403 ahead of the body check', async () => {
+    const body = { active: 1, reason: 'r' };
+    for (const url of ['/entries/shell.tagline/activation', '/locales/es-US/activation']) {
+      expect((await call('POST', url, undefined, body)).statusCode, url).toBe(401);
+      expect((await call('POST', url, await adminToken(['content-read']), body)).statusCode, url).toBe(403);
+    }
+    expect(svc.setEntryActive).not.toHaveBeenCalled();
+    expect(svc.setLocaleActive).not.toHaveBeenCalled();
   });
 });
 
@@ -697,13 +829,26 @@ describe('content API behavior', () => {
 
   it('applies request defaults when creating an entry and locale', async () => {
     svc.createEntry.mockResolvedValue(entry());
-    svc.registerLocale.mockResolvedValue({ locale: 'es-US', isActive: false, isPlatformDefault: false });
+    svc.registerLocale.mockResolvedValue({ ...ES_US, isActive: false });
     const t = await adminToken(['content-write']);
     expect((await call('POST', '/entries', t, { key: 'shell.tagline', contentType: 'UI_LABEL', ownerRole: 'CONTENT', description: 'd' })).statusCode).toBe(201);
     expect(svc.createEntry).toHaveBeenCalledWith(expect.objectContaining({ sensitivity: 'PUBLIC', maxScopeType: 'PLATFORM', variables: [] }), 'admin-a');
     const loc = await call('POST', '/locales', t, { locale: 'es-US', reason: 'launch' });
     expect(loc.statusCode).toBe(201);
     expect(svc.registerLocale).toHaveBeenCalledWith({ locale: 'es-US', active: false, reason: 'launch' }, 'admin-a');
+    expect(loc.json().data).toEqual({
+      locale: 'es-US',
+      displayName: 'Spanish (United States)',
+      language: 'es',
+      script: null,
+      region: 'US',
+      isActive: false,
+      isPlatformDefault: false,
+    });
+    const named = await call('POST', '/locales', t, { locale: 'es-US', displayName: 'Español (EE. UU.)', reason: 'launch' });
+    expect(named.statusCode).toBe(201);
+    expect(svc.registerLocale).toHaveBeenLastCalledWith({ locale: 'es-US', active: false, displayName: 'Español (EE. UU.)', reason: 'launch' }, 'admin-a');
+    expect((await call('POST', '/locales', t, { locale: 'es-US', displayName: ' ', reason: 'launch' })).statusCode).toBe(400);
   });
 
   it('drives the lifecycle through the service with the comment and actor, accepting an empty body', async () => {
@@ -751,7 +896,7 @@ describe('content API behavior', () => {
     expect(stored.statusCode).toBe(200);
     expect(stored.json().data.items[0]).not.toHaveProperty('effectiveTo');
 
-    svc.setLocaleActive.mockResolvedValue({ locale: 'es-US', isActive: true, isPlatformDefault: false });
+    svc.setLocaleActive.mockResolvedValue(ES_US);
     const a = await call('POST', '/locales/es-US/activation', t, { active: true, reason: 'launch' });
     expect(a.statusCode).toBe(200);
     expect(svc.setLocaleActive).toHaveBeenCalledWith('es-US', true, 'launch', 'admin-a');

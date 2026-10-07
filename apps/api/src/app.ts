@@ -4,6 +4,7 @@ import type { AppConfig } from '@bananagig/config';
 import { API_PREFIX } from '@bananagig/contracts';
 import type { ConfigurationService } from '@bananagig/configuration';
 import type { ContentService } from '@bananagig/content';
+import type { GeographyService } from '@bananagig/geography';
 import type { TokenVerifier } from '@bananagig/identity';
 import { metrics } from '@bananagig/observability';
 import { authPlugin } from './plugins/auth';
@@ -11,6 +12,7 @@ import { correlationPlugin } from './plugins/correlation';
 import { errorPlugin, frameworkErrors } from './plugins/errors';
 import { configurationRoutes } from './modules/configuration/routes';
 import { contentRoutes } from './modules/content/routes';
+import { geographyRoutes } from './modules/geography/routes';
 import { systemAuthRoutes, systemRootRoutes, systemV1Routes } from './modules/system/routes';
 
 /** Longest path parameter the router accepts: above the 160-character content key limit; longer values are rejected with the standard 400. */
@@ -31,6 +33,11 @@ export interface AppDeps {
    * pre-existing test harnesses that build the app without it keep compiling; index.ts and the spec generator always pass it.
    */
   content?: ContentService;
+  /**
+   * Geography registry (countries, markets, currencies, time zones: reads are public with visibility rules, management is internal/admin).
+   * Optional for the same reason as content; routes are registered only when provided.
+   */
+  geography?: GeographyService;
 }
 
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
@@ -64,6 +71,11 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
           description:
             'Content and localization registry: management is internal/admin only (admin identity context plus a content permission); resolve and the active locale list are public with visibility rules',
         },
+        {
+          name: 'geography',
+          description:
+            'Geography registry (countries, markets, currencies, time zones, market defaults): reads are public with visibility rules (ACTIVE data and public fields only), management is internal/admin only (admin identity context plus a geography permission)',
+        },
       ],
       components: {
         securitySchemes: {
@@ -87,6 +99,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   await app.register(systemAuthRoutes, { prefix: API_PREFIX });
   await app.register(configurationRoutes, { prefix: `${API_PREFIX}/configuration`, configuration: deps.configuration });
   if (deps.content) await app.register(contentRoutes, { prefix: `${API_PREFIX}/content`, content: deps.content });
+  if (deps.geography) await app.register(geographyRoutes, { prefix: `${API_PREFIX}/geography`, geography: deps.geography });
 
   app.get('/metrics', { schema: { hide: true } }, async (_req, reply) => reply.type(metrics.contentType).send(await metrics.metrics()));
   if (deps.diagnostics) {

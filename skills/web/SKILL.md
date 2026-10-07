@@ -67,7 +67,7 @@ The web app has no database access and no data-model impact. Needing data means 
 
 ## Do not
 
-- Do not call the database or infrastructure adapters from web code.
+- Do not call the database or infrastructure adapters from web code, and do not import `@bananagig/geography`, `@bananagig/content` or `@bananagig/configuration` (lint and `pnpm deps:check` fail); country, market, currency and time zone data comes from the public `GET /api/v1/geography/*` reads (ACTIVE data only) and a country name is a content key resolved through the content API.
 - Do not hardcode marketplace content or business values in pages.
 - Do not read `process.env` directly in components; go through `@bananagig/config`.
 - Do not render tokens, put them in URLs, or build GET endpoints that change state (logout is POST with an Origin check).
@@ -78,4 +78,4 @@ ADR-0006, ADR-0007, ADR-0014
 
 ## Last reviewed
 
-2026-10-06 (CFG-002)
+2026-10-07 (GEO-001)

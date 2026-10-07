@@ -199,3 +199,102 @@ erDiagram
 ```
 
 `content.versions.scope_ref` references future domain entities (country, market) by opaque value with no foreign key, as in `configuration`; the level is enforced through `versions.scope_type -> configuration.scope_levels` and bounded by `entries.max_scope_type`. `content.snapshot_items` references versions through the composite key `(version_id, entry_id)`, which is why `entry_id` is repeated there. `content.audit_events.entry_id` is NULL for locale actions and `version_id` is NULL for entry and locale actions; `audit_events` references versions through the composite keys `(version_id, entry_id)` and `(previous_version_id, entry_id)` (so a version can only be named together with its own entry); `audit_events.locale` is a plain value (no foreign key) stored only for locale actions. Legal documents are `LEGAL` entries in this same cluster; future acceptance records (ID-005) will reference `content.versions.version_id`.
+
+## geography schema (GEO-001)
+
+The `geography` schema is a third cluster. It depends on `content` only (foreign keys go geography -> content, never the other way): `content.locales` is the single locale authority, and `content.entries` holds the country display name. Entity names are prefixed `GEO_` throughout (including the referenced content tables, which are the same tables as `CONTENT_LOCALES` and `CONTENT_ENTRIES` above) so that they stay unique across the diagrams in this file.
+
+```mermaid
+erDiagram
+  GEO_CONTENT_LOCALES {
+    text locale PK
+    text display_name
+    text language "generated"
+    text script "generated"
+    text region "generated"
+    boolean is_active
+    boolean is_platform_default
+  }
+  GEO_CONTENT_ENTRIES {
+    uuid entry_id PK
+    text key UK
+  }
+  GEO_CURRENCIES {
+    char3 currency_code PK
+    char3 numeric_code UK
+    smallint minor_unit_digits
+    text display_name
+    text status
+  }
+  GEO_TIME_ZONES {
+    uuid time_zone_id PK
+    text iana_name UK
+    text status
+  }
+  GEO_COUNTRIES {
+    uuid country_id PK
+    char2 iso_alpha2 UK
+    char3 iso_alpha3 UK
+    char3 iso_numeric UK
+    text display_name_content_key FK
+    text status
+    text dialing_code
+    char3 default_currency_code FK
+    text default_locale FK
+    text distance_unit
+    text first_day_of_week
+    text date_format_code
+    text time_format_code
+  }
+  GEO_COUNTRY_LOCALES {
+    uuid country_id PK
+    text locale PK
+  }
+  GEO_COUNTRY_TIME_ZONES {
+    uuid country_id PK
+    uuid time_zone_id PK
+  }
+  GEO_MARKETS {
+    uuid market_id PK
+    text code UK
+    text name
+    uuid country_id FK
+    text status
+    text default_locale FK
+    char3 currency_code FK
+    uuid default_time_zone_id FK
+    timestamptz effective_from
+    timestamptz effective_to
+  }
+  GEO_MARKET_LOCALES {
+    uuid market_id PK
+    uuid country_id FK
+    text locale PK
+  }
+  GEO_AUDIT_EVENTS {
+    uuid audit_event_id PK
+    text action
+    uuid country_id FK
+    uuid market_id FK
+    jsonb changes
+  }
+  GEO_CONTENT_ENTRIES ||--o{ GEO_COUNTRIES : "display name (display_name_content_key -> key)"
+  GEO_CURRENCIES ||--o{ GEO_COUNTRIES : "default currency"
+  GEO_CURRENCIES ||--o{ GEO_MARKETS : "market currency"
+  GEO_COUNTRIES ||--o{ GEO_COUNTRY_LOCALES : "supports"
+  GEO_CONTENT_LOCALES ||--o{ GEO_COUNTRY_LOCALES : "locale"
+  GEO_COUNTRY_LOCALES ||--o{ GEO_COUNTRIES : "default locale (country_id, default_locale), deferred"
+  GEO_COUNTRIES ||--o{ GEO_COUNTRY_TIME_ZONES : "uses"
+  GEO_TIME_ZONES ||--o{ GEO_COUNTRY_TIME_ZONES : "zone"
+  GEO_COUNTRIES ||--o{ GEO_MARKETS : "contains"
+  GEO_COUNTRY_TIME_ZONES ||--o{ GEO_MARKETS : "default time zone (country_id, default_time_zone_id)"
+  GEO_MARKETS ||--o{ GEO_MARKET_LOCALES : "supports (market_id, country_id)"
+  GEO_COUNTRY_LOCALES ||--o{ GEO_MARKET_LOCALES : "country supports (country_id, locale)"
+  GEO_MARKET_LOCALES ||--o{ GEO_MARKETS : "default locale (market_id, default_locale), deferred"
+  GEO_COUNTRIES |o--o{ GEO_AUDIT_EVENTS : "audited"
+  GEO_MARKETS |o--o{ GEO_AUDIT_EVENTS : "audited"
+```
+
+`GEO_CONTENT_LOCALES` is `content.locales` (changed in GEO-001: `display_name` plus the generated `language`, `script`, `region`); there is no `geography.locales`. `GEO_CONTENT_ENTRIES` is `content.entries`; only its `key` is referenced (`fk_countries__display_name_content_key`). The two default-locale relationships point from the child to a membership row: a country's default locale must be one of its supported locales and a market's default locale one of the market's supported locales, both checked at commit (deferred composite foreign keys), which is why `GEO_COUNTRIES` and `GEO_MARKETS` appear on the many side of a relationship to their own link tables. `GEO_MARKET_LOCALES.country_id` repeats the market's country so that the composite key `(country_id, locale)` forces every market locale to be supported by the market's country; the key `(market_id, country_id)` to `geography.markets` prevents drift. `GEO_AUDIT_EVENTS` has two nullable subject keys (exactly one is set, `ck_audit_events__subject`) instead of a polymorphic id.
+
+`geography` has no foreign key to `integration.outbox_events`: geography events (aggregate types `geography_country` and `geography_market`) point at their aggregate by value, as for every outbox producer. `configuration` and `content` `scope_ref` values for COUNTRY (ISO alpha-2, upper case) and MARKET (market code, lower-case kebab) scopes stay opaque text with no foreign key (DEBT-0024 remains open); they are validated against `geography` by the service layer through a port, not by the database.

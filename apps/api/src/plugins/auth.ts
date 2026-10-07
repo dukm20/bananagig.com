@@ -1,6 +1,6 @@
 // Authentication and authorization primitives. Authorization is ALWAYS enforced here on the server;
 // hiding UI is never security. This is infrastructure only: business permissions arrive with their features.
-import type { FastifyInstance, FastifyRequest, preHandlerAsyncHookHandler } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest, preHandlerAsyncHookHandler } from 'fastify';
 import fp from 'fastify-plugin';
 import { bearerFromHeader, TokenValidationError, type TokenVerifier, type Principal } from '@bananagig/identity';
 import { recordAuthResult } from '@bananagig/observability';
@@ -139,19 +139,55 @@ export function requireContentPermission(action: keyof typeof CONTENT_PERMISSION
   };
 }
 
+/**
+ * TEMPORARY permission strategy for the geography registry (GEO-001), the same model as configuration and content (DEBT-0021): admin-console
+ * identity context plus client roles on `bananagig-admin`. `geography-read` shows every status and the management-only fields on the public
+ * read routes and gates readiness; `geography-write` creates, updates, activates and deactivates and implies read. No other registry's role grants either.
+ */
+export const GEOGRAPHY_PERMISSIONS = { read: 'geography-read', write: 'geography-write' } as const;
+/**
+ * `geography-write` implies `geography-read`: whoever may change the registry may also see what they changed (the management view of every
+ * mutation response, the management reads and readiness), otherwise a write-only administrator would get the management view back from a
+ * mutation and a 404 from the matching GET. The reverse never holds, and no content or configuration role grants either.
+ */
+export const hasGeographyPermission = (principal: Principal | undefined, action: keyof typeof GEOGRAPHY_PERMISSIONS): boolean =>
+  hasAdminClientRole(principal, GEOGRAPHY_PERMISSIONS[action]) || (action === 'read' && hasAdminClientRole(principal, GEOGRAPHY_PERMISSIONS.write));
+
+export function requireGeographyPermission(action: keyof typeof GEOGRAPHY_PERMISSIONS): preHandlerAsyncHookHandler {
+  const authenticate = requireAuthenticated();
+  return async function guard(request, reply) {
+    await authenticate.call(request.server, request, reply);
+    if (!hasGeographyPermission(request.principal, action)) throw forbidden();
+  };
+}
+
 /** Handler-level check for entries owned by LEGAL: the caller must also hold `content-legal` (AUTHORIZATION 403 otherwise). */
 export function assertContentLegal(principal: Principal | undefined): void {
   if (!hasAdminClientRole(principal, CONTENT_LEGAL_ROLE)) throw forbidden();
 }
 
+/** Adds a header name to `Vary` without dropping what is already there (case-insensitive, no duplicates). */
+function addVary(reply: FastifyReply, name: string): void {
+  const current = reply.getHeader('vary');
+  const existing = (Array.isArray(current) ? current.join(',') : String(current ?? ''))
+    .split(',')
+    .map((v) => v.trim())
+    .filter(Boolean);
+  if (existing.includes('*') || existing.some((v) => v.toLowerCase() === name.toLowerCase())) return;
+  reply.header('vary', [...existing, name].join(', '));
+}
+
 /**
  * For PUBLIC routes that serve more to privileged callers: no Authorization header means anonymous (no principal); a header that is present
  * must be a valid token (401 otherwise, RFC 6750), so a broken client credential is never silently downgraded. Authorization of the
- * principal is decided by the route (for example hasContentPermission).
+ * principal is decided by the route (for example hasContentPermission). Every response of such a route carries `Vary: Authorization` because
+ * the body differs between anonymous and privileged callers.
  */
 export function optionalAuthenticated(): preHandlerAsyncHookHandler {
   const authenticate = requireAuthenticated();
   return async function maybeAuthenticate(request, reply) {
+    // The body depends on the credential, so a shared cache must key on it: set before anything can answer (successes AND errors, 401/404 included).
+    addVary(reply, 'Authorization');
     if (request.headers.authorization === undefined) return;
     await authenticate.call(request.server, request, reply);
   };

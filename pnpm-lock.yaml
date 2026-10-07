@@ -253,6 +253,9 @@ importers:
       '@bananagig/database':
         specifier: workspace:*
         version: link:../../packages/database
+      '@bananagig/geography':
+        specifier: workspace:*
+        version: link:../../packages/geography
       '@bananagig/identity':
         specifier: workspace:*
         version: link:../../packages/identity
@@ -439,6 +442,31 @@ importers:
       pg:
         specifier: ^8.23.1
         version: 8.23.1
+
+  packages/geography:
+    dependencies:
+      '@bananagig/configuration':
+        specifier: workspace:*
+        version: link:../configuration
+      '@bananagig/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@bananagig/database':
+        specifier: workspace:*
+        version: link:../database
+      '@bananagig/observability':
+        specifier: workspace:*
+        version: link:../observability
+      '@bananagig/platform':
+        specifier: workspace:*
+        version: link:../platform
+    devDependencies:
+      '@bananagig/testing':
+        specifier: workspace:*
+        version: link:../testing
+      iovalkey:
+        specifier: ^0.4.0
+        version: 0.4.0(supports-color@8.1.1)
 
   packages/identity:
     dependencies:

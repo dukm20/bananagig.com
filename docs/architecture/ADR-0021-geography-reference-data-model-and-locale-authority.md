@@ -1,0 +1,56 @@
+# ADR-0021 — Geography reference data: a dedicated schema, content.locales as the locale authority, IANA zones and ISO currencies as data
+
+Status: ACCEPTED
+Date: 2026-10-07
+Checkpoint: GEO-001
+
+## Context
+
+Every later checkpoint (address, tax, payment, catalog, booking, search) needs to know where BananaGig operates and how a place behaves: its countries, currencies, time zones and the markets inside them, with the default locale, currency, time zone, distance unit, first day of the week and date and time formats of each. These must be data, not constants (the hard rule against hardcoded business values), changeable without a deploy, auditable, and consistent with the two registries that already exist. The configuration registry (ADR-0016) models typed values and the content registry (ADR-0018) models copy and owns `content.locales`, the registry that authoring, serving and the fallback chain already use. Countries and markets need locales, so the question is who owns them, and in which direction dependencies run.
+
+The platform also stores money as an integer amount plus a currency code (ADR-0011), stores instants as `timestamptz`, and must answer "what is the local time for this market" correctly across daylight saving changes.
+
+## Decision
+
+Reference data lives in a new PostgreSQL schema `geography` (migration `0007_geography_registry.sql`), created by the first feature that needs it (ADR-0008) and separate from `configuration` and `content`.
+
+- **`content.locales` stays canonical and is extended; there is no `geography.locales`.** GEO-001 adds `display_name` (NOT NULL; an insert trigger stores the tag when none is given, and the service derives an English name with `Intl.DisplayNames`) and the generated stored columns `language`, `script` and `region` (derived from the tag, so they cannot drift). This is an expand step: nothing was renamed or loosened. Geography references the registry by foreign key (`geography.country_locales.locale -> content.locales (locale)`) and reads `content.locales.is_active` under `FOR SHARE`.
+- **Dependency direction: geography -> content.** Database foreign keys and trigger reads go from geography to content only (`display_name_content_key` references `content.entries (key)`, so the country name is managed, translatable content, not a column). The single cross-schema trigger, `trg_locales__geography_guard` on `content.locales`, is owned by geography and only refuses deactivating a locale that is the default of an ACTIVE country or market; deactivating a non-default supported locale stays allowed (public geography reads then hide it). The refusal reaches API callers as the content error `INVALID_STATE` with `details.reason` `LOCALE_IN_USE_BY_GEOGRAPHY`. At package level `@bananagig/geography` does not import `@bananagig/content` and content does not import geography, so there is no package cycle; content learns about markets through a port (ADR-0022). The geography service reads `content.locales` and `content.entries` by SQL for the checks that must share a transaction and share locks with an activation; this read-only exception to "other domains use the content service" is deliberate.
+- **Currencies are ISO 4217 rows with `minor_unit_digits` as data.** The alpha code (`char(3)`) is the primary key and the foreign key target of countries and markets; code, numeric code and digits are immutable because stored amounts depend on them. Money elsewhere stays `amount_minor bigint` plus the currency code.
+- **Time zones are IANA names, checked twice.** The service pre-validates against `Intl.supportedValuesOf('timeZone')` plus 19 listed IANA names that Node's CLDR-based list spells differently (for example `Asia/Kolkata`), so fixed-offset and alias names (`Etc/GMT+5`, `EST`, `us/pacific`, `UTC+5`, `posix/...`) and `UTC` are rejected. `geography.time_zones.iana_name` must pass a format check, and the insert trigger refuses the `posix/` and `right/` alias trees and requires a NEW name to exist in PostgreSQL's tz database (`pg_timezone_names`). That database check is on insert only and reflects the server's tzdata at that moment (nothing re-validates a registered name when tzdata is updated), and the database remains the final authority over the service. The identity is immutable; no UTC offset is stored anywhere. A market has one default operational time zone, constrained to a zone of its own country by a composite foreign key; a later address checkpoint overrides it per location (DEBT-0034).
+- **Country codes are only partly verified.** The alpha-2 code must be a region known to the runtime (`Intl.DisplayNames`; `ZZ` is the DEV/TEST code behind the `allowTestKeys` gate). Alpha-3 and numeric codes are checked for format and uniqueness only; no dataset proves the three codes belong together (DEBT-0031). Currencies are inserted by migration or SQL (there is no API for them); the database checks their format and uniqueness only. "ISO" in this model names the standard the data follows, not a verification of it.
+- **Format settings are enum codes on the country.** `distance_unit` (`MILES`, `KILOMETERS`), `first_day_of_week`, `date_format_code` (`MDY`, `DMY`, `YMD`) and `time_format_code` (`12_HOUR`, `24_HOUR`) are CHECK-constrained codes on `geography.countries`, the single source; markets inherit them at read time. Rendering is done by consumers with `Intl`; there are no format strings to store, validate or inject.
+- **Markets are first-class dated rows.** One row per market with a unique lower-case kebab code, its own default locale, currency and default time zone, supported locales (a subset of the country's) and a half-open window `[effective_from, effective_to)`. "In effect" is derived at read time from `status = 'ACTIVE'` and the window; there is no current flag and no version table.
+- **Statuses and activation are enforced by the database.** `PLANNED`, `ACTIVE`, `INACTIVE` on currencies, time zones, countries and markets; PLANNED is the initial status only (guard triggers refuse any update back to it). A country can be ACTIVE only with an ACTIVE currency, an ACTIVE default locale and at least one ACTIVE time zone; a market only with an ACTIVE country, currency, time zone and locale; a dependency cannot be deactivated while an ACTIVE country or market uses it. Activation locks the rows it relies on `FOR SHARE`, so a concurrent deactivation serializes with it; the service and the triggers use one lock order (markets of the country, then the country, then currency, time zone and locale) and lock a row with a bare statement before they read it (joined and array columns would be stale after a lock wait in READ COMMITTED). Rules that read sibling rows lock the owning row first (a zone deactivation locks the affected ACTIVE countries; a link removal share-locks the country). One inversion is inherent: a raw SQL zone deactivation can deadlock with a market activation, PostgreSQL aborts one side and the service reports a retryable conflict. Every guard failure carries `geography_rule:<KEY>` in its DETAIL and callers classify on that key, never on message text. Link rows (`country_locales`, `country_time_zones`, `market_locales`) are immutable (inserted or deleted, never updated) and the links of an ACTIVE country cannot be removed. Rows are never deleted. The service checks first for clear typed errors; the triggers are the safety net.
+- **Readiness is derived, never stored.** An extensible in-code registry of checks (built-ins `COUNTRY_ACTIVE`, `CURRENCY_ACTIVE`, `LOCALE_ACTIVE`, `TIME_ZONE_ACTIVE`; later domains register more through `registerReadinessCheck`) gates activation. Management writes are audited (`geography.audit_events`) and emit outbox events with identifiers only (ADR-0012).
+- **Seeds are deterministic reference data**: `USD`, four US time zones, the US display-name content entry taken through the real content lifecycle, the country `US` (created PLANNED, linked, then activated), and the market `la-oc` seeded PLANNED because the launch market is a business assumption the owner must confirm before it goes live.
+
+## Alternatives considered
+
+- A `geography.locales` table: two answers to "is `es-MX` active", two places for language, script and region, and a second registry for content to reconcile. Rejected; `content.locales` is extended instead.
+- Locale columns (language, script, region, active flag) on `countries`: duplicates the authority per country and cannot be shared with content authoring. Rejected.
+- Storing UTC offsets (or offset columns) for time zones: offsets change with daylight saving time and history; the IANA name is the identity. Rejected.
+- Per-market overrides of the distance unit, date and time formats: four columns that must be kept equal to the country's and would drift; a real need would be its own reviewed change. Rejected for now.
+- A stored `is_ready` flag or readiness table: stale the moment any dependency changes. Readiness is derived in code instead.
+- A country display-name column: duplicates copy that needs translation, approval and effective dates. Rejected in favour of a content key.
+- Making the database the only enforcement of activation (or the service the only enforcement): the database alone gives poor errors, the service alone can be bypassed by SQL. Both are kept.
+- Foreign keys from `scope_ref` into countries and markets: not possible for a polymorphic reference and it would couple the lower registries to geography (ADR-0022).
+
+## Consequences
+
+Later domains reference `geography` rows (a market code, a country code, a currency code) instead of inventing lists, and ask `resolveMarketDefaults` for what to render or price with. Adding a country needs its currency, locales and time zones activated first; there is no management API or bulk import for those yet (DEBT-0031), and the dataset is US only. Only the four built-in readiness checks exist (DEBT-0032). Public reads are cached with a generation key that also carries content's locale generation (DEBT-0033); a lost bump is bounded by the TTL. Public reads list only ACTIVE time zones and ACTIVE supported locales and hide a market's planned retirement (`effectiveTo`); permissions use the temporary client-role model, where `geography-write` implies `geography-read` (DEBT-0028). The geography service holds a deliberate read dependency on two content tables, recorded here.
+
+## Migration / compatibility
+
+Migration `0007_geography_registry.sql`, forward-only (ADR-0010), one transaction: the expand step on `content.locales` (one row rewritten for the generated columns, `display_name` back-filled before NOT NULL), the new schema with eight tables, guard triggers, and the launch seed. Backward compatible: inserts into `content.locales` without a display name keep working, the new columns are read-only, nothing is removed. The content test that deactivated `en-US` now sees SQLSTATE 23000 from the geography guard instead of the check constraint (still refused).
+
+## Related files
+
+- `db/migrations/0007_geography_registry.sql`
+- `packages/geography/src/service.ts`
+- `packages/geography/src/readiness.ts`
+- `packages/contracts/src/geography.ts`
+- `apps/api/src/modules/geography/routes.ts`
+- `docs/engineering/GEOGRAPHY.md`
+- `docs/data/DATA_MODEL.md`
+- `docs/data/NORMALIZATION_LOG.md`

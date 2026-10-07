@@ -268,14 +268,14 @@ Target checkpoint: admin console checkpoint
 
 ## DEBT-0024 — Scope references are not validated against domain entities
 
-Status: OPEN
+Status: IN_PROGRESS
 Severity: MEDIUM
 Introduced by: CFG-001
 Owner/domain: configuration / each owning domain
-Description: `scope_ref` is an opaque string with no foreign key, so a value can be set for a market, category or provider that does not exist or is later removed. The scope level is enforced; the entity is not. `content.versions.scope_ref` (CFG-002, COUNTRY and MARKET scopes) has the same limitation.
+Description: `scope_ref` is an opaque string with no foreign key (a polymorphic reference cannot have one). GEO-001 resolved COUNTRY and MARKET: both registries (configuration change requests and content versions) validate those references at creation and at publish through the `ScopeReferenceValidator` port implemented by geography (the entity must exist, be PLANNED or ACTIVE and use the canonical form: ISO alpha-2 upper case, market code lower-case kebab). The scope references of CATEGORY, PLAN, PROVIDER, GIG and DROP are still unvalidated, and existing rows are not re-validated if an entity is later deactivated.
 Why deferred: The domain tables do not exist yet and the registry must not depend on them.
-Exit criteria: A scope-reference validator port implemented by each owning domain and called on change-request creation and publish and on content version creation, with a test per scope level.
-Target checkpoint: first checkpoint that creates a domain table used as a scope (geography/market, catalog/category, provider)
+Exit criteria: The same port implemented by the catalog, provider, plan, gig and drop domains (called by both registries), with a test per scope level.
+Target checkpoint: first checkpoint that creates each remaining scope domain table (catalog/category, provider, plan, gig, drop)
 
 ## DEBT-0025 — Snapshot and audit retention undefined
 
@@ -316,7 +316,7 @@ Status: OPEN
 Severity: MEDIUM
 Introduced by: CFG-002
 Owner/domain: content / identity
-Description: Content management uses the same temporary model as configuration (DEBT-0021): the admin identity context plus client roles `content-read`, `content-write`, `content-approve` and `content-legal`. Only LEGAL-owned entries are gated by an owner-specific role. `owner_role` CONTENT, SUPPORT and MARKETING is metadata and does not restrict who may edit. Locale registration and activation require only `content-write`, so deactivating a locale makes EXACT-policy LEGAL text for that locale unavailable without `content-legal`; resolve by requiring `content-legal` for locale deactivation, or by a per-locale legal flag, when the temporary permission model is replaced.
+Description: Content management uses the same temporary model as configuration (DEBT-0021): the admin identity context plus client roles `content-read`, `content-write`, `content-approve` and `content-legal`. Only LEGAL-owned entries are gated by an owner-specific role. `owner_role` CONTENT, SUPPORT and MARKETING is metadata and does not restrict who may edit. The geography roles `geography-read` and `geography-write` follow the same temporary model (no approval workflow: changes are audited, not approved). Locale registration and activation require only `content-write`, so deactivating a locale makes EXACT-policy LEGAL text for that locale unavailable without `content-legal`; resolve by requiring `content-legal` for locale deactivation, or by a per-locale legal flag, when the temporary permission model is replaced.
 Why deferred: Application roles and permissions do not exist yet.
 Exit criteria: Role-based permissions per owner role in the application RBAC, replacing `requireContentPermission`.
 Target checkpoint: application RBAC checkpoint (with DEBT-0021)
@@ -342,4 +342,48 @@ Description: The API has no rate limiting, request-cost budgets or abuse control
 Why deferred: Rate limiting belongs at the edge or in a shared plugin and needs a policy (limits per client, per route class, behind which proxy headers); that is a platform decision, not content logic.
 Exit criteria: A documented rate-limit policy enforced at Caddy or by an API plugin (with trusted client IP handling), tests, and per-route classes (public read, authenticated read, admin write).
 Target checkpoint: before the first public customer screen goes live
+
+## DEBT-0031 — Only the US reference dataset exists; no management API or bulk import for currencies, time zones and locale activation
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: GEO-001
+Owner/domain: geography
+Description: Geography is seeded with the United States only (USD, four US time zones, `en-US`). The management API covers countries and markets, but there is no API to create or activate currencies, time zones or locales for geography, no bulk import of the ISO 3166, ISO 4217 and IANA datasets, no admin UI and no readiness dashboard. A new real country therefore needs its currency, locale and time zones activated by migration or SQL first. `createCountry` registers unknown valid IANA zones as PLANNED, but nothing activates them. The United States is seeded with only four zones (New York, Chicago, Denver, Los Angeles): Phoenix, Anchorage, Honolulu and the rest are absent, so `GET /countries/US` reports a partial zone list. ISO validation checks the alpha-2 code against the platform's region list but alpha-3 and numeric codes are only checked for format and uniqueness, so their consistency with the alpha-2 code is not verified.
+Why deferred: The launch geography is one country; the dataset, import format and review process are product and data-governance decisions.
+Exit criteria: A reviewed bulk import of the reference datasets, management endpoints (audited) for currencies, time zones and country/market locale activation, and an admin view of readiness.
+Target checkpoint: first checkpoint that opens a second country or currency
+
+## DEBT-0032 — Market readiness covers only the four built-in dependency checks
+
+Status: OPEN
+Severity: LOW
+Introduced by: GEO-001
+Owner/domain: geography / each owning domain
+Description: Market activation runs the extensible readiness registry, which today holds only COUNTRY_ACTIVE, CURRENCY_ACTIVE, LOCALE_ACTIVE and TIME_ZONE_ACTIVE (the database enforces the same four with triggers). Tax, payment provider, address format, address autocomplete and content translation readiness are not checked because those domains do not exist yet. A market can therefore be ACTIVE without any of them.
+Why deferred: The checks need their domains; the registry (`registerReadinessCheck`) is the designed extension point.
+Exit criteria: Each domain registers its readiness check when it ships (TAX, PAYMENT_PROVIDER, ADDRESS_FORMAT, AUTOCOMPLETE, CONTENT_TRANSLATION) with tests that a failing check blocks activation (`NOT_READY`).
+Target checkpoint: the checkpoint that introduces each domain (tax, payments, GEO-002 address formats)
+
+## DEBT-0033 — Geography cache invalidation is generation-based and coupled to content's locale generation key
+
+Status: OPEN
+Severity: LOW
+Introduced by: GEO-001
+Owner/domain: geography / content
+Description: Geography caches reference reads in Valkey keyed by a geography generation counter and, because public reads hide inactive locales, also by content's `bg:{env}:content:locgen` counter (read by key name). There is no push invalidation, and a lost generation bump (Valkey down at write time, or an evicted counter under memory pressure) leaves stale entries until the TTL (the service default is 300 s, but the API wires the shared registry cache TTL `CONFIG_CACHE_TTL_SECONDS`, 30 s by default, so the effective bound is 30 s). The market-default provider used by content keeps a 60 s in-process memo, so a changed market default reaches content within about a minute.
+Why deferred: Reference data changes rarely and the TTL bounds the staleness; a shared cache-generation helper is a refactor across three packages.
+Exit criteria: A shared cache-generation helper (instead of a key-name coupling) and a documented staleness budget per consumer.
+Target checkpoint: when a second consumer of geography reads needs tighter freshness
+
+## DEBT-0034 — No automatic time zone lookup; the market default time zone is the only operational zone
+
+Status: OPEN
+Severity: LOW
+Introduced by: GEO-001
+Owner/domain: geography
+Description: Each market has one default operational time zone chosen from its country's zones. There is no lookup of a time zone from a service address or coordinates, so a booking that crosses a zone boundary inside a market uses the market default until the address checkpoint can override it.
+Why deferred: Addresses and geocoding are GEO-002 and later.
+Exit criteria: Time zone derived from a validated address or coordinates, overriding the market default per service location.
+Target checkpoint: GEO-002 and the geocoding checkpoint
 

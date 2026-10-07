@@ -399,3 +399,38 @@ None required.
 
 ### Known follow-up
 None.
+
+
+## GEO-001 — 2026-10-07
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(GEO-001)"`.
+Summary: Geography foundation as data: countries, currencies, time zones and markets with deterministic market defaults, database-enforced activation rules, an extensible readiness registry, protected management and public read APIs, six outbox events, and integration with the configuration and content registries. `content.locales` stays the single locale authority. Only US reference data and one PLANNED market (`la-oc`) were seeded; no address, geocoding, service-area, search, booking or tax behavior.
+
+### Delivered
+- Migration `0007_geography_registry.sql`: schema `geography` with 8 tables (`currencies`, `time_zones`, `countries`, `country_locales`, `country_time_zones`, `markets`, `market_locales`, `audit_events`); `content.locales` gained `display_name` and generated `language`, `script`, `region`; guard triggers for immutability, a status machine (PLANNED is initial only), activation dependencies (country: ACTIVE currency, default locale and at least one time zone; market: ACTIVE country, currency, time zone and locale), protected removal of an ACTIVE country's links, a cross-schema guard on locale deactivation; every guard RAISE carries a machine-readable `geography_rule:<KEY>`; seeds: USD, four US time zones, the US display name as managed content (through the real content lifecycle), country US (ACTIVE), market `la-oc` named "LA & OC" (PLANNED, inert until the owner activates it; a business assumption awaiting owner confirmation)
+- `packages/geography` (new): `GeographyService` (reads with management/public views, `resolveMarketDefaults`, audited management writes, idempotent activation, replace-set semantics), the readiness registry (`registerReadinessCheck`), generation-based cache with bounded I/O, `createGeographyScopeReferenceValidator` and `createMarketDefaultsProvider` (structural ports, no imports of the content package)
+- `packages/configuration` and `packages/content`: the `ScopeReferenceValidator` port (COUNTRY and MARKET references validated at creation and publish, fail closed, canonical forms: ISO alpha-2 upper case, market code lower-case kebab) and the `MarketDefaultsProvider` port (the market default locale is derived and merged into the context before hashing, caching and snapshots; public callers never see copy for a market that is not visible); locale DTOs gained display name and derived parts; the resolver's batch order is deterministic
+- API `/api/v1/geography`: public reads (ACTIVE data, public fields, `Vary: Authorization`, `effectiveTo` hidden) and management routes (admin context, `geography-read` and `geography-write`, write implies read), strict raw-body validation before ajv coercion, input hardening for names and reasons
+- Keycloak client roles `geography-read` and `geography-write`; smoke scenario "Geography" (30 checks) and the Configuration scenario now uses the seeded market
+- Docs: `docs/engineering/GEOGRAPHY.md`, skill `skills/geography`, ADR-0021 (geography reference-data model and locale authority) and ADR-0022 (cross-domain reference integrity through ports), data-model documents
+- Quality process: four independent adversarial reviews (security, database and concurrency, API and delivery, compliance) plus the data-model documentation review; every verified finding was fixed with a regression test (including a stale-read bug of `FOR UPDATE` on joined selects, two time-zone invariant races, a lock-order deadlock, a content-visibility leak for non-visible markets, and CI-breaking web fixtures); see LRN-0024 to LRN-0027
+- Housekeeping inside this checkpoint (requested at its start): the PROJECT_STATE CI line now records that CFG-002 was fully verified in GitHub CI (run #4)
+
+### Schema
+New schema `geography` (8 tables) and an extension of `content.locales`; see `docs/data/DATA_MODEL_CHANGELOG.md` and `NORMALIZATION_LOG.md` (GEO-001), including the recorded denormalizations (`market_locales.country_id` enforced by composite foreign keys, which is a 2NF and BCNF exception) and the index review. `docs/design/` is excluded from tooling and not part of this checkpoint.
+
+### Contracts
+OpenAPI: 14 geography operations. AsyncAPI: `bananagig.geography.country-activated|country-deactivated|market-created|market-activated|market-deactivated|market-defaults-changed.v1` (deactivation events only for ACTIVE to INACTIVE).
+
+### Tests
+Unit 1221, root script tests 71, integration 385 in 18 files, smoke 30 checks (run twice for idempotency). Real Valkey integration tests ran (Valkey reachable).
+
+### Skills updated
+New `skills/geography`; updated `api`, `configuration`, `content`, `database`, `testing`, `web`; CLAUDE.md reading list.
+
+### ADRs
+ADR-0021, ADR-0022.
+
+### Known follow-up
+DEBT-0031 to DEBT-0034, DEBT-0024 (in progress), DEBT-0030 applies to public geography reads. LRN-0024 to LRN-0027. GEO-002 will bring address formats and structured addresses; the market default time zone can then be overridden per service address (DEBT-0034).
