@@ -200,9 +200,9 @@ erDiagram
 
 `content.versions.scope_ref` references future domain entities (country, market) by opaque value with no foreign key, as in `configuration`; the level is enforced through `versions.scope_type -> configuration.scope_levels` and bounded by `entries.max_scope_type`. `content.snapshot_items` references versions through the composite key `(version_id, entry_id)`, which is why `entry_id` is repeated there. `content.audit_events.entry_id` is NULL for locale actions and `version_id` is NULL for entry and locale actions; `audit_events` references versions through the composite keys `(version_id, entry_id)` and `(previous_version_id, entry_id)` (so a version can only be named together with its own entry); `audit_events.locale` is a plain value (no foreign key) stored only for locale actions. Legal documents are `LEGAL` entries in this same cluster; future acceptance records (ID-005) will reference `content.versions.version_id`.
 
-## geography schema (GEO-001)
+## geography schema (GEO-001, GEO-002)
 
-The `geography` schema is a third cluster. It depends on `content` only (foreign keys go geography -> content, never the other way): `content.locales` is the single locale authority, and `content.entries` holds the country display name. Entity names are prefixed `GEO_` throughout (including the referenced content tables, which are the same tables as `CONTENT_LOCALES` and `CONTENT_ENTRIES` above) so that they stay unique across the diagrams in this file.
+The `geography` schema is a third cluster (GEO-001 reference data; GEO-002 added the address model: `GEO_ADMINISTRATIVE_AREAS`, `GEO_ADDRESS_FORMATS`, `GEO_ADDRESS_FORMAT_FIELDS`, `GEO_ADDRESSES`). It depends on `content` only (foreign keys go geography -> content, never the other way): `content.locales` is the single locale authority, and `content.entries` holds the country display name. Entity names are prefixed `GEO_` throughout (including the referenced content tables, which are the same tables as `CONTENT_LOCALES` and `CONTENT_ENTRIES` above) so that they stay unique across the diagrams in this file.
 
 ```mermaid
 erDiagram
@@ -276,7 +276,63 @@ erDiagram
     text action
     uuid country_id FK
     uuid market_id FK
+    uuid address_format_id FK
     jsonb changes
+  }
+  GEO_ADMINISTRATIVE_AREAS {
+    uuid administrative_area_id PK
+    uuid country_id FK
+    text code UK
+    text name
+    text area_type
+    text status
+    uuid parent_area_id FK
+    integer display_order
+  }
+  GEO_ADDRESS_FORMATS {
+    uuid address_format_id PK
+    uuid country_id FK
+    integer version UK
+    text status
+    text display_template
+    timestamptz effective_from
+    timestamptz effective_to
+  }
+  GEO_ADDRESS_FORMAT_FIELDS {
+    uuid address_format_id PK
+    text field_type PK
+    smallint display_order UK
+    text content_label_key FK
+    boolean required
+    smallint max_length
+    text input_type
+    text validation_pattern
+    text example_value
+    text autocomplete_hint
+    text normalization_rule
+  }
+  GEO_ADDRESSES {
+    uuid address_id PK
+    uuid country_id FK
+    uuid address_format_id FK
+    uuid administrative_area_id FK
+    text administrative_area_code FK
+    text administrative_area_name
+    text organization
+    text address_line_1
+    text address_line_2
+    text dependent_locality
+    text locality
+    text postal_code
+    text sorting_code
+    geography_point location "geography(Point,4326), single point"
+    uuid time_zone_id FK
+    text formatted_address "derived, immutable"
+    text validation_status
+    text validation_source
+    text provider_code
+    text provider_reference
+    jsonb raw_input
   }
   GEO_CONTENT_ENTRIES ||--o{ GEO_COUNTRIES : "display name (display_name_content_key -> key)"
   GEO_CURRENCIES ||--o{ GEO_COUNTRIES : "default currency"
@@ -293,8 +349,20 @@ erDiagram
   GEO_MARKET_LOCALES ||--o{ GEO_MARKETS : "default locale (market_id, default_locale), deferred"
   GEO_COUNTRIES |o--o{ GEO_AUDIT_EVENTS : "audited"
   GEO_MARKETS |o--o{ GEO_AUDIT_EVENTS : "audited"
+  GEO_COUNTRIES ||--o{ GEO_ADMINISTRATIVE_AREAS : "has areas"
+  GEO_ADMINISTRATIVE_AREAS |o--o{ GEO_ADMINISTRATIVE_AREAS : "parent (parent_area_id, country_id)"
+  GEO_COUNTRIES ||--o{ GEO_ADDRESS_FORMATS : "has format versions"
+  GEO_ADDRESS_FORMATS ||--|{ GEO_ADDRESS_FORMAT_FIELDS : "defines fields"
+  GEO_CONTENT_ENTRIES ||--o{ GEO_ADDRESS_FORMAT_FIELDS : "label (content_label_key -> key)"
+  GEO_COUNTRIES ||--o{ GEO_ADDRESSES : "country"
+  GEO_ADDRESS_FORMATS ||--o{ GEO_ADDRESSES : "validated with (address_format_id, country_id)"
+  GEO_ADMINISTRATIVE_AREAS |o--o{ GEO_ADDRESSES : "area (administrative_area_id, country_id, administrative_area_code)"
+  GEO_TIME_ZONES |o--o{ GEO_ADDRESSES : "geocoded zone"
+  GEO_ADDRESS_FORMATS |o--o{ GEO_AUDIT_EVENTS : "drafted and published"
 ```
 
 `GEO_CONTENT_LOCALES` is `content.locales` (changed in GEO-001: `display_name` plus the generated `language`, `script`, `region`); there is no `geography.locales`. `GEO_CONTENT_ENTRIES` is `content.entries`; only its `key` is referenced (`fk_countries__display_name_content_key`). The two default-locale relationships point from the child to a membership row: a country's default locale must be one of its supported locales and a market's default locale one of the market's supported locales, both checked at commit (deferred composite foreign keys), which is why `GEO_COUNTRIES` and `GEO_MARKETS` appear on the many side of a relationship to their own link tables. `GEO_MARKET_LOCALES.country_id` repeats the market's country so that the composite key `(country_id, locale)` forces every market locale to be supported by the market's country; the key `(market_id, country_id)` to `geography.markets` prevents drift. `GEO_AUDIT_EVENTS` has two nullable subject keys (exactly one is set, `ck_audit_events__subject`) instead of a polymorphic id.
 
-`geography` has no foreign key to `integration.outbox_events`: geography events (aggregate types `geography_country` and `geography_market`) point at their aggregate by value, as for every outbox producer. `configuration` and `content` `scope_ref` values for COUNTRY (ISO alpha-2, upper case) and MARKET (market code, lower-case kebab) scopes stay opaque text with no foreign key (DEBT-0024 remains open); they are validated against `geography` by the service layer through a port, not by the database.
+**Address model (GEO-002).** `GEO_ADDRESSES` is the one canonical, immutable structured address; it has NO owner column (customer, provider, booking and business tables will reference `address_id` from their own schemas). Three composite foreign keys carry a repeated value on purpose: `(address_format_id, country_id)` to `GEO_ADDRESS_FORMATS` keeps the format version in the address country (`uq_address_formats__format_country`), `(administrative_area_id, country_id, administrative_area_code)` to `GEO_ADMINISTRATIVE_AREAS` keeps the area in the country and the stored code equal to the area code (`uq_administrative_areas__area_country_code`; all three NULL for a free-text or absent area, MATCH SIMPLE), and `(parent_area_id, country_id)` keeps a parent area in the same country (`uq_administrative_areas__area_country`). `GEO_ADDRESS_FORMATS` is one row per country VERSION; a partial exclusion constraint (`ex_address_formats__no_overlap`, gist) allows at most one `PUBLISHED` format of a country in force at any instant, so the relationship country to formats is 1-N with a no-overlap rule that a diagram cannot show. `GEO_ADDRESS_FORMAT_FIELDS` has a composite key `(address_format_id, field_type)` and a second unique key `(address_format_id, display_order)`; its label points at `content.entries (key)`. `GEO_AUDIT_EVENTS` now has three nullable subject keys (exactly one is set, `ck_audit_events__subject`). `location` is the only PostGIS column in the database; the diagram type name `geography_point` stands for `geography(Point,4326)`. There is no `postal_code_rules` table: the postal rule is the pattern on the `POSTAL_CODE` field row.
+
+`geography` has no foreign key to `integration.outbox_events`: geography events (aggregate types `geography_country`, `geography_market` and `geography_address_format`) point at their aggregate by value, as for every outbox producer. `configuration` and `content` `scope_ref` values for COUNTRY (ISO alpha-2, upper case) and MARKET (market code, lower-case kebab) scopes stay opaque text with no foreign key (DEBT-0024 remains open); they are validated against `geography` by the service layer through a port, not by the database.

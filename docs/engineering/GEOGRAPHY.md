@@ -1,6 +1,6 @@
 # Geography Registry
 
-The geography registry (GEO-001) holds the platform reference data that says where BananaGig operates and how a place behaves: countries, currencies, time zones and markets, plus the data-driven defaults of each market (locale, currency, time zone, distance unit, first day of the week, date and time format). Everything is a row in the `geography` schema, never a constant in code. Decisions: ADR-0021 (reference-data model and locale authority) and ADR-0022 (cross-domain reference integrity through ports).
+The geography registry (GEO-001) holds the platform reference data that says where BananaGig operates and how a place behaves: countries, currencies, time zones and markets, plus the data-driven defaults of each market (locale, currency, time zone, distance unit, first day of the week, date and time format). Everything is a row in the `geography` schema, never a constant in code. Decisions: ADR-0021 (reference-data model and locale authority) and ADR-0022 (cross-domain reference integrity through ports). The address model added in GEO-002 (administrative areas, address formats, the canonical address) is documented in `docs/engineering/ADDRESSES.md` (ADR-0023, ADR-0024).
 
 It is the sibling of the configuration registry (`docs/engineering/CONFIGURATION.md`, which values apply) and the content registry (`docs/engineering/CONTENT.md`, which words are shown): geography answers "where, in which currency, locale and time zone". It owns no locales (the content registry does) and no copy (the country display name is a content entry).
 
@@ -18,7 +18,8 @@ Not in scope (no table, column or code exists for any of them):
 
 | Not here | Where it belongs |
 |---|---|
-| Addresses, address formats, address autocomplete, geocoding, coordinates, service areas and geofences | later address and geocoding checkpoints (DEBT-0034 notes the time zone override) |
+| Provider service areas, geofences and spatial search | the service-area and search checkpoints (the address model stores the single point; the spatial index arrives with the first spatial query) |
+| A production autocomplete, geocoding or address verification vendor, per-country provider configuration | DEBT-0037 (the provider-neutral ports and mocks exist; see `docs/engineering/ADDRESSES.md`) |
 | Search and discovery by place | the search domain (OpenSearch holds derived data only) |
 | Tax rates, tax registration, invoicing rules | a later tax checkpoint (registers a readiness check, DEBT-0032) |
 | Payments, payment providers, payouts, fees and prices | a later payments checkpoint; prices and fees are configuration values, never geography columns |
@@ -111,7 +112,7 @@ erDiagram
   }
 ```
 
-`content_locales` and `content_entries` in the diagram are `content.locales` and `content.entries`. All foreign keys are `ON DELETE RESTRICT` (the two deferred default-locale keys use the default NO ACTION); rows are never deleted. Constraints worth knowing:
+The diagram shows the GEO-001 tables; the four GEO-002 address tables are in `docs/engineering/ADDRESSES.md`. `content_locales` and `content_entries` in the diagram are `content.locales` and `content.entries`. All foreign keys are `ON DELETE RESTRICT` (the two deferred default-locale keys use the default NO ACTION); rows are never deleted. Constraints worth knowing:
 
 - A country default locale must be one of its supported locales, and a market default locale one of the market's supported locales, which in turn must be supported by the country. These are composite foreign keys; the two default-locale keys are `DEFERRABLE INITIALLY DEFERRED` so a row and its first link can be written in one transaction. `market_locales.country_id` repeats the market's country on purpose (intentional denormalization, enforced by a composite foreign key).
 - A market default time zone must be one of its country's time zones (composite foreign key).
@@ -149,7 +150,7 @@ The geography service reads `content.locales` and `content.entries` with SQL for
 - The database validates the name: a format check (`ck_time_zones__iana_name_format`, at most 64 characters) and an insert trigger that refuses the `posix/` and `right/` alias trees and requires a NEW name to exist in PostgreSQL's own tz database (`pg_timezone_names`, exact case). It runs on insert only, so it reflects the server's tzdata at that moment and nothing re-validates a registered name when tzdata is updated. The identity (`time_zone_id`, `iana_name`) is immutable.
 - The service pre-validates for clear errors (`packages/geography/src/validation.ts`): the name must be in `Intl.supportedValuesOf('timeZone')` (exact case) or be one of 19 listed IANA names that Node's CLDR-based list spells differently (for example `Asia/Kolkata`; the list has `Asia/Calcutta`) and that the runtime resolves to a listed zone. Fixed-offset and alias names (`Etc/GMT+5`, `EST`, `us/pacific`, `UTC+5`, `posix/...`, `right/...`) are therefore rejected, and so is `UTC`, because the list does not contain it (it would be accepted only on a runtime that lists it). A name outside the list is `400 VALIDATION_FAILED`; a valid name the database does not know is `404 GEOGRAPHY_TIME_ZONE_NOT_FOUND` (`details.reason` `UNKNOWN_IANA_ZONE`). The database stays the final authority, so a name Node's ICU knows but PostgreSQL does not (or the reverse) is refused by one of them.
 - Instants are stored as `timestamptz`. The zone is used to display times and to decide which local day an instant falls on.
-- Each market has one default operational time zone, chosen from its country's zones. There is no zone lookup from an address or coordinates; the address checkpoint will override the market default per service location (DEBT-0034).
+- Each market has one default operational time zone, chosen from its country's zones. There is no zone lookup from coordinates inside BananaGig. GEO-002 added the per-address reference (`geography.addresses.time_zone_id`, stored only when a geocoder supplies a registered ACTIVE zone), but no geocoder exists yet and nothing consumes it: scheduling still uses the market default (DEBT-0034, in progress).
 - `createCountry` and `updateCountry` register unknown, valid IANA zones as PLANNED. Nothing activates a time zone through the API (DEBT-0031): a zone becomes ACTIVE by migration or SQL.
 
 ## Countries
@@ -180,6 +181,16 @@ A market is an operating area inside one country, for example `la-oc` ("LA & OC"
 - **Canonical scope reference forms.** A `COUNTRY` scope reference is the ISO alpha-2 code in upper case (`US`); a `MARKET` scope reference is the market code in lower-case kebab form (`la-oc`). Resolution in configuration and content matches references by exact string, so any other spelling would silently never match; the validator therefore rejects non-canonical forms.
 - **Changing a market.** `updateMarket` replaces `supportedLocales` when given and emits `market-defaults-changed` when the default locale, currency or default time zone changes. For an ACTIVE market the new values must satisfy the readiness checks before the row is written.
 - **Defaults.** `resolveMarketDefaults(code)` returns what a consumer needs to render or price for a market: market, country (code, dialing code), currency (code, `minorUnitDigits`, symbol), locale, supported locales, time zone, the four format settings and the window. There is no code fallback: a missing market, country, currency or time zone is a typed error, and the public view also requires every dependency to be ACTIVE and the market to be in effect.
+
+## Addresses
+
+GEO-002 added the address model to this schema: `administrative_areas`, `address_formats`, `address_format_fields` and `addresses` (migration `0008_address_model.sql`). It is documented in full in `docs/engineering/ADDRESSES.md`; in short:
+
+- A country address format is data: versioned, effective-dated rows with ordered fields (label content keys, requirement, length, input type, pattern, normalization) and a display template. One published format is in force per country at any instant (exclusion constraint). Server validation, the central formatter and every client form read the same definition; there is no country-specific code or column, so a new country is added with data only.
+- `geography.addresses` is the ONE canonical structured address, immutable once inserted (a changed address is a new row), so an address row is its own booking snapshot. It stores the exact format version used, an optional single PostGIS point, an optional registered time zone, a validation status and source, and the raw input. It is personal data: nothing logs it and no route reads a persisted address.
+- Providers (autocomplete, geocoder, verification) are provider-neutral ports with in-memory mocks; manual entry always works and is stored `UNVERIFIED`. No vendor is selected (DEBT-0037).
+- Eight API operations under `/api/v1/geography` (public format and area reads, stateless `validate` and `format`, management of format drafts, publication and areas), two events (`address-format-published`, `administrative-areas-updated`), the `ADDRESS_FORMAT` readiness check, and the cache key `address:<CC>` under the geography generation.
+- The audit table gained a third subject (`address_format_id`) and the actions `COUNTRY_ADMINISTRATIVE_AREAS_UPDATED`, `ADDRESS_FORMAT_DRAFTED` and `ADDRESS_FORMAT_PUBLISHED`.
 
 ## Activation and readiness
 
@@ -226,7 +237,7 @@ const unregister = registerReadinessCheck({
 });
 ```
 
-Planned codes: TAX, PAYMENT_PROVIDER, ADDRESS_FORMAT, AUTOCOMPLETE, CONTENT_TRANSLATION (none exists yet, DEBT-0032). Rules for a check: keep it fast (it runs while the market row is locked, so no slow network calls), return identifiers and facts only (no secrets or personal data in `detail`), and add a test that a failing check blocks activation with `NOT_READY`. Custom checks are application-level only: the database triggers know the four built-ins, and readiness is evaluated at activation and at default changes, not continuously, so an ACTIVE market whose custom check later fails stays ACTIVE until an operator deactivates it.
+`ADDRESS_FORMAT` (required) exists since GEO-002 (the market country has a PUBLISHED address format in force; registered in `apps/api/src/index.ts`). Planned codes: TAX, PAYMENT_PROVIDER, AUTOCOMPLETE, CONTENT_TRANSLATION (none exists yet, DEBT-0032). Rules for a check: keep it fast (it runs while the market row is locked, so no slow network calls), return identifiers and facts only (no secrets or personal data in `detail`), and add a test that a failing check blocks activation with `NOT_READY`. Custom checks are application-level only: the database triggers know the four built-ins, and readiness is evaluated at activation and at default changes, not continuously, so an ACTIVE market whose custom check later fails stays ACTIVE until an operator deactivates it.
 
 ## Status machine
 
@@ -284,11 +295,13 @@ Base `/api/v1/geography`; standard envelope `{ data, meta: { correlationId } }`;
 | POST `/countries` (201, created PLANNED), PUT `/countries/:code`, POST `/countries/:code/activation` | `geography-write` |
 | POST `/markets` (201, created PLANNED), PUT `/markets/:code`, POST `/markets/:code/activation` | `geography-write` |
 
+The address operations (`/countries/:code/address-format`, `/countries/:code/administrative-areas`, `/addresses/validate`, `/addresses/format` and the format management routes) are listed in `docs/engineering/ADDRESSES.md`.
+
 Activation takes `{ active: boolean, reason }`; every mutation requires a `reason` (1 to 1000 characters). Path parameters are validated (`US`, `la-oc` form), so `/countries/us` is a 400.
 
 Request bodies are validated strictly BEFORE Fastify's ajv step (`strictBody` in `apps/api/src/modules/geography/routes.ts`, listed after the authorization hook so 401 and 403 still win over 400). Ajv coercion stays on app-wide for query strings and would turn `{"active":1}` into `true`; here that body is a 400 `VALIDATION_FAILED`. Free text typed by an administrator (the market `name`, up to 120 characters, and every `reason`) uses the contracts `adminText` rule (`packages/contracts/src/geography.ts`): it rejects C0 and C1 control characters (including NUL, newlines and tabs), bidirectional override and isolate controls (U+202A to U+202E, U+2066 to U+2069), unpaired surrogates, and text that is blank once whitespace, NBSP and zero-width spaces are ignored. A NUL or untranslatable character that still reaches the database (SQLSTATE `22021`, `22P05`) maps to `VALIDATION_FAILED` with `details.reason` `FORBIDDEN_CHARACTER`.
 
-Errors use the standard model with code `GEOGRAPHY_<code>` (`constraint` and driver `cause` are stripped from `details`). All 28 guard `RAISE`s in migration 0007 carry `DETAIL = 'geography_rule:<KEY>'` (15 keys) and the service classifies trigger failures (SQLSTATE `23000`) on that key only, never on the message text, which contains user-chosen codes. Deactivating a content locale that is the default of an ACTIVE country or market is raised by the same guard but reaches the caller as a CONTENT error: `409 CONTENT_INVALID_STATE` with `details.reason` `LOCALE_IN_USE_BY_GEOGRAPHY` (content matches the key `geography_rule:LOCALE_IS_ACTIVE_DEFAULT`).
+Errors use the standard model with code `GEOGRAPHY_<code>` (`constraint` and driver `cause` are stripped from `details`). All 28 guard `RAISE`s in migration 0007 carry `DETAIL = 'geography_rule:<KEY>'` (15 keys) and the service classifies trigger failures (SQLSTATE `23000`) on that key only, never on the message text, which contains user-chosen codes. Migration 0008 adds nine more keys for the address model (24 in total; `docs/data/DATA_MODEL.md`). Deactivating a content locale that is the default of an ACTIVE country or market is raised by the same guard but reaches the caller as a CONTENT error: `409 CONTENT_INVALID_STATE` with `details.reason` `LOCALE_IN_USE_BY_GEOGRAPHY` (content matches the key `geography_rule:LOCALE_IS_ACTIVE_DEFAULT`).
 
 | Service code | HTTP | Meaning |
 |---|---|---|
@@ -312,7 +325,7 @@ Through the transactional outbox (ADR-0012) in the same transaction as the chang
 | `bananagig.geography.market-deactivated.v1` | an ACTIVE market becomes INACTIVE (retiring a PLANNED one emits nothing) | `marketCode`, `countryCode` |
 | `bananagig.geography.market-defaults-changed.v1` | a market update changes its default locale, currency or default time zone (`cause` `MARKET`); a country update changes distance unit, first day of week, date format or time format, once per market of that country (`cause` `COUNTRY`) | `marketCode`, `countryCode`, `changedFields` (names only), `cause` |
 
-Country creation, country updates that change no format, and retiring a PLANNED country or market emit no event (they are audited). Activation is idempotent: activating an already ACTIVE row writes nothing and emits nothing. The seed emits none.
+Country creation, country updates that change no format, and retiring a PLANNED country or market emit no event (they are audited). Activation is idempotent: activating an already ACTIVE row writes nothing and emits nothing. The seed emits none. GEO-002 adds `bananagig.geography.address-format-published.v1` (aggregate `geography_address_format`) and `bananagig.geography.administrative-areas-updated.v1` (see `docs/engineering/ADDRESSES.md`).
 
 Audit: every management mutation writes a `geography.audit_events` row (actor, action, country or market, `changes` as `{field: [old, new]}`, reason, correlation id) in the same transaction. Reference values are public, so values are recorded; audit rows and actors are never returned by the API.
 
@@ -322,7 +335,7 @@ PostgreSQL is the source of truth; Valkey only accelerates public reads (`packag
 
 | Key | Purpose |
 |---|---|
-| `bg:{env}:geo:v1:<what>:<geographyGen>.<contentLocGen>` | one cached public read (`country:US`, `countries`, `market:la-oc`, `markets`, `defaults:la-oc`, `currencies`, `currency:USD`, `timezones`) |
+| `bg:{env}:geo:v1:<what>:<geographyGen>.<contentLocGen>` | one cached public read (`country:US`, `countries`, `market:la-oc`, `markets`, `defaults:la-oc`, `currencies`, `currency:USD`, `timezones`, and since GEO-002 `address:US`, the public address formats and areas of a country) |
 | `bg:{env}:geo:gen` | geography generation, bumped after every committed change |
 | `bg:{env}:content:locgen` | the content registry's locale generation, read by key name (DEBT-0033) |
 
@@ -365,6 +378,8 @@ Both memoize in process for 60 s (including `null` and `false`, bounded to 500 e
 ## Seeds
 
 Migration 0007 seeds deterministic launch reference data (no outbox events; audit rows by `system:migration`): currency `USD` (840, 2 digits, ACTIVE); time zones `America/New_York`, `America/Chicago`, `America/Denver`, `America/Los_Angeles` (ACTIVE); the content entry `geography.country.us.name` taken through the real content lifecycle (five audit rows, no trigger disabled); country `US` (USA, 840, `+1`, `USD`, `en-US`, `MILES`, `SUNDAY`, `MDY`, `12_HOUR`) created PLANNED, linked, then activated; and market `la-oc` ("LA & OC", `en-US`, `USD`, `America/Los_Angeles`) seeded PLANNED.
+
+Migration 0008 (GEO-002) additionally seeds the US address data: 51 administrative areas, US address format version 1 (published) and the address label and message content entries (`docs/engineering/ADDRESSES.md`, `docs/data/DATA_MODEL.md`).
 
 `la-oc` is a business assumption: the launch market is Los Angeles and Orange County. It is inert (invisible publicly, resolving nothing for content) until the owner confirms the name and scope and activates it with `POST /api/v1/geography/markets/la-oc/activation`. No other country, currency or market is seeded, and the United States has only those four time zones (Phoenix, Anchorage, Honolulu and the rest are absent, so `GET /countries/US` lists a partial set; DEBT-0031).
 

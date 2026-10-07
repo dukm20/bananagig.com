@@ -97,6 +97,7 @@ export function toAppError(err: unknown): never {
   const code = `GEOGRAPHY_${err.code}`;
   switch (err.code) {
     case 'COUNTRY_NOT_FOUND':
+    case 'ADDRESS_FORMAT_NOT_FOUND':
     case 'MARKET_NOT_FOUND':
     case 'CURRENCY_NOT_FOUND':
     case 'TIME_ZONE_NOT_FOUND':

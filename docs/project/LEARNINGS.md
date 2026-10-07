@@ -708,3 +708,79 @@ No `toBeLessThan(<small ms>)` on real time unless it compares against a delibera
 
 ### Evidence
 `packages/content/src/template.test.ts` (render-count test), `packages/content/src/markup.test.ts` (generous ceiling), DEBT-0035.
+
+## LRN-0029 — The PRD is a .docx in the design kit; read its numbered requirements before designing a product checkpoint
+
+Date: 2026-10-07
+Checkpoint: GEO-002
+Domain: process
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0023
+Related skill: skills/geography/SKILL.md
+
+### Context
+GEO-002 was first designed from the checkpoint prompt alone because a shallow search for a PRD found nothing. The PRD exists at `docs/design/BananaGig_Brand_Kit/BananaGig_PRD.docx`. Reading SV-10 changed four decisions before any test was written: manual address entry is marked unverified for review, an address stores the administrative area code and name, the form and the server show the same message, and a second country must need no deployment (so administrative areas needed a management write path).
+
+### Learning
+Requirements that live in a Word file are invisible to grep and to `*.md` searches. Extract the text once (a .docx is a zip; the text is in `word/document.xml` as `<w:t>` runs) and search it by requirement id.
+
+### Why it matters
+Designing from a summary produces plausible but wrong defaults (here: calling a manual address FORMAT_VALID) that are cheap to fix before coding and expensive after.
+
+### Reuse rule
+At the start of a product checkpoint, extract the PRD into the scratchpad and cite the governing requirement ids in the review.
+
+### Evidence
+`docs/design/BananaGig_Brand_Kit/BananaGig_PRD.docx` (SV-10.01 to SV-10.12 and its acceptance criteria), `docs/engineering/ADDRESSES.md`.
+
+## LRN-0030 — Take the start time of a serialized publication from the clock after the lock, not from now()
+
+Date: 2026-10-07
+Checkpoint: GEO-002
+Domain: database
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0023
+Related skill: skills/database/SKILL.md
+
+### Context
+Publishing an address format closes the open-ended predecessor at the new start, and publications of one country serialize on the country row. PostgreSQL `now()` is the transaction START time, so a publication that waited for the lock has a `now()` earlier than the start the winner just committed, which would make its start precede its predecessor's.
+
+### Learning
+Read `clock_timestamp()` after the locks are held and require the new start to be strictly later than the predecessor's start (a typed retryable conflict otherwise). Time-ordered history that is serialized by a lock needs a clock that is read inside the critical section.
+
+### Why it matters
+With `now()` two concurrent publications can produce an empty or inverted period, or a spurious overlap error.
+
+### Reuse rule
+Any "close the open end and start the next one" operation computes the boundary after taking the lock, with `clock_timestamp()`, and checks it is after the previous start.
+
+### Evidence
+`packages/geography/src/address-service.ts` (`publishFormat`), `packages/geography/src/address.itest.ts` (concurrent publication test).
+
+## LRN-0031 — When the unauthenticated GitHub API is rate limited, read the run result from the public run page
+
+Date: 2026-10-07
+Checkpoint: GEO-002
+Domain: ci
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/infrastructure/SKILL.md
+
+### Context
+The CI watcher polls the public Actions API and stops with "API rate limit exceeded" after enough calls (60 per hour per address, shared with other tools), while `gh` is not installed.
+
+### Learning
+`https://github.com/<owner>/<repo>/actions/runs/<id>` is a public HTML page whose text contains `Status Success|Failure` and each job's duration; fetching it with `curl` and stripping tags answers "is the run green" without the API. Check-run annotations and logs still need the API or authentication.
+
+### Why it matters
+A pending "is CI green" precondition would otherwise block a checkpoint on an hour-long rate limit.
+
+### Reuse rule
+Use the API when it answers; fall back to the run page text for the final status only.
+
+### Evidence
+Run 37578136291 (CI-003) read as `Status Success`, verify 4m 18s, compose-smoke 3m 49s.
+

@@ -3,13 +3,23 @@ import {
   API_PREFIX,
   CORRELATION_HEADER,
   ErrorResponse,
+  AddressFormatResponse,
+  AddressValidationResponse,
+  AdministrativeAreaListResponse,
+  FormatAddressResponse,
   LocaleListResponse,
   ResolveContentResponse,
   ResolveManyContentResponse,
   SystemInfoResponse,
   WhoAmIResponse,
+  type AddressFormatDto,
+  type AddressInput,
+  type AddressValidationResultDto,
+  type AdministrativeAreaListDto,
   type ContentContext,
+  type FormattedAddressDto,
   type LocaleDto,
+  type NormalizedAddressDto,
   type ResolvedContentDto,
   type SystemInfo,
   type WhoAmI,
@@ -22,6 +32,8 @@ export class ApiError extends Error {
     public readonly category: string,
     message: string,
     public readonly correlationId?: string,
+    /** Error details of the standard envelope (for example the address issues of a rejected format request: field, code and message key only). */
+    public readonly details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -54,6 +66,14 @@ export interface ResolveManyContentInput {
   timeZone?: string;
 }
 
+/** Options of the central address formatter. */
+export interface FormatAddressInput {
+  /** Locale of the country line (default: the country's default locale). */
+  locale?: string;
+  /** Append the country name as the last line (an address shown outside its own country). */
+  includeCountry?: boolean;
+}
+
 export function createApiClient(opts: ApiClientOptions) {
   const f = opts.fetch ?? fetch;
   async function request<T>(path: string, parse: (json: unknown) => T, body?: unknown): Promise<{ data: T; correlationId: string | undefined }> {
@@ -78,7 +98,8 @@ export function createApiClient(opts: ApiClientOptions) {
     const correlationId = res.headers.get(CORRELATION_HEADER) ?? undefined;
     if (!res.ok) {
       const e = ErrorResponse.safeParse(json);
-      if (e.success) throw new ApiError(res.status, e.data.error.code, e.data.error.category, e.data.error.message, e.data.error.correlationId);
+      if (e.success)
+        throw new ApiError(res.status, e.data.error.code, e.data.error.category, e.data.error.message, e.data.error.correlationId, e.data.error.details);
       throw new ApiError(res.status, 'UNEXPECTED_RESPONSE', 'INTERNAL', `Unexpected ${res.status} response`, correlationId);
     }
     let data: T;
@@ -116,6 +137,35 @@ export function createApiClient(opts: ApiClientOptions) {
     /** POST /api/v1/content/resolve-many (public). Keys the registry cannot serve are simply absent from `items`. */
     async resolveManyContent(input: ResolveManyContentInput): Promise<{ evaluatedAt: string; items: ResolvedContentDto[] }> {
       return (await request('/content/resolve-many', (j) => ResolveManyContentResponse.parse(j).data, input)).data;
+    },
+    /** GET /api/v1/geography/countries/:code/address-format (public: ACTIVE countries only). The form definition; labels are content keys. */
+    async getAddressFormat(countryCode: string): Promise<AddressFormatDto> {
+      return (await request(`/geography/countries/${encodeURIComponent(countryCode)}/address-format`, (j) => AddressFormatResponse.parse(j).data)).data;
+    },
+    /** GET /api/v1/geography/countries/:code/administrative-areas (public: ACTIVE countries and areas only), in picker order. */
+    async listAdministrativeAreas(countryCode: string): Promise<AdministrativeAreaListDto> {
+      return (
+        await request(`/geography/countries/${encodeURIComponent(countryCode)}/administrative-areas`, (j) => AdministrativeAreaListResponse.parse(j).data)
+      ).data;
+    },
+    /**
+     * POST /api/v1/geography/addresses/validate (public, stateless: nothing is stored). An invalid address is a normal result (`valid: false` with
+     * issue codes and content message keys, never the rejected values); an ApiError (400) means the request itself was malformed.
+     */
+    async validateAddress(address: AddressInput): Promise<AddressValidationResultDto> {
+      return (await request('/geography/addresses/validate', (j) => AddressValidationResponse.parse(j).data, { address })).data;
+    },
+    /**
+     * POST /api/v1/geography/addresses/format (public, stateless): the one central formatter, so clients never build the string. An address that is
+     * not valid for its country is an ApiError (400) whose `details.issues` carry field, code and message key.
+     */
+    async formatAddress(address: AddressInput, opts: FormatAddressInput = {}): Promise<{ address: NormalizedAddressDto; formatted: FormattedAddressDto }> {
+      const body = {
+        address,
+        ...(opts.locale !== undefined ? { locale: opts.locale } : {}),
+        ...(opts.includeCountry !== undefined ? { includeCountry: opts.includeCountry } : {}),
+      };
+      return (await request('/geography/addresses/format', (j) => FormatAddressResponse.parse(j).data, body)).data;
     },
   };
 }

@@ -56,7 +56,7 @@ pnpm db:backup-test                             # pg_dump -> restore -> verify (
 - New tables: constraint-violation tests (each CHECK/UNIQUE/FK rejects bad data) and rollback tests.
 - Locking code: prove blocking, NOWAIT/SKIP LOCKED behavior, and the retryable error codes (`locks.itest.ts` shows the patterns: two transactions and deferred barriers).
 - Timeouts: assert SQLSTATE 57014 (statement) and 55P03 (lock).
-- Spatial columns: GiST index usable (`enable_seqscan = off` plus EXPLAIN) and ST_DWithin in meters (`postgis.itest.ts`).
+- Spatial columns: GiST index usable (`enable_seqscan = off` plus EXPLAIN) and ST_DWithin in meters (`postgis.itest.ts`). A spatial column nobody filters by yet (`geography.addresses.location`) gets no index until the first spatial query adds it through its own review.
 
 ## Data-model considerations
 
@@ -81,6 +81,8 @@ This skill is the data-model process: see the review gate above, `DATABASE_CONVE
 - For history that must be immutable and non-overlapping, store a half-open range, add a gist exclusion constraint (`btree_gist`), and allow exactly one closure of the open end through a guard trigger (LRN-0015, ADR-0016). Reference tables for structural enums (for example `configuration.scope_levels`) are seeded by migration; business values are never seeded.
 - When the unit of history is a document, keep one versions table that carries its own lifecycle and a guard trigger for the state machine (content, ADR-0018). Compute integrity hashes in an insert trigger (`content.versions.body_sha256`), use `UNIQUE NULLS NOT DISTINCT` for holder keys with a nullable scope reference, and seed product text through the real lifecycle inside a `DO` block so guards, audit and the exclusion constraint all apply (migration `0006`); never insert PUBLISHED rows directly or disable triggers.
 - For reference data with an activation status (geography, ADR-0021): a guard trigger makes the initial status one-way (PLANNED is never written back) and refuses ACTIVE without its ACTIVE dependencies; the activation reads dependency rows with `FOR SHARE` while a deactivation needs the row lock, so exactly one of two racing changes wins; link rows are immutable (a BEFORE UPDATE `forbid_mutation` trigger, add or delete only). Use one lock order in triggers and service (children first by id order, then the owner, then the dependency rows), lock a row with a bare `SELECT 1 ... FOR UPDATE|SHARE` and read it in a second statement (joined and `ARRAY(subselect)` columns are stale after a lock wait in READ COMMITTED), and let a rule that reads sibling rows lock the owning row first. Give every guard `RAISE` a machine-readable `DETAIL = 'geography_rule:<KEY>'` so the service classifies on the key, never on message text; accept that a raw SQL update locks its row before its trigger can run, so some inversions remain and surface as retryable `40P01`. Express "a child may only use what its parent supports" with composite foreign keys (`uq_markets__market_country`, `market_locales (country_id, locale)`) and "default is one of the members" with a DEFERRABLE INITIALLY DEFERRED composite key to the membership table. Validate names against the engine's own data (`pg_timezone_names` for IANA zones) and derive parts of a code with generated columns (`content.locales.language`, `script`, `region`) instead of parsing in code. Seed reference rows in the same order the service would (created PLANNED, linked, then activated) so the guards run.
+- An immutable row can double as a snapshot (geography, ADR-0023): refuse UPDATE with a trigger, make enrichment an insert of a new row, let owning tables reference the row with `ON DELETE RESTRICT`, and do not copy its columns into a snapshot table (personal data in two places). A value that is denormalized on purpose but must stay consistent travels through a composite foreign key that includes it (`geography.addresses (administrative_area_id, country_id, administrative_area_code)` to a unique key on the parent), so the copy cannot drift; give the parent the supporting `UNIQUE` key the composite reference needs.
+- For versioned, effective-dated definitions (address formats, ADR-0023) a draft is the future published row: create it complete and immutable, publish once through a guard trigger that raises the start only upward, keep the periods half-open with a partial gist exclusion constraint on the published rows, close the open end of the predecessor exactly once in the successor's transaction, and serialize publications by locking the owning country row (`FOR UPDATE`) first; the exclusion constraint stays the final arbiter. Seed such a row the way the service would (draft, fields, publish) so the guard runs.
 
 ## Do not
 
@@ -93,8 +95,8 @@ This skill is the data-model process: see the review gate above, `DATABASE_CONVE
 
 ## Related ADRs
 
-ADR-0001, ADR-0004, ADR-0008, ADR-0009, ADR-0010, ADR-0011, ADR-0012, ADR-0021
+ADR-0001, ADR-0004, ADR-0008, ADR-0009, ADR-0010, ADR-0011, ADR-0012, ADR-0021, ADR-0023
 
 ## Last reviewed
 
-2026-10-07 (GEO-001)
+2026-10-07 (GEO-002)

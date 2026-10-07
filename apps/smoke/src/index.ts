@@ -68,6 +68,29 @@ async function ensureDevtestGeography(admin: string): Promise<void> {
     );
   const zz = (await request('geography', 'GET', '/countries/ZZ')).json.data;
   if (zz.status !== 'ACTIVE') await request('geography', 'POST', '/countries/ZZ/activation', { active: true, reason: 'smoke test' });
+
+  // A market can only be activated when its country has an address format in force (ADDRESS_FORMAT readiness check), so ZZ gets one through the
+  // management API. Idempotent: a published format is reused, a draft left by an interrupted run is published instead of creating another.
+  const zzFormat = await request('geography', 'GET', '/countries/ZZ/address-format', undefined, [200, 404]);
+  if (zzFormat.status === 404) {
+    const versions = (await request('geography', 'GET', '/countries/ZZ/address-formats')).json.data as { version: number; status: string }[];
+    let version = versions.find((f) => f.status === 'DRAFT')?.version;
+    if (version === undefined) {
+      const draft = await request('geography', 'POST', '/countries/ZZ/address-formats', {
+        displayTemplate: '{ADDRESS_LINE_1}\n{ADDRESS_LINE_2}\n{LOCALITY} {ADMINISTRATIVE_AREA} {POSTAL_CODE}',
+        fields: [
+          { fieldType: 'ADDRESS_LINE_1', contentLabelKey: 'address.field.line1', required: true, maxLength: 100 },
+          { fieldType: 'ADDRESS_LINE_2', contentLabelKey: 'address.field.line2', required: false, maxLength: 100 },
+          { fieldType: 'LOCALITY', contentLabelKey: 'address.field.city', required: true, maxLength: 60 },
+          { fieldType: 'ADMINISTRATIVE_AREA', contentLabelKey: 'address.field.state', required: false, maxLength: 50 },
+          { fieldType: 'POSTAL_CODE', contentLabelKey: 'address.field.postal_code', required: false, maxLength: 10 },
+        ],
+        reason: 'DEV/TEST ONLY smoke country address format',
+      });
+      version = draft.json.data.version as number;
+    }
+    await request('geography', 'POST', `/countries/ZZ/address-formats/${version}/publication`, { reason: 'DEV/TEST ONLY smoke country address format' });
+  }
 }
 async function check(name: string, fn: () => Promise<string | void>): Promise<void> {
   try {
@@ -824,6 +847,101 @@ await check('Geography', async () => {
   return `US/USD public data, la-oc ${laoc.status} (${laocPublic ? 'public and listed' : 'hidden publicly'}, defaults for admin), ${marketCode} on ZZ/qaa: PLANNED hidden -> ACTIVE listed -> INACTIVE hidden; fr-CA -> qaa with market, en-US without; MARKET scope la-oc ${laoc.status === 'INACTIVE' ? 'rejected (retired)' : 'accepted'}, no-such-market rejected`;
 });
 
+await check('Addresses', async () => {
+  // Country-driven address model, anonymous caller: the US form definition, the area lookup and the stateless validate/format operations.
+  // The address below is a test address, not user data. Nothing here is persisted (there is no route that stores an address).
+  const call = async (method: 'GET' | 'POST', path: string, body?: unknown) => {
+    const r = await get(`${api}/api/v1/${path}`, {
+      method,
+      headers: body !== undefined ? { 'content-type': 'application/json' } : {},
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    const text = await r.text();
+    return { status: r.status, headers: r.headers, text, json: JSON.parse(text) as any }; // eslint-disable-line @typescript-eslint/no-explicit-any
+  };
+  const assert = (ok: boolean, what: string): void => {
+    if (!ok) throw new Error(what);
+  };
+  // fields that must never reach an anonymous caller: raw input, identifiers, lifecycle internals
+  const INTERNAL = ['rawInput', 'raw_input', 'addressId', 'addressFormatId', 'administrativeAreaId', 'status', 'displayTemplate', 'createdBy'];
+  const noInternals = (what: string, text: string): void => {
+    for (const w of INTERNAL) assert(!text.includes(`"${w}"`), `${what} exposes the internal field ${w}`);
+  };
+
+  // (1) the US form definition, in field order, with content label keys
+  const format = await call('GET', 'geography/countries/US/address-format');
+  assert(format.status === 200, `US address format -> ${format.status}`);
+  const fields = format.json.data.fields as { fieldType: string; contentLabelKey: string; required: boolean }[];
+  const order = fields.map((f) => f.fieldType).join(',');
+  assert(order === 'ADDRESS_LINE_1,ADDRESS_LINE_2,LOCALITY,ADMINISTRATIVE_AREA,POSTAL_CODE', `US address field order wrong (${order})`);
+  assert(format.json.data.administrativeAreaMode === 'LOOKUP' && format.json.data.countryCode === 'US', 'US administrative area mode should be LOOKUP');
+  assert(
+    fields.every((f) => f.contentLabelKey.startsWith('address.field.')),
+    'US field labels must be address.field.* content keys',
+  );
+  noInternals('the anonymous address format', format.text);
+
+  // labels are content: the US wording comes from the content registry with the country as context
+  const label = async (key: string, country: string): Promise<string> =>
+    (await call('POST', 'content/resolve', { key, locale: 'en-US', context: { country } })).json.data?.value;
+  const stateKey = fields.find((f) => f.fieldType === 'ADMINISTRATIVE_AREA')!.contentLabelKey;
+  const stateLabel = await label(stateKey, 'US');
+  assert(stateLabel === 'State', `the US state label should resolve to "State" (got ${stateLabel})`);
+
+  // (2) administrative areas: 50 states and DC
+  const areas = await call('GET', 'geography/countries/US/administrative-areas');
+  const list = areas.json.data.areas as { code: string }[];
+  assert(areas.status === 200 && areas.json.data.mode === 'LOOKUP', `US administrative areas -> ${areas.status}`);
+  assert(list.length === 51, `expected 51 US areas (got ${list.length})`);
+  assert(list.some((a) => a.code === 'CA') && list.some((a) => a.code === 'DC'), 'US areas must include CA and DC');
+  noInternals('the anonymous administrative areas', areas.text);
+
+  // (3) validate: normalized structure; no-store; nothing internal
+  const address = { countryCode: 'US', addressLine1: '123 Main St', locality: 'Irvine', administrativeArea: 'CA', postalCode: '92618' };
+  const valid = await call('POST', 'geography/addresses/validate', { address });
+  assert(valid.status === 200 && valid.json.data.valid === true, `a valid address was not accepted (${valid.status} ${valid.text.slice(0, 200)})`);
+  const n = valid.json.data.address;
+  assert(
+    n.countryCode === 'US' &&
+      n.addressLine1 === '123 Main St' &&
+      n.locality === 'Irvine' &&
+      n.administrativeAreaCode === 'CA' &&
+      n.administrativeAreaName === 'California' &&
+      n.postalCode === '92618' &&
+      n.addressLine2 === null,
+    `normalized address wrong (${JSON.stringify(n)})`,
+  );
+  assert(valid.headers.get('cache-control') === 'no-store', `validate must answer Cache-Control: no-store (got ${valid.headers.get('cache-control')})`);
+  noInternals('the validate response', valid.text);
+
+  // (4) format: the central formatter
+  const formatted = await call('POST', 'geography/addresses/format', { address });
+  assert(formatted.status === 200, `format -> ${formatted.status} ${formatted.text.slice(0, 200)}`);
+  const lines = formatted.json.data.formatted.lines as string[];
+  assert(lines.join('|') === '123 Main St|Irvine, CA 92618', `formatted address wrong (${JSON.stringify(lines)})`);
+  assert(formatted.headers.get('cache-control') === 'no-store', 'format must answer Cache-Control: no-store');
+  noInternals('the format response', formatted.text);
+
+  // (5) an invalid ZIP is a normal result, with a content message key and no echo of the rejected value
+  const invalid = await call('POST', 'geography/addresses/validate', { address: { ...address, postalCode: '9261' } });
+  const issue = invalid.json.data?.issues?.[0];
+  assert(invalid.status === 200 && invalid.json.data.valid === false && invalid.json.data.address === null, 'an invalid ZIP must be valid=false');
+  assert(
+    issue?.field === 'postalCode' && issue.code === 'INVALID_FORMAT' && issue.messageKey === 'address.error.invalid_format',
+    `issue wrong (${JSON.stringify(issue)})`,
+  );
+  assert(!invalid.text.includes('9261'), 'the rejected value must not be echoed');
+  assert(invalid.headers.get('cache-control') === 'no-store', 'an invalid validation must also be no-store');
+  const message = await label(issue.messageKey, 'US');
+  assert(typeof message === 'string' && message.length > 0, 'the validation message key must resolve in content');
+  const refused = await call('POST', 'geography/addresses/format', { address: { ...address, postalCode: '9261' } });
+  assert(refused.status === 400 && !refused.text.includes('9261'), `format of an invalid address must be 400 without the value (got ${refused.status})`);
+
+  // (6) nothing persists or reads a stored address
+  assert((await call('POST', 'geography/addresses', { address })).status === 404, 'there must be no route that creates an address');
+  return `US format ${order.split(',').length} fields in order, ${list.length} areas, validate normalizes, format "${lines.join(' / ')}", bad ZIP -> valid=false, no-store, no internal fields`;
+});
+
 // Caddy routes are exercised exactly as a browser would reach them (Host header), from inside the network.
 const proxy = (host: string, path: string, method = 'GET'): Promise<{ status: number; body: string }> =>
   new Promise((resolve, reject) => {
@@ -887,6 +1005,7 @@ const order = [
   'Configuration Registry',
   'Content Registry',
   'Geography',
+  'Addresses',
   'NATS Events',
   'JetStream',
   'SeaweedFS Storage',

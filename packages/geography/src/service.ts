@@ -122,6 +122,19 @@ function guardError(rule: string | undefined): GeographyError {
       return new GeographyError('INVALID_STATE', 'the record is immutable (identity fields cannot change and rows are never deleted)', { reason: 'IMMUTABLE' });
     case 'NOT_IANA':
       return new GeographyError('TIME_ZONE_NOT_FOUND', 'the time zone is not a known IANA time zone', { reason: 'UNKNOWN_IANA_ZONE' });
+    case 'FORMAT_NOT_PUBLISHED':
+      return new GeographyError('INVALID_STATE', 'the address format is not published', { reason: rule });
+    case 'FORMAT_NOT_DRAFT':
+    case 'FORMAT_MUST_START_AS_DRAFT':
+    case 'FORMAT_STATUS_TRANSITION':
+    case 'FORMAT_IMMUTABLE':
+      return new GeographyError('INVALID_STATE', 'a published address format is immutable; create a new version', { reason: 'FORMAT_IMMUTABLE' });
+    case 'FORMAT_INCOMPLETE':
+    case 'FORMAT_TEMPLATE_MISMATCH':
+    case 'LOOKUP_WITHOUT_AREAS':
+      return new GeographyError('VALIDATION_FAILED', 'the address format cannot be published as defined', { reason: rule });
+    case 'AREA_NOT_ACTIVE':
+      return new GeographyError('VALIDATION_FAILED', 'the administrative area is not ACTIVE', { reason: rule });
     default:
       return new GeographyError('INVALID_STATE', 'the operation violates a geography integrity rule');
   }
@@ -143,7 +156,14 @@ export function mapDbError(err: unknown): never {
   // NUL bytes (22021) and \u0000 in JSON (22P05) cannot be stored in text or jsonb
   if (e.code === '22021' || e.code === '22P05')
     throw new GeographyError('VALIDATION_FAILED', 'the request contains a character that is not allowed', { reason: 'FORBIDDEN_CHARACTER' });
-  if (e.code === '23P01') throw new GeographyError('CONFLICT', 'the change conflicts with an existing record', { constraint });
+  if (e.code === '23P01')
+    throw new GeographyError(
+      'CONFLICT',
+      constraint === 'ex_address_formats__no_overlap'
+        ? 'another address format of the country is in force during that period'
+        : 'the change conflicts with an existing record',
+      constraint === 'ex_address_formats__no_overlap' ? { reason: 'FORMAT_PERIOD_OVERLAP' } : { constraint },
+    );
   if (e.code === '23505') {
     const what = constraint?.includes('markets') ? 'a market with this code already exists' : 'a record with this identity already exists';
     throw new GeographyError('CONFLICT', constraint?.startsWith('uq_countries') ? 'a country with this ISO code already exists' : what, { constraint });
@@ -156,6 +176,8 @@ export function mapDbError(err: unknown): never {
   if (e.code === '23503') {
     if (constraint === 'fk_countries__default_currency_code' || constraint === 'fk_markets__currency_code')
       throw new GeographyError('CURRENCY_NOT_FOUND', 'the currency is not registered', { constraint });
+    if (constraint === 'fk_address_format_fields__label_key')
+      throw new GeographyError('VALIDATION_FAILED', 'a field label names a content key that does not exist', { reason: 'UNKNOWN_CONTENT_KEY' });
     if (constraint === 'fk_country_locales__locale') throw new GeographyError('LOCALE_NOT_FOUND', 'the locale is not registered', { constraint });
     if (constraint === 'fk_country_time_zones__time_zone_id')
       throw new GeographyError('TIME_ZONE_NOT_FOUND', 'the time zone is not registered', { constraint });
@@ -328,7 +350,7 @@ function parseRequest<T>(schema: SchemaLike<T>, input: unknown, localeFields: re
   if (!r.success) throw requestFailure(r.error);
   return r.data;
 }
-const requireReason = (reason: unknown): string => {
+export const requireReason = (reason: unknown): string => {
   if (typeof reason !== 'string' || reason.trim().length === 0 || reason.length > 1000)
     throw invalid('reason must be a non-blank string of at most 1000 characters', { reason: 'INVALID_FIELD', field: 'reason' });
   return reason;

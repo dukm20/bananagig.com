@@ -354,16 +354,16 @@ Why deferred: The launch geography is one country; the dataset, import format an
 Exit criteria: A reviewed bulk import of the reference datasets, management endpoints (audited) for currencies, time zones and country/market locale activation, and an admin view of readiness.
 Target checkpoint: first checkpoint that opens a second country or currency
 
-## DEBT-0032 — Market readiness covers only the four built-in dependency checks
+## DEBT-0032 — Market readiness covers only the built-in dependency checks and ADDRESS_FORMAT
 
-Status: OPEN
+Status: IN_PROGRESS
 Severity: LOW
 Introduced by: GEO-001
 Owner/domain: geography / each owning domain
-Description: Market activation runs the extensible readiness registry, which today holds only COUNTRY_ACTIVE, CURRENCY_ACTIVE, LOCALE_ACTIVE and TIME_ZONE_ACTIVE (the database enforces the same four with triggers). Tax, payment provider, address format, address autocomplete and content translation readiness are not checked because those domains do not exist yet. A market can therefore be ACTIVE without any of them.
+Description: Market activation runs the extensible readiness registry. It holds COUNTRY_ACTIVE, CURRENCY_ACTIVE, LOCALE_ACTIVE and TIME_ZONE_ACTIVE (the database enforces the same four with triggers) and, since GEO-002, ADDRESS_FORMAT (the market country has a published address format in force; registered at API start-up, application level only). Tax, payment provider, address autocomplete and content translation readiness are not checked because those domains do not exist yet. A market can therefore be ACTIVE without any of them. The PRD (AD-01, SV-10) also wants a readiness checklist before a COUNTRY can be activated, with a preview of the rendered form; the registry is market-level only today.
 Why deferred: The checks need their domains; the registry (`registerReadinessCheck`) is the designed extension point.
-Exit criteria: Each domain registers its readiness check when it ships (TAX, PAYMENT_PROVIDER, ADDRESS_FORMAT, AUTOCOMPLETE, CONTENT_TRANSLATION) with tests that a failing check blocks activation (`NOT_READY`).
-Target checkpoint: the checkpoint that introduces each domain (tax, payments, GEO-002 address formats)
+Exit criteria: Each remaining domain registers its readiness check when it ships (TAX, PAYMENT_PROVIDER, AUTOCOMPLETE, CONTENT_TRANSLATION) with tests that a failing check blocks activation (`NOT_READY`); ADDRESS_FORMAT is done (GEO-002). A country-level readiness checklist exists with the admin UI (DEBT-0039).
+Target checkpoint: the checkpoint that introduces each domain (tax, payments, autocomplete, translation)
 
 ## DEBT-0033 — Geography cache invalidation is generation-based and coupled to content's locale generation key
 
@@ -378,14 +378,14 @@ Target checkpoint: when a second consumer of geography reads needs tighter fresh
 
 ## DEBT-0034 — No automatic time zone lookup; the market default time zone is the only operational zone
 
-Status: OPEN
+Status: IN_PROGRESS
 Severity: LOW
 Introduced by: GEO-001
 Owner/domain: geography
-Description: Each market has one default operational time zone chosen from its country's zones. There is no lookup of a time zone from a service address or coordinates, so a booking that crosses a zone boundary inside a market uses the market default until the address checkpoint can override it.
-Why deferred: Addresses and geocoding are GEO-002 and later.
-Exit criteria: Time zone derived from a validated address or coordinates, overriding the market default per service location.
-Target checkpoint: GEO-002 and the geocoding checkpoint
+Description: Each market has one default operational time zone chosen from its country's zones. GEO-002 added the per-address reference (`geography.addresses.time_zone_id`, stored when a geocoder supplies a registered ACTIVE zone), but no geocoder exists yet, so no address carries a zone, and nothing consumes it: scheduling still uses the market default. There is no lookup of a zone from coordinates inside BananaGig.
+Why deferred: The geocoding vendor (DEBT-0037) and scheduling are later checkpoints.
+Exit criteria: A geocoder adapter that supplies the zone (or an offline lookup from coordinates), and scheduling that uses the zone of the service address with the market default as the fallback.
+Target checkpoint: the geocoding provider checkpoint and the first scheduling checkpoint
 
 
 ## DEBT-0035 — A few unit tests assert latency against small deadlines and can flake on a loaded runner
@@ -398,3 +398,80 @@ Description: CI run #5 failed because a unit test asserted that a large template
 Why deferred: Replacing real timers with an injected clock changes the cache adapters' API for tests only and is not needed while they pass.
 Exit criteria: Inject a clock and a controllable fake cache client into the bounded-I/O adapters so the tests count calls and simulated time instead of waiting, or quarantine them behind a generous ceiling.
 Target checkpoint: next change to the cache adapters
+
+## DEBT-0036 — Address retention, erasure and exact-location access are undefined
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: GEO-002
+Owner/domain: geography / identity / booking
+Description: `geography.addresses` rows are personal data and immutable (a changed address is a new row; an address referenced by a booking is its snapshot). There is no retention period, no erasure or anonymization procedure (DELETE is allowed by the guard, but nothing yet decides which rows are orphaned or which referenced rows must be anonymized in place), and no policy for who may see an exact address at which booking stage (the PRD shows the exact address to a provider only from confirmation). No route reads a persisted address; owning domains read them in process through `AddressService.getAddress`.
+Why deferred: Ownership (identity, provider, booking) does not exist; the policy needs those domains and a legal retention decision.
+Exit criteria: A documented retention period and erasure/anonymization procedure for stored addresses (including raw_input and coordinates), and role- and stage-based exact-location access enforced where addresses are served, with tests.
+Target checkpoint: ID-001 and the first booking checkpoint (access policy), with the data-export and deletion work of the account checkpoints
+
+## DEBT-0037 — No production autocomplete, geocoder or address verification provider
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: GEO-002
+Owner/domain: geography
+Description: Only the provider-neutral ports (`AddressAutocompleteProvider`, `GeocoderProvider`, `AddressValidationProvider`) and in-memory mocks exist. No vendor is selected (PRD open question Q about the autocomplete and geocoding partner), nothing chooses a provider per country (the PRD configures `address.autocomplete_provider` and `address.geocoder` at COUNTRY scope), and the verification provider has a fixed contract and mock but no service flow. Every address is therefore entered manually and stored UNVERIFIED (marked for review), never GEOCODED or VERIFIED, and carries no coordinates or time zone.
+Why deferred: The vendor and its terms of service (storing results, billing, country coverage) are a business decision; the boundary was the scope of GEO-002.
+Exit criteria: A selected vendor adapter implementing the ports with contract tests against the mocks, per-country provider selection read from configuration (COUNTRY scope), a verification flow that produces VERIFIED rows, and provider terms reviewed for what may be stored.
+Target checkpoint: the geocoding and discovery checkpoints
+
+## DEBT-0038 — Phone numbering rules are not part of the country model
+
+Status: OPEN
+Severity: LOW
+Introduced by: GEO-002
+Owner/domain: geography
+Description: PRD SV-10.07 requires phone entry, formatting and validation to use the country lookup (dialling code and numbering rules). Countries hold the dialling code (GEO-001) but there is no phone rule model; GEO-002 deliberately did not add one because the address model does not need it.
+Why deferred: No phone entry exists until account verification; the rule model (and a libphonenumber-style adapter) belongs with it.
+Exit criteria: Data-driven phone numbering rules per country used by one server and client validator, E.164 storage, tested like the postal rules.
+Target checkpoint: ID-001 (phone verification)
+
+## DEBT-0039 — No admin UI, preview or draft management for address formats and areas
+
+Status: OPEN
+Severity: LOW
+Introduced by: GEO-002
+Owner/domain: geography / admin
+Description: Address formats and administrative areas are managed through the API only. There is no screen to edit, preview the rendered form or formatted address, or see a readiness checklist (PRD AD-01 step 6), a DRAFT format cannot be edited or discarded (it is immutable; a corrected version is a new draft, and an unused draft stays DRAFT), and areas have no bulk import from a reference-data partner.
+Why deferred: The admin console is a later track; the API is complete enough for a country to be added with data only.
+Exit criteria: Admin screens for formats and areas with form and formatted-address preview, draft discard, bulk area import with a reviewed dataset, and the country-level readiness checklist (DEBT-0032).
+Target checkpoint: the admin console checkpoints
+
+## DEBT-0040 — Address reference data covers the United States only
+
+Status: OPEN
+Severity: LOW
+Introduced by: GEO-002
+Owner/domain: geography
+Description: Only the US address format and the 50 states plus DC are seeded. No territories, counties or cities; area names are single official names (no per-locale names); an area is displayed by its code. No other country has a format or areas.
+Why deferred: The launch country is the United States (PRD); further countries are data, added through the management API (the integration tests prove a second country with provinces and an A1A 1A1 postal code needs no deployment).
+Exit criteria: Reference data (and an import path, DEBT-0039) for each country as it is opened, and localized area names when a second locale ships (DEBT-0026).
+Target checkpoint: first checkpoint that opens a second country
+
+## DEBT-0041 — Markets do not reference an administrative area
+
+Status: OPEN
+Severity: LOW
+Introduced by: GEO-002 (gap found against PRD SV-10.08)
+Owner/domain: geography
+Description: PRD SV-10.08 says a market belongs to a country AND an administrative area (LA & OC belongs to California). GEO-001 markets reference only a country, and GEO-002 added the areas without linking markets to them.
+Why deferred: It changes the market API, DTOs, events and tests of GEO-001 and no consumer needs it yet.
+Exit criteria: A nullable composite foreign key `markets (administrative_area_id, country_id)`, exposed in the market API and used by service-area and market reporting.
+Target checkpoint: the first checkpoint that reads the area of a market (service areas or reporting)
+
+## DEBT-0042 — Data-driven validation patterns run in the API process (no RE2 isolation)
+
+Status: OPEN
+Severity: LOW
+Introduced by: GEO-002
+Owner/domain: geography / security
+Description: Field validation patterns come from the database and run as JavaScript regular expressions. They are authored only by privileged administrators and vetted when a draft is created (bounded length, no backreferences or lookbehind, no repeated group that already repeats), and the input is capped by the field's maximum length (200 characters at most) before a pattern runs. A vetted pattern can still be slow in a way the heuristic does not recognize.
+Why deferred: A linear-time engine (RE2) or isolation in a worker is a dependency and runtime decision; the controls above bound the risk to administrators acting in error.
+Exit criteria: Evaluate patterns with a linear-time engine or a time-boxed worker, keeping the vetting as a first filter.
+Target checkpoint: before pattern authoring is opened to anyone beyond platform administrators

@@ -102,6 +102,18 @@ channels:
     messages:
       GeographyMarketDefaultsChanged:
         $ref: "#/components/messages/GeographyMarketDefaultsChanged"
+  geography_addressFormatPublished:
+    address: bananagig.geography.address-format-published.v1
+    description: An address format version of a country was published (it is immutable and in force from effectiveFrom; the previous format is closed at that instant). The payload carries the country, the version and the start, never address data. Published through the transactional outbox (aggregate geography_address_format); payload carries identifiers only, never values.
+    messages:
+      GeographyAddressFormatPublished:
+        $ref: "#/components/messages/GeographyAddressFormatPublished"
+  geography_administrativeAreasUpdated:
+    address: bananagig.geography.administrative-areas-updated.v1
+    description: Administrative areas of a country were added or changed. The payload carries counts only; the audit trail lists the area codes. Published through the transactional outbox (aggregate geography_country); payload carries identifiers only, never values.
+    messages:
+      GeographyAdministrativeAreasUpdated:
+        $ref: "#/components/messages/GeographyAdministrativeAreasUpdated"
 operations:
   receiveInfraPing:
     action: receive
@@ -183,6 +195,16 @@ operations:
     channel:
       $ref: "#/channels/geography_marketDefaultsChanged"
     summary: "The defaults of a market changed: its default locale, currency or time zone (cause MARKET), or the distance unit, first day of week, date format or time format of its country (cause COUNTRY). changedFields names the fields, never their values."
+  sendGeographyAddressFormatPublished:
+    action: send
+    channel:
+      $ref: "#/channels/geography_addressFormatPublished"
+    summary: An address format version of a country was published (it is immutable and in force from effectiveFrom; the previous format is closed at that instant). The payload carries the country, the version and the start, never address data.
+  sendGeographyAdministrativeAreasUpdated:
+    action: send
+    channel:
+      $ref: "#/channels/geography_administrativeAreasUpdated"
+    summary: Administrative areas of a country were added or changed. The payload carries counts only; the audit trail lists the area codes.
 components:
   messages:
     EventEnvelope:
@@ -345,6 +367,26 @@ components:
             type: string
       payload:
         $ref: "#/components/schemas/GeographyMarketDefaultsChanged"
+    GeographyAddressFormatPublished:
+      name: GeographyAddressFormatPublished
+      title: An address format version of a country was published (it is immutable and in force from effectiveFrom; the previous format is closed at that instant). The payload carries the country, the version and the start, never address data.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/GeographyAddressFormatPublished"
+    GeographyAdministrativeAreasUpdated:
+      name: GeographyAdministrativeAreasUpdated
+      title: Administrative areas of a country were added or changed. The payload carries counts only; the audit trail lists the area codes.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/GeographyAdministrativeAreasUpdated"
   schemas:
     EventEnvelope:
       type: object
@@ -1676,6 +1718,154 @@ components:
           required:
             - marketCode
             - countryCode
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    GeographyAddressFormatPublished:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.geography.address-format-published.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            countryCode:
+              type: string
+            version:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
+            effectiveFrom:
+              type: string
+          required:
+            - countryCode
+            - version
+            - effectiveFrom
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    GeographyAdministrativeAreasUpdated:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.geography.administrative-areas-updated.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            countryCode:
+              type: string
+            added:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
+            updated:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
+          required:
+            - countryCode
+            - added
+            - updated
           additionalProperties: false
       required:
         - eventId

@@ -29,10 +29,12 @@ export const metrics = new Registry();
 // ---------- logging ----------
 const LEVELS = { debug: 5, info: 9, warn: 13, error: 17 } as const;
 type Level = keyof typeof LEVELS;
-const REDACT = /pass(word)?|secret|token|authorization|cookie|card|cvv|api[-_]?key/i;
+// Addresses are personal data: any attribute whose key names an address part, postal code, coordinates or raw input is redacted too (GEO-002).
+const REDACT = /pass(word)?|secret|token|authorization|cookie|card|cvv|api[-_]?key|address|postal|zip|latitude|longitude|raw[-_]?input/i;
 
 function redact(v: unknown, depth = 0): unknown {
-  if (depth > 4 || v === null || typeof v !== 'object') return v;
+  if (v === null || typeof v !== 'object' || v instanceof Date) return v;
+  if (depth > 4) return '[REDACTED]'; // fail closed: deeper structures are not inspected, so they are not passed through
   if (Array.isArray(v)) return v.map((x) => redact(x, depth + 1));
   return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, REDACT.test(k) ? '[REDACTED]' : redact(x, depth + 1)]));
 }

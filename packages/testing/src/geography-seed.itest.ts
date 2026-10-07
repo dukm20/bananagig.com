@@ -153,7 +153,9 @@ describe('seeded launch reference data (migration 0007)', () => {
     expect(rows).toEqual([{ body: 'United States', status: 'PUBLISHED', n: '5' }]);
   });
   it('records the seed in the geography audit trail and emits no outbox events', async () => {
-    const actions = (await q<{ action: string }>('SELECT action FROM geography.audit_events ORDER BY occurred_at, action')).map((r) => r.action);
+    const actions = (
+      await q<{ action: string }>("SELECT action FROM geography.audit_events WHERE correlation_id = 'seed-0007' ORDER BY occurred_at, action")
+    ).map((r) => r.action);
     expect(actions.sort()).toEqual(['COUNTRY_ACTIVATED', 'COUNTRY_CREATED', 'MARKET_CREATED']);
     expect((await q("SELECT count(*)::int AS n FROM integration.outbox_events WHERE event_type LIKE 'bananagig.geography.%'"))[0]).toEqual({ n: 0 });
   });

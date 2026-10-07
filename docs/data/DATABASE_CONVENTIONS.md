@@ -133,7 +133,7 @@ Defaults live in `packages/database/src/policy.ts`; environment variables (`DB_P
 - **Distance units:** meters. `ST_Distance` and `ST_DWithin` on geography take meters.
 - **Indexes:** every geography column used in a filter gets `CREATE INDEX idx_<table>__<column> ON ... USING GIST (<column>)`. Radius queries use `ST_DWithin` (index-assisted), never `ST_Distance(...) < x`. Verified by `postgis.itest.ts`.
 - **Latitude/longitude validation happens BEFORE building a point** (API boundary: lat -90..90, lng -180..180). PostGIS silently coerces out-of-range input into range instead of failing, so a CHECK on the stored value cannot catch a bad input (verified by test).
-- Spatial columns hold the location; derived address text is a separate concern. No spatial columns exist yet (the `geography` schema from GEO-001 holds country, currency, time zone and market reference data only; it uses no PostGIS types).
+- Spatial columns hold the location; derived address text is a separate concern. The first spatial column is `geography.addresses.location` (GEO-002): one `geography(Point,4326)` per address, with latitude and longitude derived by `ST_Y` and `ST_X` of the geometry cast (no lat/lng columns) and NO GiST index until a spatial query exists (service areas and search add it with that query); see ADR-0023 and `skills/geography/SKILL.md`. The other `geography` tables (GEO-001 reference data) use no PostGIS types.
 
 ## 10. Idempotency and outbox
 

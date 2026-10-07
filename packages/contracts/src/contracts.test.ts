@@ -68,6 +68,22 @@ import {
   WEEKDAYS,
   Weekday,
 } from './index';
+import {
+  ADDRESS_FIELD_PROPERTIES,
+  ADDRESS_FIELD_TYPES,
+  ADDRESS_ISSUE_CODES,
+  AddressFormatFieldInput,
+  AddressInput,
+  AdministrativeAreaInput,
+  AddressFormatPublishedPayload,
+  AdministrativeAreasUpdatedPayload,
+  CreateAddressFormatRequest,
+  FormatAddressRequest,
+  PublishAddressFormatRequest,
+  UpsertAdministrativeAreasRequest,
+  ValidateAddressRequest,
+  addressIssueMessageKey,
+} from './index';
 
 const event = () => ({
   eventId: randomUUID(),
@@ -725,7 +741,7 @@ describe('geography contracts', () => {
   });
 
   describe('events', () => {
-    it('names the six events bananagig.geography.<event>.v1', () => {
+    it('names the eight events bananagig.geography.<event>.v1', () => {
       expect(GEOGRAPHY_EVENTS).toEqual({
         countryActivated: 'bananagig.geography.country-activated.v1',
         countryDeactivated: 'bananagig.geography.country-deactivated.v1',
@@ -733,6 +749,8 @@ describe('geography contracts', () => {
         marketActivated: 'bananagig.geography.market-activated.v1',
         marketDeactivated: 'bananagig.geography.market-deactivated.v1',
         marketDefaultsChanged: 'bananagig.geography.market-defaults-changed.v1',
+        addressFormatPublished: 'bananagig.geography.address-format-published.v1',
+        administrativeAreasUpdated: 'bananagig.geography.administrative-areas-updated.v1',
       });
       for (const type of Object.values(GEOGRAPHY_EVENTS)) expect(EVENT_TYPE_PATTERN.test(type), type).toBe(true);
     });
@@ -781,6 +799,7 @@ describe('geography contracts', () => {
     expect([...GEOGRAPHY_ERROR_CODES].sort()).toEqual(
       [
         'COUNTRY_NOT_FOUND',
+        'ADDRESS_FORMAT_NOT_FOUND',
         'MARKET_NOT_FOUND',
         'CURRENCY_NOT_FOUND',
         'TIME_ZONE_NOT_FOUND',
@@ -792,5 +811,163 @@ describe('geography contracts', () => {
         'UNAVAILABLE',
       ].sort(),
     );
+  });
+});
+
+describe('address contracts', () => {
+  const ok = (schema: { safeParse(v: unknown): { success: boolean } }, v: unknown) => schema.safeParse(v).success;
+  const field = { fieldType: 'ADDRESS_LINE_1', contentLabelKey: 'address.field.line1', required: true, maxLength: 100 };
+  const draft = { displayTemplate: '{ADDRESS_LINE_1}', fields: [field], reason: 'new format' };
+  const area = { code: 'CA', name: 'California', type: 'STATE' };
+
+  describe('AddressInput', () => {
+    it('accepts a country code with any subset of the field properties', () => {
+      expect(ok(AddressInput, { countryCode: 'US' })).toBe(true);
+      expect(ok(AddressInput, { countryCode: 'US', addressLine1: '1 Main St', locality: 'Springfield', administrativeArea: 'IL', postalCode: '62701' })).toBe(
+        true,
+      );
+    });
+    it('is strict: unknown keys are rejected', () => {
+      expect(ok(AddressInput, { countryCode: 'US', addressLine3: 'x' })).toBe(false);
+      expect(ok(AddressInput, { countryCode: 'US', latitude: 1 })).toBe(false);
+    });
+    it('needs a two-letter upper-case country code', () => {
+      for (const countryCode of ['us', 'USA', 'U', '', undefined, 1]) expect(ok(AddressInput, { countryCode }), String(countryCode)).toBe(false);
+    });
+    it('caps each value at 500 characters at the transport level and rejects non-strings', () => {
+      expect(ok(AddressInput, { countryCode: 'US', addressLine1: 'x'.repeat(500) })).toBe(true);
+      expect(ok(AddressInput, { countryCode: 'US', addressLine1: 'x'.repeat(501) })).toBe(false);
+      expect(ok(AddressInput, { countryCode: 'US', postalCode: 12345 })).toBe(false);
+    });
+  });
+
+  describe('field vocabulary', () => {
+    it('maps every field type to a distinct input property that AddressInput accepts', () => {
+      expect(Object.keys(ADDRESS_FIELD_PROPERTIES).sort()).toEqual([...ADDRESS_FIELD_TYPES].sort());
+      const properties = Object.values(ADDRESS_FIELD_PROPERTIES);
+      expect(new Set(properties).size).toBe(ADDRESS_FIELD_TYPES.length);
+      for (const property of properties) expect(ok(AddressInput, { countryCode: 'US', [property]: 'x' }), property).toBe(true);
+    });
+  });
+
+  describe('issue message keys', () => {
+    it('derives address.error.<code in lower case> for every issue code', () => {
+      for (const code of ADDRESS_ISSUE_CODES) expect(addressIssueMessageKey(code)).toBe(`address.error.${code.toLowerCase()}`);
+      expect(addressIssueMessageKey('INVALID_FORMAT')).toBe('address.error.invalid_format');
+    });
+  });
+
+  describe('stateless requests', () => {
+    it('ValidateAddressRequest wraps one address and is strict', () => {
+      expect(ok(ValidateAddressRequest, { address: { countryCode: 'US' } })).toBe(true);
+      expect(ok(ValidateAddressRequest, { address: { countryCode: 'US' }, extra: 1 })).toBe(false);
+      expect(ok(ValidateAddressRequest, {})).toBe(false);
+    });
+    it('FormatAddressRequest takes an optional BCP 47 locale and includeCountry flag', () => {
+      expect(ok(FormatAddressRequest, { address: { countryCode: 'US' }, locale: 'en-US', includeCountry: true })).toBe(true);
+      expect(ok(FormatAddressRequest, { address: { countryCode: 'US' }, locale: 'en_US' })).toBe(false);
+      expect(ok(FormatAddressRequest, { address: { countryCode: 'US' }, includeCountry: 'yes' })).toBe(false);
+    });
+  });
+
+  describe('CreateAddressFormatRequest', () => {
+    it('accepts a minimal draft and applies the TEXT input type default', () => {
+      const r = CreateAddressFormatRequest.parse(draft);
+      expect(r.fields[0]!.inputType).toBe('TEXT');
+    });
+    it('bounds the template (1..500), the fields (1..8) and the reason', () => {
+      expect(ok(CreateAddressFormatRequest, { ...draft, displayTemplate: '' })).toBe(false);
+      expect(ok(CreateAddressFormatRequest, { ...draft, displayTemplate: 'x'.repeat(501) })).toBe(false);
+      expect(ok(CreateAddressFormatRequest, { ...draft, fields: [] })).toBe(false);
+      expect(ok(CreateAddressFormatRequest, { ...draft, fields: Array.from({ length: ADDRESS_FIELD_TYPES.length + 1 }, () => field) })).toBe(false);
+      expect(ok(CreateAddressFormatRequest, { ...draft, fields: Array.from({ length: ADDRESS_FIELD_TYPES.length }, () => field) })).toBe(true);
+      expect(ok(CreateAddressFormatRequest, { ...draft, reason: '' })).toBe(false);
+      expect(ok(CreateAddressFormatRequest, { ...draft, reason: '   ' })).toBe(false);
+      expect(ok(CreateAddressFormatRequest, { displayTemplate: draft.displayTemplate, fields: draft.fields })).toBe(false);
+    });
+    it('needs an offset-qualified ISO effectiveFrom when given', () => {
+      expect(ok(CreateAddressFormatRequest, { ...draft, effectiveFrom: '2026-07-01T00:00:00Z' })).toBe(true);
+      expect(ok(CreateAddressFormatRequest, { ...draft, effectiveFrom: '2026-07-01T00:00:00+02:00' })).toBe(true);
+      expect(ok(CreateAddressFormatRequest, { ...draft, effectiveFrom: '2026-07-01' })).toBe(false);
+      expect(ok(CreateAddressFormatRequest, { ...draft, effectiveFrom: '2026-07-01T00:00:00' })).toBe(false);
+    });
+    it('is strict at the request and field level', () => {
+      expect(ok(CreateAddressFormatRequest, { ...draft, extra: 1 })).toBe(false);
+      expect(ok(AddressFormatFieldInput, { ...field, displayOrder: 1 })).toBe(false);
+    });
+    it('bounds the field definition', () => {
+      expect(ok(AddressFormatFieldInput, field)).toBe(true);
+      expect(ok(AddressFormatFieldInput, { ...field, maxLength: 0 })).toBe(false);
+      expect(ok(AddressFormatFieldInput, { ...field, maxLength: 201 })).toBe(false);
+      expect(ok(AddressFormatFieldInput, { ...field, maxLength: 1.5 })).toBe(false);
+      expect(ok(AddressFormatFieldInput, { ...field, validationPattern: 'x'.repeat(200) })).toBe(true);
+      expect(ok(AddressFormatFieldInput, { ...field, validationPattern: 'x'.repeat(201) })).toBe(false);
+      expect(ok(AddressFormatFieldInput, { ...field, validationPattern: '' })).toBe(false);
+      expect(ok(AddressFormatFieldInput, { ...field, validationPattern: null, example: null, autocomplete: null, normalization: null })).toBe(true);
+      expect(ok(AddressFormatFieldInput, { ...field, fieldType: 'COUNTRY' })).toBe(false);
+      expect(ok(AddressFormatFieldInput, { ...field, inputType: 'SELECT' })).toBe(false);
+      expect(ok(AddressFormatFieldInput, { ...field, normalization: 'LOWERCASE' })).toBe(false);
+      expect(ok(AddressFormatFieldInput, { ...field, normalization: 'UPPERCASE_REMOVE_SPACES' })).toBe(true);
+    });
+    it('needs a lower-case dotted content key for the label and an HTML autocomplete token', () => {
+      for (const contentLabelKey of ['line1', 'Address.Line1', 'address..line1', 'address.field.line1.', '1address.x', 'address.' + 'a'.repeat(160)])
+        expect(ok(AddressFormatFieldInput, { ...field, contentLabelKey }), contentLabelKey).toBe(false);
+      expect(ok(AddressFormatFieldInput, { ...field, autocomplete: 'address-line1' })).toBe(true);
+      expect(ok(AddressFormatFieldInput, { ...field, autocomplete: 'Address Line' })).toBe(false);
+    });
+  });
+
+  describe('PublishAddressFormatRequest', () => {
+    it('needs a reason and takes an optional offset-qualified start', () => {
+      expect(ok(PublishAddressFormatRequest, { reason: 'go live' })).toBe(true);
+      expect(ok(PublishAddressFormatRequest, { reason: 'go live', effectiveFrom: '2026-07-01T00:00:00Z' })).toBe(true);
+      expect(ok(PublishAddressFormatRequest, {})).toBe(false);
+      expect(ok(PublishAddressFormatRequest, { reason: 'x', effectiveFrom: 'tomorrow' })).toBe(false);
+      expect(ok(PublishAddressFormatRequest, { reason: 'x', version: 2 })).toBe(false);
+    });
+  });
+
+  describe('UpsertAdministrativeAreasRequest', () => {
+    it('accepts 1..500 areas and rejects 0 or 501', () => {
+      const areas = (n: number) => Array.from({ length: n }, (_, i) => ({ ...area, code: `A${i}` }));
+      expect(ok(UpsertAdministrativeAreasRequest, { areas: areas(1), reason: 'seed' })).toBe(true);
+      expect(ok(UpsertAdministrativeAreasRequest, { areas: areas(500), reason: 'seed' })).toBe(true);
+      expect(ok(UpsertAdministrativeAreasRequest, { areas: areas(501), reason: 'seed' })).toBe(false);
+      expect(ok(UpsertAdministrativeAreasRequest, { areas: [], reason: 'seed' })).toBe(false);
+      expect(ok(UpsertAdministrativeAreasRequest, { areas: areas(1) })).toBe(false);
+    });
+    it('bounds an area: upper-case code (1..10), name (1..120), known type, display order, nullish parent', () => {
+      expect(ok(AdministrativeAreaInput, area)).toBe(true);
+      expect(ok(AdministrativeAreaInput, { ...area, code: 'ON-TOR', parentCode: 'ON', displayOrder: 3, active: false })).toBe(true);
+      expect(ok(AdministrativeAreaInput, { ...area, parentCode: null, displayOrder: null })).toBe(true);
+      for (const code of ['ca', '', '-A', 'A'.repeat(11), 'A B']) expect(ok(AdministrativeAreaInput, { ...area, code }), code).toBe(false);
+      expect(ok(AdministrativeAreaInput, { ...area, code: 'A'.repeat(10) })).toBe(true);
+      expect(ok(AdministrativeAreaInput, { ...area, name: '' })).toBe(false);
+      expect(ok(AdministrativeAreaInput, { ...area, name: 'x'.repeat(121) })).toBe(false);
+      expect(ok(AdministrativeAreaInput, { ...area, name: 'bad\u0000name' })).toBe(false);
+      expect(ok(AdministrativeAreaInput, { ...area, type: 'PLANET' })).toBe(false);
+      expect(ok(AdministrativeAreaInput, { ...area, parentCode: 'on' })).toBe(false);
+      expect(ok(AdministrativeAreaInput, { ...area, displayOrder: -1 })).toBe(false);
+      expect(ok(AdministrativeAreaInput, { ...area, displayOrder: 100001 })).toBe(false);
+      expect(ok(AdministrativeAreaInput, { ...area, displayOrder: 1.5 })).toBe(false);
+      expect(ok(AdministrativeAreaInput, { ...area, status: 'ACTIVE' })).toBe(false);
+    });
+  });
+
+  describe('errors and events', () => {
+    it('declares ADDRESS_FORMAT_NOT_FOUND as a geography error code', () => {
+      expect(GEOGRAPHY_ERROR_CODES).toContain('ADDRESS_FORMAT_NOT_FOUND');
+    });
+    it('names the address events and gives them identifier and count payloads only', () => {
+      expect(GEOGRAPHY_EVENTS.addressFormatPublished).toBe('bananagig.geography.address-format-published.v1');
+      expect(GEOGRAPHY_EVENTS.administrativeAreasUpdated).toBe('bananagig.geography.administrative-areas-updated.v1');
+      expect(ok(AddressFormatPublishedPayload, { countryCode: 'US', version: 1, effectiveFrom: '2026-07-01T00:00:00.000Z' })).toBe(true);
+      expect(ok(AddressFormatPublishedPayload, { countryCode: 'US', version: 1.5, effectiveFrom: 'x' })).toBe(false);
+      expect(ok(AdministrativeAreasUpdatedPayload, { countryCode: 'US', added: 0, updated: 2 })).toBe(true);
+      expect(ok(AdministrativeAreasUpdatedPayload, { countryCode: 'US', added: 'none', updated: 2 })).toBe(false);
+      // Payload schemas carry no address data keys.
+      expect(Object.keys(AddressFormatPublishedPayload.shape).sort()).toEqual(['countryCode', 'effectiveFrom', 'version']);
+      expect(Object.keys(AdministrativeAreasUpdatedPayload.shape).sort()).toEqual(['added', 'countryCode', 'updated']);
+    });
   });
 });

@@ -499,3 +499,38 @@ None required.
 
 ### Known follow-up
 DEBT-0035 (the cache tests still assert real elapsed time against their own small deadlines). CI-003 has to run green on GitHub before this checkpoint is considered verified in CI.
+
+
+## GEO-002 — 2026-10-07
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(GEO-002)"`.
+Summary: The address model and address format engine: country-driven, versioned address formats whose fields, labels, requirement, lengths, input types, patterns and display template are data, administrative areas, one canonical immutable structured address (also the future booking snapshot), a pure validator and formatter shared by server and clients through one read model, a manual-entry fallback marked for review, provider-neutral autocomplete, geocoder and verification ports with mocks, and privacy rules from the start. No provider service areas, profile screens, geospatial search, booking, tax, map UI, vendor selection or admin UI.
+
+### Delivered
+- Migration `0008_address_model.sql`: `geography.administrative_areas`, `address_formats` (DRAFT to PUBLISHED, half-open effective window, gist exclusion constraint against overlapping published periods, open end closable once), `address_format_fields` (ordered rows, labels are content keys), `addresses` (immutable rows; composite foreign keys keep the area and the format version in the address country; status and source CHECKs; one `geography(Point,4326)`; `raw_input` JSON), guard triggers with `geography_rule:<KEY>` details, `audit_events` widened for format and area actions; seeds: 51 US areas, US format v1, 12 content entries (field labels with US-scoped overrides "State" and "ZIP code", validation messages), all through the real lifecycles
+- `packages/geography`: the pure address engine (`address-engine.ts`: normalization, pattern vetting, validation with all issues, `validateFieldValue` for postal codes in lists, the one formatter, template checks, `redactAddress`), `AddressService` (cached public reads, validate, format, manual / autocomplete / geocoder persistence flows with fallback, `getAddress` for owning domains, format drafts, publication serialized on the country row with `clock_timestamp()`, area upsert, audit and outbox, cache invalidation), the provider ports and mocks, and the `ADDRESS_FORMAT` market readiness check
+- Contracts `address.ts`; two events `bananagig.geography.address-format-published.v1` and `administrative-areas-updated.v1`; error code `ADDRESS_FORMAT_NOT_FOUND`; log redaction of address, postal, zip, coordinate and raw-input keys (fails closed beyond its depth)
+- API (8 operations): public `GET /countries/:code/address-format`, `GET /countries/:code/administrative-areas`, stateless `POST /addresses/validate` and `/addresses/format` (no-store, 16 KiB limit); management `GET` and `POST /countries/:code/address-formats`, `POST .../:version/publication`, `POST /countries/:code/administrative-areas`. No route creates or reads a persisted address
+- Web API client methods for the format, areas, validate and format; smoke scenario "Addresses" (31 checks) and a ZZ address format published by the smoke so the readiness check lets its devtest market activate
+- Docs: `docs/engineering/ADDRESSES.md`, ADR-0023 (canonical immutable address and data-driven format), ADR-0024 (provider-neutral boundary and privacy), data-model documents, skills `geography`, `database`, `api`
+- Found by reading the PRD (a .docx, SV-10) after the first design: manual entry is UNVERIFIED for review, area code and name are stored, form and server share message keys, and a second country needs no deployment (hence the area management API); LRN-0029
+- Review fixes before closing: a provider's "unknown suggestion" answer was mistaken for an outage, the raw-input size check disagreed with the table CHECK, the country-name resolver ignored management previews, redaction passed deep structures through, pasted tabs and line breaks were rejected instead of collapsed
+
+### Schema
+Four new tables in `geography` and a widened `geography.audit_events`; see `docs/data/DATA_MODEL_CHANGELOG.md` and `NORMALIZATION_LOG.md` (GEO-002), including why there is no `postal_code_rules` table, no snapshot table and no separate latitude and longitude columns.
+
+### Contracts
+OpenAPI: 8 address operations (valid, 15 pre-existing warnings). AsyncAPI: `address-format-published` and `administrative-areas-updated`.
+
+### Tests
+Unit 1524, root script tests 71, integration 507 in 21 files, smoke 31 checks (run twice). Real Valkey integration tests ran.
+
+### Skills updated
+`skills/geography`, `skills/database`, `skills/api`.
+
+### ADRs
+ADR-0023, ADR-0024.
+
+### Known follow-up
+DEBT-0036 to DEBT-0042 (retention and exact-location access, provider vendor and per-country selection, phone rules, admin UI, US-only data, market to area link, pattern isolation); DEBT-0032 and DEBT-0034 in progress; LRN-0029 to LRN-0031. Owner decision still open: confirm or remove the seeded PLANNED market `la-oc`.

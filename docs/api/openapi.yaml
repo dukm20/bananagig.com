@@ -17046,6 +17046,2876 @@ paths:
                 required:
                   - error
                 additionalProperties: false
+  /api/v1/geography/countries/{code}/address-format:
+    get:
+      operationId: getGeographyAddressFormat
+      summary: "The address form definition of a country: ordered fields with content label keys, required flags, maximum lengths, input types, validation patterns, examples and the administrative-area mode (LOOKUP, FREE_TEXT or NONE). Web and mobile render every address form from this; the server validates with the same definition. Public: ACTIVE countries only; geography-read callers may preview any country and also receive status, template and period"
+      tags: &a7
+        - geography
+      parameters:
+        - schema:
+            type: string
+            pattern: ^[A-Z]{2}$
+          in: path
+          name: code
+          required: true
+      security: []
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      countryCode:
+                        type: string
+                      version:
+                        type: integer
+                        minimum: -9007199254740991
+                        maximum: 9007199254740991
+                      fields:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            fieldType:
+                              type: string
+                              enum:
+                                - ORGANIZATION
+                                - ADDRESS_LINE_1
+                                - ADDRESS_LINE_2
+                                - DEPENDENT_LOCALITY
+                                - LOCALITY
+                                - ADMINISTRATIVE_AREA
+                                - POSTAL_CODE
+                                - SORTING_CODE
+                            property:
+                              type: string
+                            displayOrder:
+                              type: integer
+                              minimum: -9007199254740991
+                              maximum: 9007199254740991
+                            contentLabelKey:
+                              type: string
+                            required:
+                              type: boolean
+                            maxLength:
+                              type: integer
+                              minimum: -9007199254740991
+                              maximum: 9007199254740991
+                            inputType:
+                              type: string
+                              enum:
+                                - TEXT
+                                - LOOKUP
+                            validationPattern:
+                              type:
+                                - "null"
+                                - string
+                            example:
+                              type:
+                                - "null"
+                                - string
+                            autocomplete:
+                              type:
+                                - "null"
+                                - string
+                            normalization:
+                              anyOf:
+                                - type: string
+                                  enum:
+                                    - UPPERCASE
+                                    - REMOVE_SPACES
+                                    - UPPERCASE_REMOVE_SPACES
+                                - type: "null"
+                          required:
+                            - fieldType
+                            - property
+                            - displayOrder
+                            - contentLabelKey
+                            - required
+                            - maxLength
+                            - inputType
+                            - validationPattern
+                            - example
+                            - autocomplete
+                            - normalization
+                          additionalProperties: false
+                      administrativeAreaMode:
+                        type: string
+                        enum:
+                          - LOOKUP
+                          - FREE_TEXT
+                          - NONE
+                      postalCodeExample:
+                        type:
+                          - "null"
+                          - string
+                      status:
+                        type: string
+                        enum:
+                          - DRAFT
+                          - PUBLISHED
+                      displayTemplate:
+                        type: string
+                      effectiveFrom:
+                        type: string
+                      effectiveTo:
+                        type:
+                          - "null"
+                          - string
+                    required:
+                      - countryCode
+                      - version
+                      - fields
+                      - administrativeAreaMode
+                      - postalCodeExample
+                    additionalProperties: false
+                  meta:
+                    type: object
+                    properties:
+                      correlationId:
+                        type: string
+                    required:
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - data
+                  - meta
+                additionalProperties: false
+        "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "401":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "503":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+  /api/v1/geography/countries/{code}/administrative-areas:
+    get:
+      operationId: listGeographyAdministrativeAreas
+      summary: "The administrative areas (states, provinces, regions) of a country in picker order, with the entry mode of its address format. Public: ACTIVE countries and ACTIVE areas; geography-read callers also see inactive areas and any country status"
+      tags: *a7
+      parameters:
+        - schema:
+            type: string
+            pattern: ^[A-Z]{2}$
+          in: path
+          name: code
+          required: true
+      security: []
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      countryCode:
+                        type: string
+                      mode:
+                        type: string
+                        enum:
+                          - LOOKUP
+                          - FREE_TEXT
+                          - NONE
+                      areas:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            code:
+                              type: string
+                            name:
+                              type: string
+                            type:
+                              type: string
+                              enum:
+                                - STATE
+                                - PROVINCE
+                                - TERRITORY
+                                - DISTRICT
+                                - REGION
+                                - COUNTY
+                                - OTHER
+                            parentCode:
+                              type:
+                                - "null"
+                                - string
+                            displayOrder:
+                              anyOf:
+                                - type: integer
+                                  minimum: -9007199254740991
+                                  maximum: 9007199254740991
+                                - type: "null"
+                            status:
+                              type: string
+                              enum:
+                                - ACTIVE
+                                - INACTIVE
+                          required:
+                            - code
+                            - name
+                            - type
+                            - parentCode
+                            - displayOrder
+                          additionalProperties: false
+                    required:
+                      - countryCode
+                      - mode
+                      - areas
+                    additionalProperties: false
+                  meta:
+                    type: object
+                    properties:
+                      correlationId:
+                        type: string
+                    required:
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - data
+                  - meta
+                additionalProperties: false
+        "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "401":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "503":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+    post:
+      operationId: upsertGeographyAdministrativeAreas
+      summary: Create the administrative areas that do not exist yet and update name, type, order and activity of the ones that do (rows are never deleted; a parent is set at creation only). Emits administrative-areas-updated when something changed
+      tags: *a7
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                areas:
+                  minItems: 1
+                  maxItems: 500
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        pattern: ^[A-Z0-9][A-Z0-9-]{0,9}$
+                      name:
+                        type: string
+                        minLength: 1
+                        maxLength: 120
+                      type:
+                        type: string
+                        enum:
+                          - STATE
+                          - PROVINCE
+                          - TERRITORY
+                          - DISTRICT
+                          - REGION
+                          - COUNTY
+                          - OTHER
+                      parentCode:
+                        anyOf:
+                          - type: string
+                            pattern: ^[A-Z0-9][A-Z0-9-]{0,9}$
+                          - type: "null"
+                      displayOrder:
+                        anyOf:
+                          - type: integer
+                            minimum: 0
+                            maximum: 100000
+                          - type: "null"
+                      active:
+                        type: boolean
+                    required:
+                      - code
+                      - name
+                      - type
+                    additionalProperties: false
+                reason:
+                  type: string
+                  minLength: 1
+                  maxLength: 1000
+              required:
+                - areas
+                - reason
+              additionalProperties: false
+      parameters:
+        - schema:
+            type: string
+            pattern: ^[A-Z]{2}$
+          in: path
+          name: code
+          required: true
+      security: &a8
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      countryCode:
+                        type: string
+                      added:
+                        type: integer
+                        minimum: -9007199254740991
+                        maximum: 9007199254740991
+                      updated:
+                        type: integer
+                        minimum: -9007199254740991
+                        maximum: 9007199254740991
+                    required:
+                      - countryCode
+                      - added
+                      - updated
+                    additionalProperties: false
+                  meta:
+                    type: object
+                    properties:
+                      correlationId:
+                        type: string
+                    required:
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - data
+                  - meta
+                additionalProperties: false
+        "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "401":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "403":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "409":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "503":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+  /api/v1/geography/addresses/validate:
+    post:
+      operationId: validateGeographyAddress
+      summary: "Validates and normalizes a structured address against the format in force for its country (the same rules the form shows). Stateless: nothing is stored or logged. An invalid address is a normal result (valid=false with issue codes and message keys, never the rejected values)"
+      tags: *a7
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                address:
+                  type: object
+                  properties:
+                    countryCode:
+                      type: string
+                      pattern: ^[A-Z]{2}$
+                    organization:
+                      type: string
+                      maxLength: 500
+                    addressLine1:
+                      type: string
+                      maxLength: 500
+                    addressLine2:
+                      type: string
+                      maxLength: 500
+                    dependentLocality:
+                      type: string
+                      maxLength: 500
+                    locality:
+                      type: string
+                      maxLength: 500
+                    administrativeArea:
+                      type: string
+                      maxLength: 500
+                    postalCode:
+                      type: string
+                      maxLength: 500
+                    sortingCode:
+                      type: string
+                      maxLength: 500
+                  required:
+                    - countryCode
+                  additionalProperties: false
+              required:
+                - address
+              additionalProperties: false
+      security: []
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      valid:
+                        type: boolean
+                      address:
+                        anyOf:
+                          - type: object
+                            properties:
+                              countryCode:
+                                type: string
+                              organization:
+                                type:
+                                  - string
+                                  - "null"
+                              addressLine1:
+                                type: string
+                              addressLine2:
+                                type:
+                                  - string
+                                  - "null"
+                              dependentLocality:
+                                type:
+                                  - string
+                                  - "null"
+                              locality:
+                                type:
+                                  - string
+                                  - "null"
+                              administrativeAreaCode:
+                                type:
+                                  - string
+                                  - "null"
+                              administrativeAreaName:
+                                type:
+                                  - string
+                                  - "null"
+                              postalCode:
+                                type:
+                                  - string
+                                  - "null"
+                              sortingCode:
+                                type:
+                                  - string
+                                  - "null"
+                            required:
+                              - countryCode
+                              - organization
+                              - addressLine1
+                              - addressLine2
+                              - dependentLocality
+                              - locality
+                              - administrativeAreaCode
+                              - administrativeAreaName
+                              - postalCode
+                              - sortingCode
+                            additionalProperties: false
+                          - type: "null"
+                      issues:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            field:
+                              type: string
+                            code:
+                              type: string
+                              enum:
+                                - REQUIRED
+                                - TOO_LONG
+                                - INVALID_FORMAT
+                                - UNKNOWN_AREA
+                                - UNSUPPORTED_FIELD
+                                - INVALID_CHARACTERS
+                                - LOOKUP_UNAVAILABLE
+                            messageKey:
+                              type: string
+                          required:
+                            - field
+                            - code
+                            - messageKey
+                          additionalProperties: false
+                      formatVersion:
+                        type: integer
+                        minimum: -9007199254740991
+                        maximum: 9007199254740991
+                    required:
+                      - valid
+                      - address
+                      - issues
+                      - formatVersion
+                    additionalProperties: false
+                  meta:
+                    type: object
+                    properties:
+                      correlationId:
+                        type: string
+                    required:
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - data
+                  - meta
+                additionalProperties: false
+        "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "401":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "503":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+  /api/v1/geography/addresses/format:
+    post:
+      operationId: formatGeographyAddress
+      summary: "Formats a structured address with the display template of its country format (the one central formatter; clients never build the string). Validates first: an invalid address is 400 with the issue codes. Stateless: nothing is stored or logged"
+      tags: *a7
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                address:
+                  type: object
+                  properties:
+                    countryCode:
+                      type: string
+                      pattern: ^[A-Z]{2}$
+                    organization:
+                      type: string
+                      maxLength: 500
+                    addressLine1:
+                      type: string
+                      maxLength: 500
+                    addressLine2:
+                      type: string
+                      maxLength: 500
+                    dependentLocality:
+                      type: string
+                      maxLength: 500
+                    locality:
+                      type: string
+                      maxLength: 500
+                    administrativeArea:
+                      type: string
+                      maxLength: 500
+                    postalCode:
+                      type: string
+                      maxLength: 500
+                    sortingCode:
+                      type: string
+                      maxLength: 500
+                  required:
+                    - countryCode
+                  additionalProperties: false
+                locale:
+                  type: string
+                  maxLength: 20
+                  pattern: ^[a-z]{2,3}(-[A-Z][a-z]{3})?(-([A-Z]{2}|[0-9]{3}))?$
+                includeCountry:
+                  type: boolean
+              required:
+                - address
+              additionalProperties: false
+      security: []
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      address:
+                        type: object
+                        properties:
+                          countryCode:
+                            type: string
+                          organization:
+                            type:
+                              - "null"
+                              - string
+                          addressLine1:
+                            type: string
+                          addressLine2:
+                            type:
+                              - "null"
+                              - string
+                          dependentLocality:
+                            type:
+                              - "null"
+                              - string
+                          locality:
+                            type:
+                              - "null"
+                              - string
+                          administrativeAreaCode:
+                            type:
+                              - "null"
+                              - string
+                          administrativeAreaName:
+                            type:
+                              - "null"
+                              - string
+                          postalCode:
+                            type:
+                              - "null"
+                              - string
+                          sortingCode:
+                            type:
+                              - "null"
+                              - string
+                        required:
+                          - countryCode
+                          - organization
+                          - addressLine1
+                          - addressLine2
+                          - dependentLocality
+                          - locality
+                          - administrativeAreaCode
+                          - administrativeAreaName
+                          - postalCode
+                          - sortingCode
+                        additionalProperties: false
+                      formatted:
+                        type: object
+                        properties:
+                          lines:
+                            type: array
+                            items:
+                              type: string
+                          text:
+                            type: string
+                          singleLine:
+                            type: string
+                          formatVersion:
+                            type: integer
+                            minimum: -9007199254740991
+                            maximum: 9007199254740991
+                        required:
+                          - lines
+                          - text
+                          - singleLine
+                          - formatVersion
+                        additionalProperties: false
+                    required:
+                      - address
+                      - formatted
+                    additionalProperties: false
+                  meta:
+                    type: object
+                    properties:
+                      correlationId:
+                        type: string
+                    required:
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - data
+                  - meta
+                additionalProperties: false
+        "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "401":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "503":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+  /api/v1/geography/countries/{code}/address-formats:
+    get:
+      operationId: listGeographyAddressFormats
+      summary: Every version of a country address format, newest first, drafts included, with status, template and period
+      tags: *a7
+      parameters:
+        - schema:
+            type: string
+            pattern: ^[A-Z]{2}$
+          in: path
+          name: code
+          required: true
+      security: *a8
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        countryCode:
+                          type: string
+                        version:
+                          type: integer
+                          minimum: -9007199254740991
+                          maximum: 9007199254740991
+                        fields:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              fieldType:
+                                type: string
+                                enum:
+                                  - ORGANIZATION
+                                  - ADDRESS_LINE_1
+                                  - ADDRESS_LINE_2
+                                  - DEPENDENT_LOCALITY
+                                  - LOCALITY
+                                  - ADMINISTRATIVE_AREA
+                                  - POSTAL_CODE
+                                  - SORTING_CODE
+                              property:
+                                type: string
+                              displayOrder:
+                                type: integer
+                                minimum: -9007199254740991
+                                maximum: 9007199254740991
+                              contentLabelKey:
+                                type: string
+                              required:
+                                type: boolean
+                              maxLength:
+                                type: integer
+                                minimum: -9007199254740991
+                                maximum: 9007199254740991
+                              inputType:
+                                type: string
+                                enum:
+                                  - TEXT
+                                  - LOOKUP
+                              validationPattern:
+                                type:
+                                  - "null"
+                                  - string
+                              example:
+                                type:
+                                  - "null"
+                                  - string
+                              autocomplete:
+                                type:
+                                  - "null"
+                                  - string
+                              normalization:
+                                anyOf:
+                                  - type: string
+                                    enum:
+                                      - UPPERCASE
+                                      - REMOVE_SPACES
+                                      - UPPERCASE_REMOVE_SPACES
+                                  - type: "null"
+                            required:
+                              - fieldType
+                              - property
+                              - displayOrder
+                              - contentLabelKey
+                              - required
+                              - maxLength
+                              - inputType
+                              - validationPattern
+                              - example
+                              - autocomplete
+                              - normalization
+                            additionalProperties: false
+                        administrativeAreaMode:
+                          type: string
+                          enum:
+                            - LOOKUP
+                            - FREE_TEXT
+                            - NONE
+                        postalCodeExample:
+                          type:
+                            - "null"
+                            - string
+                        status:
+                          type: string
+                          enum:
+                            - DRAFT
+                            - PUBLISHED
+                        displayTemplate:
+                          type: string
+                        effectiveFrom:
+                          type: string
+                        effectiveTo:
+                          type:
+                            - "null"
+                            - string
+                      required:
+                        - countryCode
+                        - version
+                        - fields
+                        - administrativeAreaMode
+                        - postalCodeExample
+                      additionalProperties: false
+                  meta:
+                    type: object
+                    properties:
+                      correlationId:
+                        type: string
+                    required:
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - data
+                  - meta
+                additionalProperties: false
+        "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "401":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "403":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "409":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "503":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+    post:
+      operationId: createGeographyAddressFormat
+      summary: Create a DRAFT address format version for a country (fields in array order; labels are content keys; patterns are vetted). Nothing is public or in force until it is published
+      tags: *a7
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                displayTemplate:
+                  type: string
+                  minLength: 1
+                  maxLength: 500
+                fields:
+                  minItems: 1
+                  maxItems: 8
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      fieldType:
+                        type: string
+                        enum:
+                          - ORGANIZATION
+                          - ADDRESS_LINE_1
+                          - ADDRESS_LINE_2
+                          - DEPENDENT_LOCALITY
+                          - LOCALITY
+                          - ADMINISTRATIVE_AREA
+                          - POSTAL_CODE
+                          - SORTING_CODE
+                      contentLabelKey:
+                        type: string
+                        maxLength: 160
+                        pattern: ^[a-z][a-z0-9_]*([.][a-z][a-z0-9_]*)+$
+                      required:
+                        type: boolean
+                      maxLength:
+                        type: integer
+                        minimum: 1
+                        maximum: 200
+                      inputType:
+                        default: TEXT
+                        type: string
+                        enum:
+                          - TEXT
+                          - LOOKUP
+                      validationPattern:
+                        anyOf:
+                          - type: string
+                            minLength: 1
+                            maxLength: 200
+                          - type: "null"
+                      example:
+                        anyOf:
+                          - type: string
+                            minLength: 1
+                            maxLength: 100
+                          - type: "null"
+                      autocomplete:
+                        anyOf:
+                          - type: string
+                            pattern: ^[a-z][a-z0-9-]{0,39}$
+                          - type: "null"
+                      normalization:
+                        anyOf:
+                          - type: string
+                            enum:
+                              - UPPERCASE
+                              - REMOVE_SPACES
+                              - UPPERCASE_REMOVE_SPACES
+                          - type: "null"
+                    required:
+                      - fieldType
+                      - contentLabelKey
+                      - required
+                      - maxLength
+                      - inputType
+                    additionalProperties: false
+                effectiveFrom:
+                  type: string
+                  format: date-time
+                  pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|([+-](?:[01]\d|2[0-3]):[0-5]\d)))$
+                reason:
+                  type: string
+                  minLength: 1
+                  maxLength: 1000
+              required:
+                - displayTemplate
+                - fields
+                - reason
+              additionalProperties: false
+      parameters:
+        - schema:
+            type: string
+            pattern: ^[A-Z]{2}$
+          in: path
+          name: code
+          required: true
+      security: *a8
+      responses:
+        "201":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      countryCode:
+                        type: string
+                      version:
+                        type: integer
+                        minimum: -9007199254740991
+                        maximum: 9007199254740991
+                      fields:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            fieldType:
+                              type: string
+                              enum:
+                                - ORGANIZATION
+                                - ADDRESS_LINE_1
+                                - ADDRESS_LINE_2
+                                - DEPENDENT_LOCALITY
+                                - LOCALITY
+                                - ADMINISTRATIVE_AREA
+                                - POSTAL_CODE
+                                - SORTING_CODE
+                            property:
+                              type: string
+                            displayOrder:
+                              type: integer
+                              minimum: -9007199254740991
+                              maximum: 9007199254740991
+                            contentLabelKey:
+                              type: string
+                            required:
+                              type: boolean
+                            maxLength:
+                              type: integer
+                              minimum: -9007199254740991
+                              maximum: 9007199254740991
+                            inputType:
+                              type: string
+                              enum:
+                                - TEXT
+                                - LOOKUP
+                            validationPattern:
+                              type:
+                                - "null"
+                                - string
+                            example:
+                              type:
+                                - "null"
+                                - string
+                            autocomplete:
+                              type:
+                                - "null"
+                                - string
+                            normalization:
+                              anyOf:
+                                - type: string
+                                  enum:
+                                    - UPPERCASE
+                                    - REMOVE_SPACES
+                                    - UPPERCASE_REMOVE_SPACES
+                                - type: "null"
+                          required:
+                            - fieldType
+                            - property
+                            - displayOrder
+                            - contentLabelKey
+                            - required
+                            - maxLength
+                            - inputType
+                            - validationPattern
+                            - example
+                            - autocomplete
+                            - normalization
+                          additionalProperties: false
+                      administrativeAreaMode:
+                        type: string
+                        enum:
+                          - LOOKUP
+                          - FREE_TEXT
+                          - NONE
+                      postalCodeExample:
+                        type:
+                          - "null"
+                          - string
+                      status:
+                        type: string
+                        enum:
+                          - DRAFT
+                          - PUBLISHED
+                      displayTemplate:
+                        type: string
+                      effectiveFrom:
+                        type: string
+                      effectiveTo:
+                        type:
+                          - "null"
+                          - string
+                    required:
+                      - countryCode
+                      - version
+                      - fields
+                      - administrativeAreaMode
+                      - postalCodeExample
+                    additionalProperties: false
+                  meta:
+                    type: object
+                    properties:
+                      correlationId:
+                        type: string
+                    required:
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - data
+                  - meta
+                additionalProperties: false
+        "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "401":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "403":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "409":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "503":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+  /api/v1/geography/countries/{code}/address-formats/{version}/publication:
+    post:
+      operationId: publishGeographyAddressFormat
+      summary: "Publish a DRAFT format version: it becomes immutable and starts now (or later), and the format open-ended at that moment is closed at the new start. Idempotent for a published version; emits address-format-published"
+      tags: *a7
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                effectiveFrom:
+                  type: string
+                  format: date-time
+                  pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|([+-](?:[01]\d|2[0-3]):[0-5]\d)))$
+                reason:
+                  type: string
+                  minLength: 1
+                  maxLength: 1000
+              required:
+                - reason
+              additionalProperties: false
+      parameters:
+        - schema:
+            type: string
+            pattern: ^[A-Z]{2}$
+          in: path
+          name: code
+          required: true
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 100000
+          in: path
+          name: version
+          required: true
+      security: *a8
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      countryCode:
+                        type: string
+                      version:
+                        type: integer
+                        minimum: -9007199254740991
+                        maximum: 9007199254740991
+                      fields:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            fieldType:
+                              type: string
+                              enum:
+                                - ORGANIZATION
+                                - ADDRESS_LINE_1
+                                - ADDRESS_LINE_2
+                                - DEPENDENT_LOCALITY
+                                - LOCALITY
+                                - ADMINISTRATIVE_AREA
+                                - POSTAL_CODE
+                                - SORTING_CODE
+                            property:
+                              type: string
+                            displayOrder:
+                              type: integer
+                              minimum: -9007199254740991
+                              maximum: 9007199254740991
+                            contentLabelKey:
+                              type: string
+                            required:
+                              type: boolean
+                            maxLength:
+                              type: integer
+                              minimum: -9007199254740991
+                              maximum: 9007199254740991
+                            inputType:
+                              type: string
+                              enum:
+                                - TEXT
+                                - LOOKUP
+                            validationPattern:
+                              type:
+                                - "null"
+                                - string
+                            example:
+                              type:
+                                - "null"
+                                - string
+                            autocomplete:
+                              type:
+                                - "null"
+                                - string
+                            normalization:
+                              anyOf:
+                                - type: string
+                                  enum:
+                                    - UPPERCASE
+                                    - REMOVE_SPACES
+                                    - UPPERCASE_REMOVE_SPACES
+                                - type: "null"
+                          required:
+                            - fieldType
+                            - property
+                            - displayOrder
+                            - contentLabelKey
+                            - required
+                            - maxLength
+                            - inputType
+                            - validationPattern
+                            - example
+                            - autocomplete
+                            - normalization
+                          additionalProperties: false
+                      administrativeAreaMode:
+                        type: string
+                        enum:
+                          - LOOKUP
+                          - FREE_TEXT
+                          - NONE
+                      postalCodeExample:
+                        type:
+                          - "null"
+                          - string
+                      status:
+                        type: string
+                        enum:
+                          - DRAFT
+                          - PUBLISHED
+                      displayTemplate:
+                        type: string
+                      effectiveFrom:
+                        type: string
+                      effectiveTo:
+                        type:
+                          - "null"
+                          - string
+                    required:
+                      - countryCode
+                      - version
+                      - fields
+                      - administrativeAreaMode
+                      - postalCodeExample
+                    additionalProperties: false
+                  meta:
+                    type: object
+                    properties:
+                      correlationId:
+                        type: string
+                    required:
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - data
+                  - meta
+                additionalProperties: false
+        "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "401":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "403":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "409":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "503":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
 servers:
   - url: http://api.localhost:8080
     description: Local development via Caddy

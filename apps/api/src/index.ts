@@ -4,7 +4,14 @@ import { createDbTelemetry, getCorrelationId, registerPoolMetrics, initObservabi
 import { NatsClient, closeValkey, createS3, createValkey, runDiagnostics } from '@bananagig/platform';
 import { ConfigurationService, ValkeyConfigCache } from '@bananagig/configuration';
 import { ContentService } from '@bananagig/content';
-import { GeographyService, createGeographyScopeReferenceValidator, createMarketDefaultsProvider } from '@bananagig/geography';
+import {
+  AddressService,
+  GeographyService,
+  createAddressFormatReadinessCheck,
+  createGeographyScopeReferenceValidator,
+  createMarketDefaultsProvider,
+  registerReadinessCheck,
+} from '@bananagig/geography';
 import { createTokenVerifier } from '@bananagig/identity';
 import { buildApp } from './app';
 
@@ -60,12 +67,30 @@ const content = new ContentService({
   markets: createMarketDefaultsProvider(geography),
 });
 
+// Addresses: country-driven formats and validation. The country name for formatted addresses comes from the content registry (a port: geography
+// never imports content). No autocomplete, geocoder or verification provider is configured yet, so manual entry is the only path (DEBT-0037).
+const address = new AddressService({
+  database,
+  cache: new ValkeyConfigCache(valkey),
+  env: cfg.env,
+  cacheTtlSeconds: cfg.configuration.cacheTtlSeconds,
+  countryNames: async (countryCode, locale) => {
+    // management read: a staff preview of a PLANNED country also gets its country line (the caller already decided visibility)
+    const country = await geography.getCountry(countryCode, { management: true });
+    const rendered = await content.render(country.displayNameContentKey, { locale, context: { country: countryCode } });
+    return rendered.value;
+  },
+});
+// A market can only be activated when its country has an address format in force (the readiness checklist of the market).
+registerReadinessCheck(createAddressFormatReadinessCheck(address));
+
 const app = await buildApp({
   cfg,
   verifier,
   configuration,
   content,
   geography,
+  address,
   // Critical for serving requests: Postgres only. Valkey/NATS/OpenSearch/flagd outages must not take the API down.
   readiness: async () => ({ postgres: (await database.health()).ok ? 'up' : 'down' }),
   diagnostics: () => runDiagnostics(adapters),

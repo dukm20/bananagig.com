@@ -6,6 +6,8 @@ import { stringify } from 'yaml';
 import { z } from 'zod';
 import { loadConfig } from '@bananagig/config';
 import {
+  AddressFormatPublishedPayload,
+  AdministrativeAreasUpdatedPayload,
   CONFIGURATION_EVENTS,
   CONTENT_EVENTS,
   ConfigurationEventPayload,
@@ -32,7 +34,7 @@ const verifier = createTokenVerifier({
     throw new Error('not used');
   },
 });
-const app = await buildApp({ cfg, verifier, configuration: {}, content: {}, geography: {}, readiness: async () => ({}) });
+const app = await buildApp({ cfg, verifier, configuration: {}, content: {}, geography: {}, address: {}, readiness: async () => ({}) });
 await app.ready();
 const openapi = app.swagger();
 await app.close();
@@ -85,6 +87,18 @@ const GEOGRAPHY_MESSAGES = {
     'The defaults of a market changed: its default locale, currency or time zone (cause MARKET), or the distance unit, first day of week, date format or time format of its country (cause COUNTRY). changedFields names the fields, never their values.',
     MarketEventPayload,
     'geography_market',
+  ],
+  addressFormatPublished: [
+    'GeographyAddressFormatPublished',
+    'An address format version of a country was published (it is immutable and in force from effectiveFrom; the previous format is closed at that instant). The payload carries the country, the version and the start, never address data.',
+    AddressFormatPublishedPayload,
+    'geography_address_format',
+  ],
+  administrativeAreasUpdated: [
+    'GeographyAdministrativeAreasUpdated',
+    'Administrative areas of a country were added or changed. The payload carries counts only; the audit trail lists the area codes.',
+    AdministrativeAreasUpdatedPayload,
+    'geography_country',
   ],
 };
 const channels = {

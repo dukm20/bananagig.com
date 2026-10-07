@@ -331,6 +331,125 @@ CREATE INDEX idx_versions__in_review ON content.versions USING btree (created_at
 CREATE INDEX idx_versions__resolution ON content.versions USING btree (entry_id, locale, scope_type, effective_from DESC) WHERE (status = ANY (ARRAY['SCHEDULED'::text, 'PUBLISHED'::text, 'SUPERSEDED'::text]));
 CREATE INDEX idx_versions__scheduled ON content.versions USING btree (effective_from) WHERE (status = 'SCHEDULED'::text);
 
+CREATE TABLE geography.address_format_fields (
+  address_format_id uuid NOT NULL,
+  field_type text NOT NULL,
+  display_order smallint NOT NULL,
+  content_label_key text NOT NULL,
+  required boolean NOT NULL,
+  max_length smallint NOT NULL,
+  input_type text NOT NULL DEFAULT 'TEXT'::text,
+  validation_pattern text,
+  example_value text,
+  autocomplete_hint text,
+  normalization_rule text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_address_format_fields PRIMARY KEY (address_format_id, field_type),
+  CONSTRAINT uq_address_format_fields__format_order UNIQUE (address_format_id, display_order),
+  CONSTRAINT fk_address_format_fields__format FOREIGN KEY (address_format_id) REFERENCES geography.address_formats(address_format_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_address_format_fields__label_key FOREIGN KEY (content_label_key) REFERENCES content.entries(key) ON DELETE RESTRICT,
+  CONSTRAINT ck_address_format_fields__autocomplete_hint CHECK (((autocomplete_hint IS NULL) OR (autocomplete_hint ~ '^[a-z][a-z0-9-]{0,39}$'::text))),
+  CONSTRAINT ck_address_format_fields__display_order CHECK (((display_order >= 1) AND (display_order <= 20))),
+  CONSTRAINT ck_address_format_fields__example CHECK (((example_value IS NULL) OR ((length(btrim(example_value)) > 0) AND (length(example_value) <= 100) AND (example_value !~ '[\u0000-\u001F\u007F]'::text)))),
+  CONSTRAINT ck_address_format_fields__field_type CHECK ((field_type = ANY (ARRAY['ORGANIZATION'::text, 'ADDRESS_LINE_1'::text, 'ADDRESS_LINE_2'::text, 'DEPENDENT_LOCALITY'::text, 'LOCALITY'::text, 'ADMINISTRATIVE_AREA'::text, 'POSTAL_CODE'::text, 'SORTING_CODE'::text]))),
+  CONSTRAINT ck_address_format_fields__input_type CHECK ((input_type = ANY (ARRAY['TEXT'::text, 'LOOKUP'::text]))),
+  CONSTRAINT ck_address_format_fields__label_key_format CHECK ((content_label_key ~ '^[a-z][a-z0-9_]*([.][a-z][a-z0-9_]*)+$'::text)),
+  CONSTRAINT ck_address_format_fields__lookup_has_no_pattern CHECK (((input_type = 'TEXT'::text) OR ((validation_pattern IS NULL) AND (normalization_rule IS NULL)))),
+  CONSTRAINT ck_address_format_fields__lookup_only_for_area CHECK (((input_type = 'TEXT'::text) OR (field_type = 'ADMINISTRATIVE_AREA'::text))),
+  CONSTRAINT ck_address_format_fields__max_length CHECK (((max_length >= 1) AND (max_length <= 200))),
+  CONSTRAINT ck_address_format_fields__normalization_rule CHECK (((normalization_rule IS NULL) OR (normalization_rule = ANY (ARRAY['UPPERCASE'::text, 'REMOVE_SPACES'::text, 'UPPERCASE_REMOVE_SPACES'::text])))),
+  CONSTRAINT ck_address_format_fields__pattern_length CHECK (((validation_pattern IS NULL) OR ((length(validation_pattern) >= 1) AND (length(validation_pattern) <= 200))))
+);
+
+CREATE TABLE geography.address_formats (
+  address_format_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  country_id uuid NOT NULL,
+  version integer NOT NULL,
+  status text NOT NULL DEFAULT 'DRAFT'::text,
+  display_template text NOT NULL,
+  effective_from timestamp with time zone NOT NULL,
+  effective_to timestamp with time zone,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_address_formats PRIMARY KEY (address_format_id),
+  CONSTRAINT uq_address_formats__country_version UNIQUE (country_id, version),
+  CONSTRAINT uq_address_formats__format_country UNIQUE (address_format_id, country_id),
+  CONSTRAINT fk_address_formats__country_id FOREIGN KEY (country_id) REFERENCES geography.countries(country_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_address_formats__draft_is_open CHECK (((status <> 'DRAFT'::text) OR (effective_to IS NULL))),
+  CONSTRAINT ck_address_formats__effective_range CHECK (((effective_to IS NULL) OR (effective_to > effective_from))),
+  CONSTRAINT ck_address_formats__status CHECK ((status = ANY (ARRAY['DRAFT'::text, 'PUBLISHED'::text]))),
+  CONSTRAINT ck_address_formats__template CHECK ((((length(display_template) >= 1) AND (length(display_template) <= 500)) AND (display_template !~ '[\u0001-\u0009\u000B-\u001F\u007F]'::text))),
+  CONSTRAINT ck_address_formats__version CHECK ((version >= 1))
+);
+
+CREATE TABLE geography.addresses (
+  address_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  country_id uuid NOT NULL,
+  address_format_id uuid NOT NULL,
+  administrative_area_id uuid,
+  administrative_area_code text,
+  administrative_area_name text,
+  organization text,
+  address_line_1 text NOT NULL,
+  address_line_2 text,
+  dependent_locality text,
+  locality text,
+  postal_code text,
+  sorting_code text,
+  location geography(Point,4326),
+  time_zone_id uuid,
+  formatted_address text NOT NULL,
+  validation_status text NOT NULL,
+  validation_source text NOT NULL,
+  provider_code text,
+  provider_reference text,
+  raw_input jsonb NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_addresses PRIMARY KEY (address_id),
+  CONSTRAINT fk_addresses__area_country_code FOREIGN KEY (administrative_area_id, country_id, administrative_area_code) REFERENCES geography.administrative_areas(administrative_area_id, country_id, code) ON DELETE RESTRICT,
+  CONSTRAINT fk_addresses__country_id FOREIGN KEY (country_id) REFERENCES geography.countries(country_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_addresses__format_country FOREIGN KEY (address_format_id, country_id) REFERENCES geography.address_formats(address_format_id, country_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_addresses__time_zone_id FOREIGN KEY (time_zone_id) REFERENCES geography.time_zones(time_zone_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_addresses__area_consistent CHECK ((((administrative_area_id IS NULL) = (administrative_area_code IS NULL)) AND ((administrative_area_code IS NULL) OR (administrative_area_name IS NOT NULL)))),
+  CONSTRAINT ck_addresses__autocomplete_is_not_verified CHECK (((validation_source <> 'AUTOCOMPLETE'::text) OR (validation_status = ANY (ARRAY['UNVERIFIED'::text, 'FORMAT_VALID'::text, 'INVALID'::text])))),
+  CONSTRAINT ck_addresses__formatted_address CHECK (((length(btrim(formatted_address)) > 0) AND (length(formatted_address) <= 1500))),
+  CONSTRAINT ck_addresses__located_status_has_location CHECK (((validation_status <> ALL (ARRAY['GEOCODED'::text, 'VERIFIED'::text])) OR (location IS NOT NULL))),
+  CONSTRAINT ck_addresses__manual_is_not_located CHECK (((validation_source <> 'MANUAL'::text) OR ((location IS NULL) AND (validation_status = ANY (ARRAY['UNVERIFIED'::text, 'FORMAT_VALID'::text, 'INVALID'::text]))))),
+  CONSTRAINT ck_addresses__provider CHECK ((((validation_source = ANY (ARRAY['AUTOCOMPLETE'::text, 'GEOCODER'::text])) = (provider_code IS NOT NULL)) OR (validation_source = 'IMPORTED'::text))),
+  CONSTRAINT ck_addresses__provider_code_format CHECK (((provider_code IS NULL) OR (provider_code ~ '^[a-z][a-z0-9_-]{1,39}$'::text))),
+  CONSTRAINT ck_addresses__provider_reference CHECK (((provider_reference IS NULL) OR ((provider_code IS NOT NULL) AND (length(btrim(provider_reference)) > 0) AND (length(provider_reference) <= 200) AND (provider_reference !~ '[\u0000-\u001F\u007F]'::text)))),
+  CONSTRAINT ck_addresses__raw_input CHECK (((jsonb_typeof(raw_input) = 'object'::text) AND (length((raw_input)::text) <= 4000))),
+  CONSTRAINT ck_addresses__text_values CHECK (((length(btrim(address_line_1)) > 0) AND (length(address_line_1) <= 200) AND ((organization IS NULL) OR ((length(btrim(organization)) > 0) AND (length(organization) <= 200))) AND ((address_line_2 IS NULL) OR ((length(btrim(address_line_2)) > 0) AND (length(address_line_2) <= 200))) AND ((dependent_locality IS NULL) OR ((length(btrim(dependent_locality)) > 0) AND (length(dependent_locality) <= 200))) AND ((locality IS NULL) OR ((length(btrim(locality)) > 0) AND (length(locality) <= 200))) AND ((administrative_area_name IS NULL) OR ((length(btrim(administrative_area_name)) > 0) AND (length(administrative_area_name) <= 200))) AND ((postal_code IS NULL) OR ((length(btrim(postal_code)) > 0) AND (length(postal_code) <= 200))) AND ((sorting_code IS NULL) OR ((length(btrim(sorting_code)) > 0) AND (length(sorting_code) <= 200))))),
+  CONSTRAINT ck_addresses__validation_source CHECK ((validation_source = ANY (ARRAY['MANUAL'::text, 'AUTOCOMPLETE'::text, 'GEOCODER'::text, 'ADMIN'::text, 'IMPORTED'::text]))),
+  CONSTRAINT ck_addresses__validation_status CHECK ((validation_status = ANY (ARRAY['UNVERIFIED'::text, 'FORMAT_VALID'::text, 'GEOCODED'::text, 'VERIFIED'::text, 'INVALID'::text]))),
+  CONSTRAINT ck_addresses__verified_source CHECK (((validation_status <> 'VERIFIED'::text) OR (validation_source = ANY (ARRAY['GEOCODER'::text, 'ADMIN'::text]))))
+);
+
+CREATE TABLE geography.administrative_areas (
+  administrative_area_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  country_id uuid NOT NULL,
+  code text NOT NULL,
+  name text NOT NULL,
+  area_type text NOT NULL,
+  status text NOT NULL DEFAULT 'ACTIVE'::text,
+  parent_area_id uuid,
+  display_order integer,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_administrative_areas PRIMARY KEY (administrative_area_id),
+  CONSTRAINT uq_administrative_areas__area_country UNIQUE (administrative_area_id, country_id),
+  CONSTRAINT uq_administrative_areas__area_country_code UNIQUE (administrative_area_id, country_id, code),
+  CONSTRAINT uq_administrative_areas__country_code UNIQUE (country_id, code),
+  CONSTRAINT fk_administrative_areas__country_id FOREIGN KEY (country_id) REFERENCES geography.countries(country_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_administrative_areas__parent FOREIGN KEY (parent_area_id, country_id) REFERENCES geography.administrative_areas(administrative_area_id, country_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_administrative_areas__area_type CHECK ((area_type = ANY (ARRAY['STATE'::text, 'PROVINCE'::text, 'TERRITORY'::text, 'DISTRICT'::text, 'REGION'::text, 'COUNTY'::text, 'OTHER'::text]))),
+  CONSTRAINT ck_administrative_areas__code_format CHECK ((code ~ '^[A-Z0-9][A-Z0-9-]{0,9}$'::text)),
+  CONSTRAINT ck_administrative_areas__display_order CHECK (((display_order IS NULL) OR (display_order >= 0))),
+  CONSTRAINT ck_administrative_areas__name_not_blank CHECK (((length(btrim(name)) > 0) AND (length(name) <= 120))),
+  CONSTRAINT ck_administrative_areas__not_own_parent CHECK (((parent_area_id IS NULL) OR (parent_area_id <> administrative_area_id))),
+  CONSTRAINT ck_administrative_areas__status CHECK ((status = ANY (ARRAY['ACTIVE'::text, 'INACTIVE'::text])))
+);
+
 CREATE TABLE geography.audit_events (
   audit_event_id uuid NOT NULL DEFAULT gen_random_uuid(),
   occurred_at timestamp with time zone NOT NULL DEFAULT clock_timestamp(),
@@ -341,13 +460,16 @@ CREATE TABLE geography.audit_events (
   changes jsonb,
   reason text,
   correlation_id text NOT NULL,
+  address_format_id uuid,
   CONSTRAINT pk_audit_events PRIMARY KEY (audit_event_id),
+  CONSTRAINT fk_audit_events__address_format_id FOREIGN KEY (address_format_id) REFERENCES geography.address_formats(address_format_id) ON DELETE RESTRICT,
   CONSTRAINT fk_audit_events__country_id FOREIGN KEY (country_id) REFERENCES geography.countries(country_id) ON DELETE RESTRICT,
   CONSTRAINT fk_audit_events__market_id FOREIGN KEY (market_id) REFERENCES geography.markets(market_id) ON DELETE RESTRICT,
-  CONSTRAINT ck_audit_events__action CHECK ((action = ANY (ARRAY['COUNTRY_CREATED'::text, 'COUNTRY_UPDATED'::text, 'COUNTRY_ACTIVATED'::text, 'COUNTRY_DEACTIVATED'::text, 'MARKET_CREATED'::text, 'MARKET_UPDATED'::text, 'MARKET_ACTIVATED'::text, 'MARKET_DEACTIVATED'::text]))),
+  CONSTRAINT ck_audit_events__action CHECK ((action = ANY (ARRAY['COUNTRY_CREATED'::text, 'COUNTRY_UPDATED'::text, 'COUNTRY_ACTIVATED'::text, 'COUNTRY_DEACTIVATED'::text, 'MARKET_CREATED'::text, 'MARKET_UPDATED'::text, 'MARKET_ACTIVATED'::text, 'MARKET_DEACTIVATED'::text, 'COUNTRY_ADMINISTRATIVE_AREAS_UPDATED'::text, 'ADDRESS_FORMAT_DRAFTED'::text, 'ADDRESS_FORMAT_PUBLISHED'::text]))),
   CONSTRAINT ck_audit_events__changes_object CHECK (((changes IS NULL) OR (jsonb_typeof(changes) = 'object'::text))),
-  CONSTRAINT ck_audit_events__subject CHECK ((((action ~~ 'COUNTRY\_%'::text) AND (country_id IS NOT NULL) AND (market_id IS NULL)) OR ((action ~~ 'MARKET\_%'::text) AND (market_id IS NOT NULL) AND (country_id IS NULL))))
+  CONSTRAINT ck_audit_events__subject CHECK ((((action ~~ 'COUNTRY\_%'::text) AND (country_id IS NOT NULL) AND (market_id IS NULL) AND (address_format_id IS NULL)) OR ((action ~~ 'MARKET\_%'::text) AND (market_id IS NOT NULL) AND (country_id IS NULL) AND (address_format_id IS NULL)) OR ((action ~~ 'ADDRESS\_FORMAT\_%'::text) AND (address_format_id IS NOT NULL) AND (country_id IS NULL) AND (market_id IS NULL))))
 );
+CREATE INDEX idx_audit_events__address_format ON geography.audit_events USING btree (address_format_id, occurred_at DESC) WHERE (address_format_id IS NOT NULL);
 CREATE INDEX idx_audit_events__country ON geography.audit_events USING btree (country_id, occurred_at DESC) WHERE (country_id IS NOT NULL);
 CREATE INDEX idx_audit_events__market ON geography.audit_events USING btree (market_id, occurred_at DESC) WHERE (market_id IS NOT NULL);
 

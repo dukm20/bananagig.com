@@ -835,6 +835,7 @@ describe('geography API: control characters, bidirectional overrides and blank t
 describe('geography API error mapping', () => {
   const expected: Record<GeographyErrorCode, [number, string]> = {
     COUNTRY_NOT_FOUND: [404, 'NOT_FOUND'],
+    ADDRESS_FORMAT_NOT_FOUND: [404, 'NOT_FOUND'],
     MARKET_NOT_FOUND: [404, 'NOT_FOUND'],
     CURRENCY_NOT_FOUND: [404, 'NOT_FOUND'],
     TIME_ZONE_NOT_FOUND: [404, 'NOT_FOUND'],

@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { Locale } from './content';
 import { envelope } from './envelope';
 import { adminText } from './text';
-export { adminText } from './text';
+export { adminText, containsForbiddenText } from './text';
 
 // ---------------------------------------------------------------- codes
 /** ISO 3166-1 alpha-2, upper case. This is also the canonical COUNTRY scope reference used by configuration and content. */
@@ -225,6 +225,8 @@ export const GEOGRAPHY_EVENTS = {
   marketActivated: 'bananagig.geography.market-activated.v1',
   marketDeactivated: 'bananagig.geography.market-deactivated.v1',
   marketDefaultsChanged: 'bananagig.geography.market-defaults-changed.v1',
+  addressFormatPublished: 'bananagig.geography.address-format-published.v1',
+  administrativeAreasUpdated: 'bananagig.geography.administrative-areas-updated.v1',
 } as const;
 /** Identifiers only. */
 export const CountryEventPayload = z.object({ countryCode: z.string() });
@@ -241,6 +243,7 @@ export type MarketEventPayload = z.infer<typeof MarketEventPayload>;
 /** Typed geography error codes (mapped to the standard API error model by the API layer). */
 export const GEOGRAPHY_ERROR_CODES = [
   'COUNTRY_NOT_FOUND',
+  'ADDRESS_FORMAT_NOT_FOUND',
   'MARKET_NOT_FOUND',
   'CURRENCY_NOT_FOUND',
   'TIME_ZONE_NOT_FOUND',

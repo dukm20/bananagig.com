@@ -5,5 +5,8 @@ export * from './validation';
 export * from './readiness';
 export * from './cache';
 export * from './service';
+export * from './address-engine';
+export * from './address-providers';
+export * from './address-service';
 export * from './scope-validator';
 export * from './market-defaults-provider';

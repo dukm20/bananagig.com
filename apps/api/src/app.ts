@@ -4,7 +4,7 @@ import type { AppConfig } from '@bananagig/config';
 import { API_PREFIX } from '@bananagig/contracts';
 import type { ConfigurationService } from '@bananagig/configuration';
 import type { ContentService } from '@bananagig/content';
-import type { GeographyService } from '@bananagig/geography';
+import type { AddressService, GeographyService } from '@bananagig/geography';
 import type { TokenVerifier } from '@bananagig/identity';
 import { metrics } from '@bananagig/observability';
 import { authPlugin } from './plugins/auth';
@@ -12,6 +12,7 @@ import { correlationPlugin } from './plugins/correlation';
 import { errorPlugin, frameworkErrors } from './plugins/errors';
 import { configurationRoutes } from './modules/configuration/routes';
 import { contentRoutes } from './modules/content/routes';
+import { addressRoutes } from './modules/geography/address-routes';
 import { geographyRoutes } from './modules/geography/routes';
 import { systemAuthRoutes, systemRootRoutes, systemV1Routes } from './modules/system/routes';
 
@@ -38,6 +39,8 @@ export interface AppDeps {
    * Optional for the same reason as content; routes are registered only when provided.
    */
   geography?: GeographyService;
+  /** Address formats, administrative areas and the stateless validate/format operations (public reads, internal management). Routes are registered only when provided. */
+  address?: AddressService;
 }
 
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
@@ -100,6 +103,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   await app.register(configurationRoutes, { prefix: `${API_PREFIX}/configuration`, configuration: deps.configuration });
   if (deps.content) await app.register(contentRoutes, { prefix: `${API_PREFIX}/content`, content: deps.content });
   if (deps.geography) await app.register(geographyRoutes, { prefix: `${API_PREFIX}/geography`, geography: deps.geography });
+  if (deps.address) await app.register(addressRoutes, { prefix: `${API_PREFIX}/geography`, address: deps.address });
 
   app.get('/metrics', { schema: { hide: true } }, async (_req, reply) => reply.type(metrics.contentType).send(await metrics.metrics()));
   if (deps.diagnostics) {
