@@ -149,6 +149,20 @@ describe('data-model:check', () => {
     expect(out.code).toBe(0);
   });
 
+  it('requires review headings to end at the checkpoint id or a heading boundary', () => {
+    const r = repo(dmDocs());
+    write(r, 'db/migrations/0002_booking.sql', `${HDR}CREATE SCHEMA booking;\n`);
+    write(r, 'docs/data/SCHEMA_SNAPSHOT.sql', SNAP_BOOKING);
+    write(r, 'docs/data/DATA_MODEL.md', '# Data model\n\nbooking.reservation\n');
+    write(r, 'docs/data/DATA_DICTIONARY.md', '# Dictionary\n\n### booking.reservation\n\nrows\n');
+    write(r, 'docs/data/DATA_MODEL_CHANGELOG.md', `# Changelog\n${CHG('TST-002A', '0002_booking.sql')}`);
+    write(r, 'docs/data/NORMALIZATION_LOG.md', `# Normalization\n${NORM('TST-002A')}`);
+    const out = dm(r, SNAP_BOOKING, ['TST-002']);
+    expect(out.code).toBe(1);
+    expect(out.out).toContain('NORMALIZATION_LOG.md has no "## TST-002" entry');
+    expect(out.out).toContain('DATA_MODEL_CHANGELOG.md has no "## TST-002" entry');
+  });
+
   it('rejects an explicit --base that does not exist once the repository has commits (it would silently skip the git-diff rules)', () => {
     const r = repo(dmDocs());
     const out = dm(r, SNAP_EMPTY, ['--base=0000000000000000000000000000000000000000']);
@@ -183,6 +197,56 @@ describe('data-model:check', () => {
       expect(out.code).toBe(1);
       expect(out.out).toContain('NORMALIZATION_LOG.md has no "## TST-002" entry');
       expect(out.out).toContain('DATA_MODEL_CHANGELOG.md has no "## TST-002" entry');
+    });
+    it('does not assign migrations removed before the final base diff to their original checkpoint', () => {
+      const r = repo(dmDocs());
+      const base = sh(r, 'git', ['rev-parse', 'HEAD']).trim();
+      write(r, 'db/migrations/0002_removed.sql', `${HDR}SELECT 1;\n`);
+      sh(r, 'git', ['add', '-A']);
+      sh(r, 'git', ['commit', '-q', '-m', 'feat(TST-002): add temporary migration']);
+      rmSync(path.join(r, 'db/migrations/0002_removed.sql'));
+      sh(r, 'git', ['add', '-A']);
+      sh(r, 'git', ['commit', '-q', '-m', 'chore(TST-002): remove temporary migration']);
+      write(r, 'db/migrations/0002_booking.sql', `${HDR}CREATE SCHEMA booking;\n`);
+      write(r, 'docs/data/SCHEMA_SNAPSHOT.sql', SNAP_BOOKING);
+      write(r, 'docs/data/DATA_MODEL.md', '# Data model\n\nbooking.reservation\n');
+      write(r, 'docs/data/DATA_DICTIONARY.md', '# Dictionary\n\n### booking.reservation\n\nrows\n');
+      write(r, 'docs/data/DATA_MODEL_CHANGELOG.md', `# Changelog\n${CHG('TST-003', '0002_booking.sql')}`);
+      write(r, 'docs/data/NORMALIZATION_LOG.md', `# Normalization\n${NORM('TST-003')}`);
+      sh(r, 'git', ['add', '-A']);
+      sh(r, 'git', ['commit', '-q', '-m', 'feat(TST-003): add booking schema']);
+      const out = dm(r, SNAP_BOOKING, [`--base=${base}`]);
+      expect(out.out).toBe('data-model:check: OK\n');
+      expect(out.code).toBe(0);
+    });
+    it('infers a migration added by a merge commit by comparing against each parent', () => {
+      const r = repo(dmDocs());
+      write(r, 'db/migrations/0002_booking.sql', `${HDR}CREATE SCHEMA booking;\n`);
+      sh(r, 'git', ['add', '-A']);
+      sh(r, 'git', ['commit', '-q', '-m', 'feat(TST-002): introduce migration']);
+      sh(r, 'git', ['branch', 'source']);
+      write(r, 'migration-side-commit.txt', 'source branch\n');
+      sh(r, 'git', ['add', '-A']);
+      sh(r, 'git', ['commit', '-q', '-m', 'chore: advance source branch']);
+      sh(r, 'git', ['checkout', '-q', 'main']);
+      rmSync(path.join(r, 'db/migrations/0002_booking.sql'));
+      sh(r, 'git', ['add', '-A']);
+      sh(r, 'git', ['commit', '-q', '-m', 'chore(TST-002): remove migration']);
+      const base = sh(r, 'git', ['rev-parse', 'HEAD']).trim();
+      sh(r, 'git', ['merge', '--no-ff', '--no-commit', 'source']);
+      write(r, 'db/migrations/0002_booking.sql', `${HDR}CREATE SCHEMA booking;\n`);
+      sh(r, 'git', ['add', 'db/migrations/0002_booking.sql']);
+      sh(r, 'git', ['commit', '-q', '-m', 'feat(TST-003): restore migration in merge']);
+      write(r, 'docs/data/SCHEMA_SNAPSHOT.sql', SNAP_BOOKING);
+      write(r, 'docs/data/DATA_MODEL.md', '# Data model\n\nbooking.reservation\n');
+      write(r, 'docs/data/DATA_DICTIONARY.md', '# Dictionary\n\n### booking.reservation\n\nrows\n');
+      write(r, 'docs/data/DATA_MODEL_CHANGELOG.md', `# Changelog\n${CHG('TST-003', '0002_booking.sql')}`);
+      write(r, 'docs/data/NORMALIZATION_LOG.md', `# Normalization\n${NORM('TST-003')}`);
+      sh(r, 'git', ['add', '-A']);
+      sh(r, 'git', ['commit', '-q', '-m', 'docs(TST-003): complete data model review']);
+      const out = dm(r, SNAP_BOOKING, [`--base=${base}`]);
+      expect(out.out).toBe('data-model:check: OK\n');
+      expect(out.code).toBe(0);
     });
     it('rejects a commit that adds a migration without a checkpoint id in its subject', () => {
       const { r, base } = committed('add booking schema');

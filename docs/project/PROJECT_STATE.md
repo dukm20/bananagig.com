@@ -2,8 +2,8 @@
 
 Current truth only. History lives in `IMPLEMENTATION_HISTORY.md`; decisions in `docs/architecture/`.
 
-Current checkpoint: CI-002
-Last completed checkpoint: CI-002
+Current checkpoint: CI-002A
+Last completed checkpoint: CI-002A
 Next approved checkpoint: GEO-001 — Countries, Markets, Locale and Currency
 Latest migration: 0006_content_seed_shell_copy.sql
 Latest ADR: ADR-0020
@@ -83,4 +83,4 @@ None.
 
 ## Test counts
 
-Unit: 1035 (config 6, contracts 88, observability 2, identity 20, configuration 35, content 725, api 82, worker 10, web 67) plus 66 root script tests (governance 42, identity realm 23, migration files 1). Integration: 236 in 14 files (includes content 80, API content 11, worker content 2, content seed 9, configuration 47, Keycloak 21). Smoke: 29 checks.
+Unit: 1035 (config 6, contracts 88, observability 2, identity 20, configuration 35, content 725, api 82, worker 10, web 67) plus 69 root script tests (governance 45, identity realm 23, migration files 1). Integration: 236 in 14 files (includes content 80, API content 11, worker content 2, content seed 9, configuration 47, Keycloak 21). Smoke: 29 checks.

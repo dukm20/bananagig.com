@@ -370,3 +370,32 @@ None required.
 
 ### Known follow-up
 `compose-smoke` (including Trivy) has not yet run for the content registry; it runs after `verify` passes on the next push.
+
+
+## CI-002A — 2026-10-06
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(CI-002A)"`.
+Summary: Corrective hardening of the CI-002 checkpoint-id inference, found by review after CI-002 was pushed and CI went green. No application behavior, schema or migration changed.
+
+### Delivered
+- `scripts/data-model-check.mjs`: inference counts only migrations that are in the final `base..working tree` diff (a migration added and removed inside the range no longer attributes to its original checkpoint), compares merge commits against each parent (`diff-tree -m`), and matches review headings on the whole checkpoint id or an id followed by whitespace, so `## CFG-001A` no longer satisfies a check for `CFG-001` (the old prefix match was also used for explicit ids)
+- `scripts/governance.test.mjs`: three regression tests (heading boundary, migration removed within the range, merge-commit migration); governance suite 45 tests
+
+### Schema
+None. No migration. Data model: NOT_REQUIRED.
+
+### Contracts
+None.
+
+### Tests
+Unit 1035, root script tests 69 (governance 45, identity realm 23, migration files 1), integration 236, smoke 29 checks. The CI-equivalent `data-model:check` against the range that failed in CI (`14db38d..HEAD`) still passes.
+
+### Skills updated
+None (the testing-skill lesson from CI-002 already covers running the governance step as CI does).
+
+### ADRs
+None required.
+
+### Known follow-up
+None.

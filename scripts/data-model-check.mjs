@@ -36,7 +36,8 @@ const baselineMode = changes === null; // no commit to compare against yet
 const migChanges = [...(changes ?? new Map())].filter(([f]) => f.startsWith('db/migrations/'));
 for (const [f, s] of migChanges)
   if (s !== 'A') r.fail(`applied migration was modified or removed (${s}): ${f}. Never edit an applied migration; add a new one.`);
-const newMigrations = migChanges.filter(([, s]) => s === 'A').map(([f]) => f.split('/').pop());
+const newMigrationPaths = migChanges.filter(([, s]) => s === 'A').map(([f]) => f);
+const newMigrations = newMigrationPaths.map((f) => f.split('/').pop());
 
 // ---- 2. snapshot freshness ----
 let generated;
@@ -81,9 +82,14 @@ function inferCheckpoints() {
   const byId = new Map();
   for (const line of log.split('\n').filter(Boolean)) {
     const [hash, subject = ''] = line.split('\t');
-    const added = (git(['diff-tree', '--no-commit-id', '--name-only', '--diff-filter=A', '-r', hash, '--', 'db/migrations'], { allowFail: true }) ?? '')
-      .split('\n')
-      .filter(Boolean)
+    const added = [
+      ...new Set(
+        (git(['diff-tree', '--no-commit-id', '--name-only', '--diff-filter=A', '-r', '-m', hash, '--', 'db/migrations'], { allowFail: true }) ?? '')
+          .split('\n')
+          .filter(Boolean),
+      ),
+    ]
+      .filter((f) => newMigrationPaths.includes(f))
       .map((f) => f.split('/').pop());
     if (!added.length) continue;
     const id = subject.match(/^[a-z]+\(([A-Z][A-Z0-9]*-\d{3}[A-Z]?)\)/)?.[1];
@@ -96,6 +102,8 @@ function inferCheckpoints() {
   return [...byId].map(([id, migrations]) => ({ id, migrations }));
 }
 
+const hasCheckpointHeading = (title, id) => title === id || (title.startsWith(id) && /\s/.test(title[id.length] ?? ''));
+
 if (schemaChanged) {
   const targets = checkpoint ? [{ id: checkpoint, migrations: newMigrations }] : inferCheckpoints();
   if (!targets.length && !r.errors.length)
@@ -107,7 +115,7 @@ if (schemaChanged) {
   }
   if (fkChanged && !touched('docs/data/ERD.md')) r.fail('relationships (foreign keys) changed but docs/data/ERD.md was not updated');
   for (const { id, migrations } of targets) {
-    const norm = sections(read('docs/data/NORMALIZATION_LOG.md'), 2).find((s) => s.title.startsWith(id));
+    const norm = sections(read('docs/data/NORMALIZATION_LOG.md'), 2).find((s) => hasCheckpointHeading(s.title, id));
     if (!norm) r.fail(`NORMALIZATION_LOG.md has no "## ${id}" entry`);
     else {
       for (const h of [
@@ -125,7 +133,7 @@ if (schemaChanged) {
         if (!norm.body.includes(h)) r.fail(`NORMALIZATION_LOG.md "${id}" entry is missing "${h}"`);
       }
     }
-    const log = sections(read('docs/data/DATA_MODEL_CHANGELOG.md'), 2).find((s) => s.title.startsWith(id));
+    const log = sections(read('docs/data/DATA_MODEL_CHANGELOG.md'), 2).find((s) => hasCheckpointHeading(s.title, id));
     if (!log) r.fail(`DATA_MODEL_CHANGELOG.md has no "## ${id}" entry`);
     else
       for (const h of [
