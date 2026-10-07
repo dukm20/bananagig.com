@@ -366,3 +366,110 @@ erDiagram
 **Address model (GEO-002).** `GEO_ADDRESSES` is the one canonical, immutable structured address; it has NO owner column (customer, provider, booking and business tables will reference `address_id` from their own schemas). Three composite foreign keys carry a repeated value on purpose: `(address_format_id, country_id)` to `GEO_ADDRESS_FORMATS` keeps the format version in the address country (`uq_address_formats__format_country`), `(administrative_area_id, country_id, administrative_area_code)` to `GEO_ADMINISTRATIVE_AREAS` keeps the area in the country and the stored code equal to the area code (`uq_administrative_areas__area_country_code`; all three NULL for a free-text or absent area, MATCH SIMPLE), and `(parent_area_id, country_id)` keeps a parent area in the same country (`uq_administrative_areas__area_country`). `GEO_ADDRESS_FORMATS` is one row per country VERSION; a partial exclusion constraint (`ex_address_formats__no_overlap`, gist) allows at most one `PUBLISHED` format of a country in force at any instant, so the relationship country to formats is 1-N with a no-overlap rule that a diagram cannot show. `GEO_ADDRESS_FORMAT_FIELDS` has a composite key `(address_format_id, field_type)` and a second unique key `(address_format_id, display_order)`; its label points at `content.entries (key)`. `GEO_AUDIT_EVENTS` now has three nullable subject keys (exactly one is set, `ck_audit_events__subject`). `location` is the only PostGIS column in the database; the diagram type name `geography_point` stands for `geography(Point,4326)`. There is no `postal_code_rules` table: the postal rule is the pattern on the `POSTAL_CODE` field row.
 
 `geography` has no foreign key to `integration.outbox_events`: geography events (aggregate types `geography_country`, `geography_market` and `geography_address_format`) point at their aggregate by value, as for every outbox producer. `configuration` and `content` `scope_ref` values for COUNTRY (ISO alpha-2, upper case) and MARKET (market code, lower-case kebab) scopes stay opaque text with no foreign key (DEBT-0024 remains open); they are validated against `geography` by the service layer through a port, not by the database.
+
+## identity schema (ID-001)
+
+The `identity` schema is a fourth cluster and the first application (not registry) schema. It depends on `content` (role display names, the preferred locale) and `geography` (the time zone override) and nothing depends on it yet: foreign keys go identity -> content and identity -> geography, never the other way, and `integration.outbox_events` points at it by value. Entity names are prefixed `ID_` (the referenced tables are the same tables as `GEO_CONTENT_ENTRIES`, `GEO_CONTENT_LOCALES` and `GEO_TIME_ZONES` above).
+
+```mermaid
+erDiagram
+  ID_CONTENT_ENTRIES {
+    uuid entry_id PK
+    text key UK
+  }
+  ID_CONTENT_LOCALES {
+    text locale PK
+    boolean is_active
+  }
+  ID_GEO_TIME_ZONES {
+    uuid time_zone_id PK
+    text iana_name UK
+    text status
+  }
+  ID_ROLES {
+    uuid role_id PK
+    text code UK
+    text name_content_key FK
+    text status
+    timestamptz created_at
+    timestamptz updated_at
+  }
+  ID_ACCOUNTS {
+    uuid account_id PK
+    text status
+    uuid primary_role_id FK "composite with account_id, nullable"
+    timestamptz created_at
+    timestamptz updated_at
+    timestamptz closed_at
+  }
+  ID_ACCOUNT_ROLES {
+    uuid account_id PK
+    uuid role_id PK
+    text status
+    timestamptz granted_at
+    timestamptz activated_at
+    timestamptz deactivated_at
+    text granted_by
+    text grant_source
+    timestamptz updated_at
+  }
+  ID_EXTERNAL_IDENTITIES {
+    uuid external_identity_id PK
+    uuid account_id FK
+    text provider_type UK
+    text issuer UK
+    text provider_subject UK
+    timestamptz created_at
+    timestamptz last_seen_at
+  }
+  ID_ACCOUNT_STATUS_HISTORY {
+    uuid status_history_id PK
+    bigint history_seq UK "GENERATED ALWAYS AS IDENTITY"
+    uuid account_id FK
+    text from_status "NULL on the creation row"
+    text to_status
+    text reason
+    text actor
+    timestamptz occurred_at
+    text correlation_id
+  }
+  ID_ACCOUNT_PROFILES {
+    uuid account_id PK
+    text first_name
+    text last_name
+    text preferred_locale FK
+    uuid time_zone_id FK
+    timestamptz created_at
+    timestamptz updated_at
+  }
+  ID_ACCOUNT_AUDIT_EVENTS {
+    uuid audit_event_id PK
+    timestamptz occurred_at
+    text actor
+    text action
+    uuid account_id FK
+    uuid role_id FK
+    jsonb changes
+    text reason
+    text correlation_id
+  }
+  ID_CONTENT_ENTRIES ||--o{ ID_ROLES : "display name (name_content_key -> key)"
+  ID_ACCOUNTS ||--o{ ID_ACCOUNT_ROLES : "holds (account_id)"
+  ID_ROLES ||--o{ ID_ACCOUNT_ROLES : "granted as (role_id)"
+  ID_ACCOUNT_ROLES |o--o| ID_ACCOUNTS : "preferred role (account_id, primary_role_id), optional"
+  ID_ACCOUNTS ||--o{ ID_EXTERNAL_IDENTITIES : "linked to (account_id)"
+  ID_ACCOUNTS ||--o{ ID_ACCOUNT_STATUS_HISTORY : "status timeline"
+  ID_ACCOUNTS ||--o| ID_ACCOUNT_PROFILES : "core profile, one-to-one"
+  ID_CONTENT_LOCALES |o--o{ ID_ACCOUNT_PROFILES : "preferred locale"
+  ID_GEO_TIME_ZONES |o--o{ ID_ACCOUNT_PROFILES : "time zone override"
+  ID_ACCOUNTS ||--o{ ID_ACCOUNT_AUDIT_EVENTS : "audited"
+  ID_ROLES |o--o{ ID_ACCOUNT_AUDIT_EVENTS : "ROLE_* actions only"
+```
+
+**Account versus external identity.** `ID_ACCOUNTS` carries no Keycloak subject. `ID_EXTERNAL_IDENTITIES` maps `(provider_type, issuer, provider_subject)`, one unique key marked `UK` on the three columns in the diagram, to an account: one login links at most one account, an account may have several links (no unique key on `account_id`). No Keycloak table is referenced, and nothing of credentials, MFA or sessions is mirrored.
+
+**Role membership and the preferred role.** `ID_ACCOUNT_ROLES` has the composite primary key `(account_id, role_id)`: one membership row per account and role, so a login can be a customer and a provider (two rows) but never holds a role twice. The relationship from `ID_ACCOUNT_ROLES` to `ID_ACCOUNTS` runs the other way round on purpose: `accounts.primary_role_id` is the composite foreign key `fk_accounts__primary_role (account_id, primary_role_id)` to `account_roles (account_id, role_id)` (MATCH SIMPLE, so NULL means no preference). The key includes `account_id`, which is why the preference can only name a membership of the SAME account (the account's own id is part of the key, so a membership of another account cannot match), and a trigger adds that the membership is ACTIVE. The two tables reference each other without a deferred key because an account is inserted without a primary role.
+
+**Status current state and history.** `accounts.status` is the current state and `ID_ACCOUNT_STATUS_HISTORY` holds every change (intentional denormalization); the relationship has no database key that carries the equality, so two deferred constraint triggers check it at commit in both directions, each against the CURRENT account status: `trg_accounts__status_history` (on `accounts`) requires the newest history row (highest `history_seq`) to equal `accounts.status`, and `trg_account_status_history__consistent` (on the history table) refuses a stray row, a row whose `from_status` does not continue the previous row's `to_status` (NULL for the first row) and a newest row that differs from the account status.
+
+**Profile, audit, and what is deliberately absent.** `ID_ACCOUNT_PROFILES` is one-to-one with the account (`account_id` is primary key and foreign key) and optional (the row exists once a name was given); there is no `display_name`. `ID_ACCOUNT_AUDIT_EVENTS.role_id` is set only for `ROLE_*` actions (`ck_account_audit_events__role`). There are no contact tables (email and phone: ID-002, ID-003), no address column or table (`geography.addresses` stays ownerless; a saved address will reference `address_id` from its own table with `ON DELETE RESTRICT`), no admin identity table (admin logins have no account, DEBT-0046) and no foreign key to `integration.outbox_events` (identity events, aggregate type `identity_account`, point at their aggregate by value).

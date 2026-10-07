@@ -57,6 +57,8 @@ const raw = z.object({
   OUTBOX_RETENTION_DAYS: z.coerce.number().int().min(1).default(7),
   // Configuration registry cache (Valkey). The database stays the source of truth.
   CONFIG_CACHE_TTL_SECONDS: z.coerce.number().int().min(1).max(3600).default(30),
+  /** An external identity's last_seen_at is touched at most once per this interval (authenticated reads must not write on every request). */
+  IDENTITY_LAST_SEEN_TOUCH_SECONDS: z.coerce.number().int().min(0).max(86400).default(300),
   CONFIG_LKG_MAX_AGE_SECONDS: z.coerce.number().int().min(60).default(86400),
 });
 
@@ -105,6 +107,8 @@ export interface AppConfig {
     webClientId: string;
     adminClientId: string;
     webPublicUrl: string;
+    /** Minimum seconds between two updates of external_identities.last_seen_at (0 = every request). */
+    lastSeenTouchSeconds: number;
   };
   apiInternalUrl: string;
   worker: { id: string; concurrency: number };
@@ -188,6 +192,7 @@ export function loadConfig(opts: LoadOptions): Readonly<AppConfig> {
         webClientId: e.KEYCLOAK_WEB_CLIENT_ID,
         adminClientId: e.KEYCLOAK_ADMIN_CLIENT_ID,
         webPublicUrl: need('WEB_PUBLIC_URL').replace(/\/$/, ''),
+        lastSeenTouchSeconds: e.IDENTITY_LAST_SEEN_TOUCH_SECONDS,
       };
     })(),
     apiInternalUrl: need('API_INTERNAL_URL'),

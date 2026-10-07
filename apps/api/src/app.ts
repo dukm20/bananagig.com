@@ -4,15 +4,18 @@ import type { AppConfig } from '@bananagig/config';
 import { API_PREFIX } from '@bananagig/contracts';
 import type { ConfigurationService } from '@bananagig/configuration';
 import type { ContentService } from '@bananagig/content';
+import type { AccountService } from '@bananagig/accounts';
 import type { AddressService, GeographyService } from '@bananagig/geography';
 import type { TokenVerifier } from '@bananagig/identity';
 import { metrics } from '@bananagig/observability';
+import { accountPlugin } from './plugins/account';
 import { authPlugin } from './plugins/auth';
 import { correlationPlugin } from './plugins/correlation';
 import { errorPlugin, frameworkErrors } from './plugins/errors';
 import { enforceStrictIntegerParams } from './plugins/strict-params';
 import { configurationRoutes } from './modules/configuration/routes';
 import { contentRoutes } from './modules/content/routes';
+import { accountRoutes } from './modules/account/routes';
 import { addressRoutes } from './modules/geography/address-routes';
 import { geographyRoutes } from './modules/geography/routes';
 import { systemAuthRoutes, systemRootRoutes, systemV1Routes } from './modules/system/routes';
@@ -42,6 +45,8 @@ export interface AppDeps {
   geography?: GeographyService;
   /** Address formats, administrative areas and the stateless validate/format operations (public reads, internal management). Routes are registered only when provided. */
   address?: AddressService;
+  /** The application account (ID-001): the account routes and the requireAccount guard; routes are registered only when provided. */
+  accounts?: AccountService;
 }
 
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
@@ -82,6 +87,11 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
           description:
             'Geography registry (countries, markets, currencies, time zones, market defaults): reads are public with visibility rules (ACTIVE data and public fields only), management is internal/admin only (admin identity context plus a geography permission)',
         },
+        {
+          name: 'account',
+          description:
+            "The caller's own application account (ID-001): account, application roles, active role and core profile. Authenticated with the normal web identity context; the admin context has no application account. Application roles live in PostgreSQL, not in Keycloak",
+        },
       ],
       components: {
         securitySchemes: {
@@ -107,6 +117,10 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   if (deps.content) await app.register(contentRoutes, { prefix: `${API_PREFIX}/content`, content: deps.content });
   if (deps.geography) await app.register(geographyRoutes, { prefix: `${API_PREFIX}/geography`, geography: deps.geography });
   if (deps.address) await app.register(addressRoutes, { prefix: `${API_PREFIX}/geography`, address: deps.address });
+  if (deps.accounts) {
+    await app.register(accountPlugin, { accounts: deps.accounts });
+    await app.register(accountRoutes, { prefix: API_PREFIX });
+  }
 
   app.get('/metrics', { schema: { hide: true } }, async (_req, reply) => reply.type(metrics.contentType).send(await metrics.metrics()));
   if (deps.diagnostics) {

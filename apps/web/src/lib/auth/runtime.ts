@@ -2,7 +2,7 @@
 import { Redis } from 'iovalkey';
 import { createTokenVerifier, oidcEndpoints } from '@bananagig/identity';
 import { log } from '@bananagig/observability';
-import { serverConfig } from '../server';
+import { serverApi, serverConfig } from '../server';
 import { ValkeySessionStore } from './store';
 import type { AuthConfig, AuthDeps } from './types';
 
@@ -34,6 +34,7 @@ export function authDeps(): AuthDeps {
     cfg: buildAuthConfig(cfg),
     store: new ValkeySessionStore(redis, cfg.env),
     verifier: createTokenVerifier({ issuer: e.issuer, apiAudience: cfg.identity.apiAudience, jwks: { url: e.jwks } }),
+    api: (accessToken) => serverApi(accessToken),
     log: (level, message, attrs) => log(level, message, attrs),
   };
   return cached;

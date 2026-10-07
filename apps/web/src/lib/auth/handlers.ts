@@ -13,6 +13,8 @@ import {
   safeReturnTo,
   type TokenSet,
 } from '@bananagig/identity';
+import { RoleCode } from '@bananagig/contracts';
+import { ApiError } from '../api-client';
 import { clearCookie, parseCookies, serializeCookie } from './cookies';
 import type { AuthDeps, SessionRecord } from './types';
 
@@ -163,4 +165,54 @@ export async function handleLogout(req: Request, d: AuthDeps): Promise<Response>
   });
   log(d, 'info', 'logout', {});
   return redirect(endSession, 303, [clear]);
+}
+
+/** The `role` field of the switch form, or undefined when the body is not a form or the value is not a well-formed role code (the UI never produces one). */
+async function roleFromForm(req: Request): Promise<string | undefined> {
+  try {
+    const role = (await req.formData()).get('role');
+    return typeof role === 'string' && RoleCode.safeParse(role).success ? role : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * POST /auth/active-role (form field `role`): switches the application role this browser session acts as (ID-001). The API confirms the account
+ * holds the role as an ACTIVE role; only then is the role stored in the SERVER session record (the remaining session lifetime is kept) and the
+ * browser redirected back to /session. Nothing else changes: no Keycloak login, no new token, no refresh, no cookie (the role never reaches the
+ * browser). POST only and same-origin only, like logout. A refused switch (the API answers 403, or fails) changes nothing and redirects to
+ * /session?error=role.
+ */
+export async function handleActiveRole(req: Request, d: AuthDeps): Promise<Response> {
+  if (req.method !== 'POST') return new Response('Method not allowed', { status: 405, headers: { allow: 'POST', ...NO_STORE } });
+  if (req.headers.get('origin') !== d.cfg.webOrigin) return new Response('Forbidden', { status: 403, headers: NO_STORE });
+  if (!d.api) throw new Error('AuthDeps.api is required for the role switch');
+  const session = await getSession(req.headers.get('cookie'), d);
+  if (!session) return redirect(`${d.cfg.webPublicUrl}/session`, 303); // signed out or expired: the page shows the sign-in control
+  const role = await roleFromForm(req);
+  if (!role) return new Response('Bad request', { status: 400, headers: NO_STORE });
+  const refused = (code: string, status?: number): Response => {
+    log(d, 'warn', 'active role switch refused', { code, status });
+    return redirect(`${d.cfg.webPublicUrl}/session?error=role`, 303);
+  };
+  try {
+    const account = await d.api(session.record.accessToken).setActiveRole(role);
+    if (account.activeRole !== role) return refused('ACTIVE_ROLE_MISMATCH'); // the API always answers with the role it validated
+  } catch (err) {
+    return err instanceof ApiError ? refused(err.code, err.status) : refused('API_ERROR');
+  }
+  // re-read just before writing so a token refresh that happened during the API call is not overwritten with the older record
+  const latest = await d.store.getSession(session.id);
+  if (latest) await d.store.updateSession(session.id, { ...latest, activeRole: role });
+  log(d, 'info', 'active role switched', {});
+  return redirect(`${d.cfg.webPublicUrl}/session`, 303);
+}
+
+/** Forgets the active role stored in a session (it is no longer an active role of the account). The session itself and its tokens are untouched. */
+export async function forgetActiveRole(id: string, d: AuthDeps): Promise<void> {
+  const record = await d.store.getSession(id);
+  if (!record || record.activeRole === undefined) return;
+  const { activeRole: _forgotten, ...rest } = record;
+  await d.store.updateSession(id, rest);
 }

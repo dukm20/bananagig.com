@@ -13,7 +13,7 @@ Add or change HTTP endpoints following the BananaGig API conventions.
 ## Canonical files
 
 - `apps/api/src/app.ts`, `apps/api/src/index.ts`, `apps/api/src/errors.ts`, `apps/api/src/schema.ts`
-- `apps/api/src/plugins/correlation.ts`, `apps/api/src/plugins/errors.ts`, `apps/api/src/plugins/auth.ts`
+- `apps/api/src/plugins/correlation.ts`, `apps/api/src/plugins/errors.ts`, `apps/api/src/plugins/auth.ts`, `apps/api/src/plugins/account.ts`, `apps/api/src/plugins/strict-body.ts`
 - `apps/api/src/modules/system/routes.ts`, `apps/api/src/modules/system/service.ts`
 - `packages/contracts/src/index.ts`, `scripts/generate-specs.mjs`, `docs/api/openapi.yaml`, `docs/events/asyncapi.yaml`
 - `docs/engineering/API_CONVENTIONS.md`, `docs/engineering/EVENT_CONVENTIONS.md`
@@ -70,6 +70,7 @@ Services never write SQL in routes. Persistence changes go through the database 
 - Put authorization guards in `preValidation` so 401 precedes 400 (LRN-0017), keep `removeAdditional: false` so unknown fields are rejected (LRN-0016), and map domain errors through a module `toAppError`. Configuration permissions use `requireConfigurationPermission(read|write|approve)`.
 - Content permissions use `requireContentPermission(read|write|approve)` plus `assertContentLegal` for LEGAL-owned entries (looked up from the stored entry, never from the request). The content resolve routes and active-locale list are public (`security: []`) behind `optionalAuthenticated()`: no Authorization header means anonymous, a presented token must be valid (401 otherwise), and a valid token without `content-read` is still anonymous. Anonymous callers get PUBLIC entries only and never `at` or the template. Batch endpoints omit keys they cannot serve instead of failing the batch (see `docs/engineering/CONTENT.md`).
 - Geography follows the same pattern (`requireGeographyPermission(read|write)`, `hasGeographyPermission`, public reads behind `optionalAuthenticated()`; `docs/engineering/GEOGRAPHY.md`): a caller without the admin context plus `geography-read` (or `geography-write`, which implies read) is anonymous and sees ACTIVE rows and public fields only (`effectiveTo` is null publicly), and the DTO mappers build every response field by field. `optionalAuthenticated()` adds `Vary: Authorization` to every response of the route (401 and 404 included). Management bodies are validated by a strict zod `preValidation` hook (`strictBody`, after the guard) before ajv can coerce them, so `{"active":1}` is a 400; administrator free text uses the contracts `adminText` rule. Error codes are `GEOGRAPHY_<code>`. Path parameters are validated by the route schema, so a non-canonical code (`/countries/us`, `/markets/LA-OC`) is a 400, not a 404.
+- Account guard (ID-001, `apps/api/src/plugins/account.ts`, ADR-0025 and ADR-0026): `preValidation: [requireAccount({ includeProfile? }), strictBody(Schema)]` authenticates (401), requires the normal web context (the admin context and any other client get 403 `ACCOUNT_CONTEXT_NOT_SUPPORTED`), maps the verified issuer and subject to the application account (created on the first request), refuses `SUSPENDED` and `CLOSED` accounts (403) and sets `request.account` (id, status, ACTIVE roles, memberships, primary role, active role, optional own profile; no token, no subject). The role a request acts as comes from the `x-active-role` header (`ACTIVE_ROLE_HEADER`) and is validated against the account's ACTIVE memberships on EVERY request (403 `ACCOUNT_ROLE_NOT_HELD` or `ACCOUNT_ROLE_NOT_ACTIVE`); a role-switch route turns the header off and validates its body instead. Never accept an account id, subject or role from the client (strict bodies and `additionalProperties: false` on the query reject them), never authorize with `request.principal.realmRoles`, and never add a role-granting endpoint. Account responses (errors included) are `Cache-Control: no-store` because they carry the caller's own name. Errors are `ACCOUNT_<code>` through the module `toAppError`. The shared `parseBody` and `strictBody` (`apps/api/src/plugins/strict-body.ts`) serve the account, content, geography and address routes.
 
 ## Do not
 
@@ -83,8 +84,8 @@ Services never write SQL in routes. Persistence changes go through the database 
 
 ## Related ADRs
 
-ADR-0006, ADR-0004, ADR-0013, ADR-0024
+ADR-0006, ADR-0004, ADR-0013, ADR-0024, ADR-0025, ADR-0026
 
 ## Last reviewed
 
-2026-10-07 (GEO-002A)
+2026-10-07 (ID-001)

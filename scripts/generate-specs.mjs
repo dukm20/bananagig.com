@@ -6,6 +6,10 @@ import { stringify } from 'yaml';
 import { z } from 'zod';
 import { loadConfig } from '@bananagig/config';
 import {
+  AccountCreatedPayload,
+  AccountRolePayload,
+  AccountStatusChangedPayload,
+  ExternalIdentityLinkedPayload,
   AddressFormatPublishedPayload,
   AdministrativeAreasUpdatedPayload,
   CONFIGURATION_EVENTS,
@@ -15,6 +19,7 @@ import {
   CountryEventPayload,
   EventEnvelope,
   GEOGRAPHY_EVENTS,
+  IDENTITY_EVENTS,
   INFRA_PING_EVENT_TYPE,
   LegalDocumentPublishedPayload,
   MarketEventPayload,
@@ -34,7 +39,7 @@ const verifier = createTokenVerifier({
     throw new Error('not used');
   },
 });
-const app = await buildApp({ cfg, verifier, configuration: {}, content: {}, geography: {}, address: {}, readiness: async () => ({}) });
+const app = await buildApp({ cfg, verifier, configuration: {}, content: {}, geography: {}, address: {}, accounts: {}, readiness: async () => ({}) });
 await app.ready();
 const openapi = app.swagger();
 await app.close();
@@ -99,6 +104,38 @@ const GEOGRAPHY_MESSAGES = {
     'Administrative areas of a country were added or changed. The payload carries counts only; the audit trail lists the area codes.',
     AdministrativeAreasUpdatedPayload,
     'geography_country',
+  ],
+};
+const IDENTITY_MESSAGES = {
+  accountCreated: [
+    'IdentityAccountCreated',
+    'An application account was created from the first verified identity of a person.',
+    AccountCreatedPayload,
+    'identity_account',
+  ],
+  externalIdentityLinked: [
+    'IdentityExternalIdentityLinked',
+    'An identity provider login (Keycloak issuer and subject) was linked to an account. The payload never carries the subject or the issuer.',
+    ExternalIdentityLinkedPayload,
+    'identity_account',
+  ],
+  accountRoleGranted: [
+    'IdentityAccountRoleGranted',
+    'An application role (for example CUSTOMER or PROVIDER) became ACTIVE for an account, by a new grant or a reactivation.',
+    AccountRolePayload,
+    'identity_account',
+  ],
+  accountRoleDeactivated: [
+    'IdentityAccountRoleDeactivated',
+    'An application role membership of an account was deactivated.',
+    AccountRolePayload,
+    'identity_account',
+  ],
+  accountStatusChanged: [
+    'IdentityAccountStatusChanged',
+    'The status of an account changed along the account status machine (the creation of an account is announced by account-created instead).',
+    AccountStatusChangedPayload,
+    'identity_account',
   ],
 };
 const channels = {
@@ -166,13 +203,29 @@ for (const [k, [name, summary, payload, aggregate]] of Object.entries(GEOGRAPHY_
   };
   schemas[name] = typedEnvelope(type, payload);
 }
+for (const [k, [name, summary, payload, aggregate]] of Object.entries(IDENTITY_MESSAGES)) {
+  const type = IDENTITY_EVENTS[k];
+  channels[`identity_${k}`] = {
+    address: type,
+    description: `${summary} Published through the transactional outbox (aggregate ${aggregate}); the payload carries identifiers only, never a name, a token, a subject or any personal value.`,
+    messages: { [name]: { $ref: `#/components/messages/${name}` } },
+  };
+  operations[`send${name}`] = { action: 'send', channel: { $ref: `#/channels/identity_${k}` }, summary };
+  messages[name] = {
+    name,
+    title: summary,
+    headers: { type: 'object', properties: { 'x-correlation-id': { type: 'string' } } },
+    payload: { $ref: `#/components/schemas/${name}` },
+  };
+  schemas[name] = typedEnvelope(type, payload);
+}
 const asyncapi = {
   asyncapi: '3.0.0',
   info: {
     title: 'BananaGig Events',
     version: '1.0.0',
     description:
-      'Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events and the geography registry events exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.',
+      'Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events and the identity account events exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.',
   },
   defaultContentType: 'application/json',
   channels,

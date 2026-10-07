@@ -20,7 +20,7 @@ Not in scope (no table, column or route exists for any of them):
 | Not here | Where it belongs |
 |---|---|
 | Provider service areas, postal-code coverage lists, geofences | the service-area checkpoint (it will validate postal codes with `AddressService.validatePostalCode` and add the GiST index on `location`) |
-| Customer or provider profile screens and saved addresses (labels, defaults) | identity and provider domains (ID-001 and later); they hold their own `address_id` reference |
+| Customer or provider profile screens and saved addresses (labels, defaults) | the account area and provider checkpoints (CU-09, PR-09 and later; ID-001 created the account but holds no address reference); they hold their own `address_id` reference |
 | Geospatial search and distance queries | the search and discovery checkpoints (the spatial index arrives with the first spatial query) |
 | Booking, scheduling, tax, payment | later checkpoints; a booking stores `address_id` |
 | Map UI, autocomplete widgets | web and mobile checkpoints (they render from the address-format read model) |
@@ -228,7 +228,7 @@ Geography owns the structure: what an address is, how it is validated, normalize
 | Domain | Owns | Holds |
 |---|---|---|
 | geography | `geography.addresses` rows, formats, areas | nothing about customers, providers or bookings |
-| identity (ID-001 and later) | a customer's saved addresses, labels, defaults | `address_id` references |
+| identity (account area checkpoints, after ID-001) | a customer's saved addresses, labels, defaults | `address_id` references |
 | provider (later) | a provider's business and service addresses, service areas | `address_id` references, postal-code lists validated with `validatePostalCode` |
 | booking (later) | the service address of a booking | the `address_id` accepted at booking time |
 

@@ -4,7 +4,8 @@
 // status and the management-only fields, and readiness. Management mutations need the admin context plus geography-write, which also implies
 // the management view (geography-write holds read). Public reads answer with `Vary: Authorization` (the body depends on the optional token).
 // Routes are thin; all rules live in @bananagig/geography.
-import type { FastifyInstance, FastifyRequest, preValidationAsyncHookHandler } from 'fastify';
+import { parseBody as parse, strictBody } from '../../plugins/strict-body';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { ZodType } from 'zod';
 import {
   CountryCode,
@@ -25,7 +26,6 @@ import {
 } from '@bananagig/contracts';
 import type { GeographyService } from '@bananagig/geography';
 import { hasGeographyPermission, optionalAuthenticated, requireGeographyPermission } from '../../plugins/auth';
-import { AppError } from '../../errors';
 import { authErrorResponses, errorResponses, schemaOf } from '../../schema';
 import { countryDto, currencyDto, marketDefaultsDto, marketDto, readinessDto, timeZoneDto, toAppError } from './dto';
 
@@ -35,25 +35,7 @@ const failures = { ...authErrorResponses, 400: errorResponses[400], 403: errorRe
 /** Public routes: 401 only for a credential that was presented and is invalid. */
 const publicFailures = { ...authErrorResponses, 400: errorResponses[400], 404: errorResponses[404] };
 const meta = (req: FastifyRequest) => ({ correlationId: req.correlationId });
-const parse = <T>(schema: ZodType<T>, body: unknown): T => {
-  const r = schema.safeParse(body);
-  if (!r.success)
-    throw new AppError('VALIDATION', 'VALIDATION_FAILED', 'Request validation failed', {
-      issues: r.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
-    });
-  return r.data;
-};
 const run = async <T>(fn: () => Promise<T>): Promise<T> => fn().catch(toAppError);
-/**
- * preValidation hook for every management body: validates the RAW parsed body with the strict contract schema BEFORE Fastify's ajv step, which
- * coerces types ({"active":1} would become true, {"active":"false"} false, a number a string). Ajv coercion stays on app-wide (query strings
- * need it); bodies must be exactly the contract. Listed after the authorization hook, so 401/403 still win over 400. Same envelope as `parse`.
- */
-const strictBody =
-  <T>(schema: ZodType<T>): preValidationAsyncHookHandler =>
-  async (req) => {
-    parse(schema, req.body);
-  };
 
 const codeParams = (schema: ZodType) => ({ type: 'object', properties: { code: schemaOf(schema) }, required: ['code'], additionalProperties: false });
 const countryParams = codeParams(CountryCode);

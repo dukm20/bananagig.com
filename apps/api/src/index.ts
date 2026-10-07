@@ -4,6 +4,7 @@ import { createDbTelemetry, getCorrelationId, registerPoolMetrics, initObservabi
 import { NatsClient, closeValkey, createS3, createValkey, runDiagnostics } from '@bananagig/platform';
 import { ConfigurationService, ValkeyConfigCache } from '@bananagig/configuration';
 import { ContentService } from '@bananagig/content';
+import { AccountService } from '@bananagig/accounts';
 import {
   AddressService,
   GeographyService,
@@ -84,6 +85,9 @@ const address = new AddressService({
 // A market can only be activated when its country has an address format in force (the readiness checklist of the market).
 registerReadinessCheck(createAddressFormatReadinessCheck(address));
 
+// The application account (ID-001): maps the verified Keycloak identity (issuer + subject) to the BananaGig account and its application roles.
+const accounts = new AccountService({ database, lastSeenTouchSeconds: cfg.identity.lastSeenTouchSeconds });
+
 const app = await buildApp({
   cfg,
   verifier,
@@ -91,6 +95,7 @@ const app = await buildApp({
   content,
   geography,
   address,
+  accounts,
   // Critical for serving requests: Postgres only. Valkey/NATS/OpenSearch/flagd outages must not take the API down.
   readiness: async () => ({ postgres: (await database.health()).ok ? 'up' : 'down' }),
   diagnostics: () => runDiagnostics(adapters),

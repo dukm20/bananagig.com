@@ -75,6 +75,10 @@ Schema changes also need constraint-violation and rollback tests, and the data-m
 - Run the CI governance step exactly as CI does before pushing a schema change: `pnpm skills:check`, then `pnpm project-state:check --base=<previous remote head>` and `pnpm data-model:check --base=<previous remote head>` with NO checkpoint id and the full real SHA. The first CI run had an empty base, so the git-diff rules had never run; a mistyped base now fails instead of silently selecting baseline mode (LRN-0023).
 - Never assert wall-clock time in a unit test (CI failed at 3.6 s against 0.3 s locally): assert counts; use order-of-magnitude ceilings for catastrophic-backtracking guards. The failing assertion of a CI job is readable in its public check-run annotations when the log needs authentication (LRN-0028).
 
+- Get-or-create races (the first request of a person, ID-001, `apps/api/src/account.itest.ts`): fire N parallel callers at one new identity (20 in the API test) and assert the invariants, not the interleaving: exactly one account, one identity link and one creation history row, every caller got the same account id, one `account-created` event; repeat the file several times because a single green run proves little; also run parallel first requests of several distinct subjects and assert one account each. The database file `packages/testing/src/identity-model.itest.ts` proves the guard keys by their `identity_rule:<KEY>` DETAIL and the two deferred status-history checks at COMMIT (a missing row, a stray row, a `from_status` gap and a newest row against the status fail; a transaction through a transient status passes).
+- Privacy is asserted by log capture, not by reading code: run the account routes with a capturing logger and assert that no token segment, Keycloak subject of the account's login or typed name appears anywhere in the output, in any response body, audit `changes`, event payload or error (compare against the fixed message, not a short needle), and that the schema holds no login subject outside the link table (an actor string `admin:<subject>` names who acted and is a different value; the outage log line carries the SQLSTATE or error class only).
+- A coerced-body regression table (DEBT-0043 for new bodies): for every new body, list the values Ajv coercion would have accepted (`1`, `true`, `null`, `"1e3"`, extra keys, an `accountId`, non-object bodies, wrong-case enums) and assert each is a 400 with the standard envelope and that nothing was written (the integration test compares the whole state before and after; a unit test with a fake service asserts the service was never called; `apps/api/src/strict-body.test.ts` covers the shared helpers).
+
 ## Do not
 
 - Do not point tests at the dev database or leave scratch tables behind.
@@ -83,8 +87,8 @@ Schema changes also need constraint-violation and rollback tests, and the data-m
 
 ## Related ADRs
 
-ADR-0004, ADR-0006
+ADR-0004, ADR-0006, ADR-0025
 
 ## Last reviewed
 
-2026-10-07 (GEO-002A)
+2026-10-07 (ID-001)

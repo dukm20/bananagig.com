@@ -147,6 +147,7 @@ Introduced by: INF-003
 Owner/domain: database / integration
 Description: A generic `integration.idempotency_records` table is designed (`DATABASE_CONVENTIONS.md` section 10) but not created, because no externally triggered write exists yet.
 Why deferred: schema without a first user would be speculative; the design and entry point are documented.
+Evaluated again in ID-001 and NOT built: the new write paths are idempotent by natural uniqueness plus a transactional retry (account bootstrap by the external identity unique key, role grant by the membership primary key, profile and status changes by comparing before writing), and none is triggered by an external system that retries with its own key. A generic table now would have no first user.
 Exit criteria: first checkpoint with webhooks or an `Idempotency-Key` operation adds the table through the data-model gate, written in the same transaction as the effect.
 Target checkpoint: first checkpoint with externally triggered writes (payments or public API writes)
 
@@ -192,7 +193,7 @@ Introduced by: INF-004
 Owner/domain: identity
 Description: Email verification, phone verification and account recovery are disabled in the realm (`verifyEmail` and `resetPasswordAllowed` false; no SMTP is configured in Keycloak; recovery/backup MFA hooks are not provisioned).
 Why deferred: They are business flows with their own contracts and need a delivery provider; INF-004 is infrastructure only.
-Exit criteria: Verified-email and recovery flows implemented with configured SMTP (Mailpit locally), recovery codes and tests.
+Exit criteria: Verified-email and recovery flows implemented with configured SMTP (Mailpit locally), recovery codes and tests. ID-001 persists no email or phone: contact channels and their verification state belong to ID-002 and ID-003.
 Target checkpoint: ID-001 and following identity checkpoints
 
 
@@ -476,14 +477,70 @@ Why deferred: A linear-time engine (RE2) or isolation in a worker is a dependenc
 Exit criteria: Evaluate patterns with a linear-time engine or a time-boxed worker, keeping the vetting as a first filter.
 Target checkpoint: before pattern authoring is opened to anyone beyond platform administrators
 
-## DEBT-0043 — Ajv still coerces integer and boolean values in request bodies of the configuration and content routes
+## DEBT-0043 — Ajv still coerces integer and boolean values in request bodies of many configuration and some content routes
 
 Status: OPEN
 Severity: LOW
 Introduced by: INF-002 and CFG-001/CFG-002 (found by the GEO-002A adversarial review)
 Owner/domain: api
-Description: Fastify's Ajv runs with type coercion on. GEO-002A put integers in path and query parameters behind one strict parser, and the geography management and address routes validate the RAW body with zod (`strictBody`) before Ajv. The configuration and content management routes do not, so a body value such as `"1e3"`, `"0x10"`, `" 5"` or `"+7"` for an integer field (for example `validationRules.minLength`, or a `version`), or `"true"` or `1` for a boolean, is coerced to a number or boolean before the route's own zod parse sees it. Reproduced against the real app with a fake service: `POST /api/v1/configuration/parameters` stored `minLength` 1000 for `"1e3"`. Every affected route is internal (admin context plus a write permission), and the coerced value is always a valid in-range number or boolean that zod and the service then validate, so nothing invalid is stored; the effect is that sloppy input is interpreted instead of rejected.
+Description: Fastify's Ajv runs with type coercion on. GEO-002A put integers in path and query parameters behind one strict parser, and the geography management and address routes validate the RAW body with zod (`strictBody`) before Ajv. Many configuration routes and the content routes that carry integers (for example versions) validate only after Ajv (the content routes use `strictBody` where a body has booleans), so a body value such as `"1e3"`, `"0x10"`, `" 5"` or `"+7"` for an integer field (for example `validationRules.minLength`, or a `version`), or `"true"` or `1` for a boolean, is coerced to a number or boolean before the route's own zod parse sees it. Reproduced against the real app with a fake service: `POST /api/v1/configuration/parameters` stored `minLength` 1000 for `"1e3"`. Every affected route is internal (admin context plus a write permission), and the coerced value is always a valid in-range number or boolean that zod and the service then validate, so nothing invalid is stored; the effect is that sloppy input is interpreted instead of rejected.
 Why deferred: Outside the GEO-002A scope (path and query identifiers); adding `strictBody` to every configuration and content route touches their tests and error shapes.
 Exit criteria: `strictBody(<schema>)` after the authorization hook on every configuration and content route with a body (or a body validator with coercion off), with tests that `"1e3"`, `"0x10"` and `"true"` are rejected with the standard envelope, and a start-up guard like `enforceStrictIntegerParams` for body schemas.
 Target checkpoint: next change to the configuration or content API, or before a public (non-admin) write endpoint is added
+ID-001 decision (option B): the new account bodies (`POST /account/active-role`, `PUT /account/profile`) validate the RAW body with `strictBody` before Ajv, `GET /account/me` rejects unknown query parameters, and regression tests prove `{"role":1}`, `{"role":true}`, extra properties and a body or query `accountId` are rejected. The configuration and content routes are unchanged, so this debt stays OPEN.
+
+## DEBT-0044 — Initial application roles are seeded from the Keycloak realm roles of the first token
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: ID-001
+Owner/domain: identity
+Description: There is no sign-up flow yet, so an account created from the first verified web identity gets its initial application roles from the Keycloak realm roles of that token (`customer` gives CUSTOMER, `provider` gives PROVIDER; ADR-0025). It is a one-time hint, never consulted after the account exists, and PostgreSQL is the only authority afterwards, but it couples account creation to how Keycloak users are provisioned and it cannot express "this person signed up as a customer" independently of Keycloak.
+Why deferred: Sign-up (CU-03, PR-01) and its consent and verification steps are later checkpoints; the PRD creates the account and the role at sign-up.
+Exit criteria: The sign-up flows create the account and grant the role explicitly (`grantRole` with source SIGNUP); the bootstrap hint is removed and a token with no mapped role no longer creates an account silently.
+Target checkpoint: the customer sign-up checkpoint (CU-03) and the provider sign-up checkpoint (PR-01)
+
+## DEBT-0045 — Account closure, deletion, data export and erasure are not implemented
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: ID-001
+Owner/domain: identity / privacy
+Description: The account status machine exists (PENDING, ACTIVE, SUSPENDED, CLOSURE_REQUESTED, CLOSED, with an immutable history, and closing deactivates every role), but no closure rule is implemented: no check for open bookings, money owed or payouts (SV-11.09, CU-09), no 30-day erasure or anonymization of personal data (the profile, `raw_input` of addresses, audit actors), no data export, and no retention schedule. Identity rows are never deleted by the guards, so erasure will need its own reviewed procedure.
+Why deferred: Bookings, payments and payouts do not exist; closure rules depend on them. Financial closure semantics were explicitly out of scope.
+Exit criteria: Closure rules per role with tests, an erasure and anonymization procedure that keeps legally retained records, a data export, and the retention policy (with DEBT-0036).
+Target checkpoint: the account closure and privacy checkpoints (CU-09 and PR-09 account sections)
+
+## DEBT-0046 — Admin identities have no application identity
+
+Status: OPEN
+Severity: LOW
+Introduced by: ID-001
+Owner/domain: identity / admin
+Description: Admin logins (client `bananagig-admin`) are separate from customer and provider accounts by design (SV-11.08): they get no account, `requireAccount` answers 403 for the admin context, and admin permissions are still the temporary Keycloak client roles (DEBT-0021). Nothing in PostgreSQL identifies an administrator (no admin profile, no application permission, no invitation).
+Why deferred: The admin console and its invitation and RBAC model (AD-07) are later checkpoints.
+Exit criteria: An admin application identity model separate from `identity.accounts`, application permissions replacing the client roles, and admin audit that names the administrator.
+Target checkpoint: AD-07 (admin users, account and profile) and the admin RBAC checkpoint
+
+## DEBT-0047 — The account lookup is not cached on the authenticated path
+
+Status: OPEN
+Severity: LOW
+Introduced by: ID-001
+Owner/domain: identity / performance
+Description: Every authenticated request of an account route reads PostgreSQL (the external identity by its unique key, the account, its memberships and, for `/account/me`, the profile) and may touch `last_seen_at` once per interval. The key lookup and the membership list are index lookups, but there is no Valkey cache and no measurement under load.
+Why deferred: PostgreSQL is authoritative and the paths are cheap; caching adds invalidation rules (role grants, status changes) that need a design and numbers.
+Exit criteria: A measured budget for the account lookup; if needed, a generation-invalidated cache like the geography and content registries, never serving a SUSPENDED or CLOSED account.
+Target checkpoint: before the first customer screen goes live, or when the lookup shows in the slow-query log
+
+## DEBT-0048 — No endpoint or screen for the preferred role; account screens are infrastructure only
+
+Status: OPEN
+Severity: LOW
+Introduced by: ID-001
+Owner/domain: identity / web
+Description: The preferred (primary) role can be changed only by the service (`setPrimaryRole`); there is no API for it. The `/session` page shows the account id, status, roles and active role and a role switcher, but there are no account screens (profile, roles, security) and no endpoint to add a role: provider role creation belongs to the provider sign-up.
+Why deferred: The account area (SV-11) and provider sign-up (PR-01) are later checkpoints.
+Exit criteria: The account area with a roles section and switcher, an endpoint or screen for the preferred role if the product wants one, and provider sign-up adding PROVIDER to an existing account.
+Target checkpoint: the account area checkpoints (CU-09, PR-09) and PR-01
 

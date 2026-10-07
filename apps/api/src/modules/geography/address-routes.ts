@@ -7,8 +7,8 @@
 //
 // Visibility follows the registry rules: public callers see ACTIVE countries only (everything else behaves as not found); a caller with the admin
 // context plus geography-read (write implies read) also previews PLANNED and INACTIVE countries, drafts and inactive areas.
-import type { FastifyInstance, FastifyReply, FastifyRequest, preValidationAsyncHookHandler } from 'fastify';
-import type { ZodType } from 'zod';
+import { parseBody as parse, strictBody } from '../../plugins/strict-body';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
   AddressFormatListResponse,
   AddressFormatResponse,
@@ -26,7 +26,6 @@ import {
 } from '@bananagig/contracts';
 import { toAddressFormatDto, toAdministrativeAreaDto, type AddressService } from '@bananagig/geography';
 import { hasGeographyPermission, optionalAuthenticated, requireGeographyPermission } from '../../plugins/auth';
-import { AppError } from '../../errors';
 import { authErrorResponses, errorResponses, schemaOf } from '../../schema';
 import { integerParamSchema, strictIntegerParams } from '../../plugins/strict-params';
 import { toAppError } from './dto';
@@ -40,28 +39,6 @@ const run = async <T>(fn: () => Promise<T>): Promise<T> => fn().catch(toAppError
 const ADDRESS_BODY_LIMIT = 16 * 1024;
 const noStore = (reply: FastifyReply): void => {
   reply.header('Cache-Control', 'no-store');
-};
-
-/**
- * preValidation hook: validates the RAW body with the strict contract schema BEFORE Fastify's ajv step coerces types. The message of a failure
- * lists the paths only: a rejected value (an address part) is never echoed.
- */
-const strictBody =
-  <T>(schema: ZodType<T>): preValidationAsyncHookHandler =>
-  async (req) => {
-    const r = schema.safeParse(req.body);
-    if (!r.success)
-      throw new AppError('VALIDATION', 'VALIDATION_FAILED', 'Request validation failed', {
-        issues: r.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
-      });
-  };
-const parse = <T>(schema: ZodType<T>, body: unknown): T => {
-  const r = schema.safeParse(body);
-  if (!r.success)
-    throw new AppError('VALIDATION', 'VALIDATION_FAILED', 'Request validation failed', {
-      issues: r.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
-    });
-  return r.data;
 };
 
 const countryParams = { type: 'object', properties: { code: schemaOf(CountryCode) }, required: ['code'], additionalProperties: false };

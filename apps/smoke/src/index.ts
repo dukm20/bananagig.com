@@ -1,7 +1,9 @@
 // Connectivity smoke test. Runs inside the Compose network (pnpm smoke) and verifies real
 // round-trips, not just container status. Exits non-zero if any check fails.
 import http from 'node:http';
-import { CORRELATION_HEADER, ErrorResponse, SystemInfoResponse, WhoAmIResponse } from '@bananagig/contracts';
+import { AccountService } from '@bananagig/accounts';
+import { ACTIVE_ROLE_HEADER, AccountResponse, CORRELATION_HEADER, ErrorResponse, SystemInfoResponse, WhoAmIResponse } from '@bananagig/contracts';
+import { createDatabase } from '@bananagig/database';
 import { createTokenVerifier, exchangeAuthorizationCode, oidcEndpoints } from '@bananagig/identity';
 import {
   ADMIN_REDIRECT_URI,
@@ -955,6 +957,132 @@ await check('Addresses', async () => {
   return `US format ${order.split(',').length} fields in order, ${list.length} areas, validate normalizes, format "${lines.join(' / ')}", bad ZIP -> valid=false, no-store, no internal fields`;
 });
 
+await check('Accounts', async () => {
+  // Application account (ID-001) with REAL Keycloak tokens (Authorization Code + PKCE). The account is created lazily at the first /account/me of the
+  // customer.dev identity and kept: the scenario is idempotent across runs (the dev user keeps its account; granting PROVIDER is idempotent).
+  // Granting a role has no endpoint by design, so step 3 does what provider sign-up will do later: AccountService on the database.
+  const assert = (ok: boolean, what: string): void => {
+    if (!ok) throw new Error(what);
+  };
+  const seen: string[] = []; // every response body and header block, searched for secrets at the end
+  const call = async (method: 'GET' | 'POST' | 'PUT', path: string, token?: string, o: { body?: unknown; headers?: Record<string, string> } = {}) => {
+    const r = await get(`${api}/api/v1${path}`, {
+      method,
+      headers: {
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...(o.body !== undefined ? { 'content-type': 'application/json' } : {}),
+        ...o.headers,
+      },
+      ...(o.body !== undefined ? { body: JSON.stringify(o.body) } : {}),
+    });
+    const text = await r.text();
+    seen.push(text, JSON.stringify([...r.headers]));
+    let json: any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = undefined;
+    }
+    return { status: r.status, text, json };
+  };
+  const account = (r: { status: number; text: string; json: unknown }, what: string) => {
+    assert(r.status === 200, `${what} -> ${r.status} ${r.text.slice(0, 160)}`);
+    return AccountResponse.parse(r.json).data;
+  };
+  const codes = (a: { roles: { code: string }[] }): string =>
+    a.roles
+      .map((x) => x.code)
+      .sort()
+      .join(',');
+  const login = async (clientId: 'bananagig-web' | 'bananagig-admin', user: keyof typeof DEV_USERS): Promise<string> => {
+    const redirectUri = clientId === 'bananagig-web' ? WEB_REDIRECT_URI : ADMIN_REDIRECT_URI;
+    const l = await authorizationCodeLogin(kc, { clientId, redirectUri, ...DEV_USERS[user] });
+    return (await exchangeAuthorizationCode({ tokenEndpoint: ep.token, clientId, redirectUri, code: l.code, codeVerifier: l.verifier })).accessToken;
+  };
+
+  // (1) the first authenticated request of customer.dev creates (or finds) its account
+  const customer = await login('bananagig-web', 'customer');
+  const subjectOfToken = (await verifier.verifyAccessToken(customer)).subject;
+  const first = account(await call('GET', '/account/me', customer), 'GET /account/me');
+  assert(/^[0-9a-f-]{36}$/.test(first.accountId), `account id is not a uuid (${first.accountId})`);
+
+  // (2) the second call returns the same account: ACTIVE, CUSTOMER among the roles, CUSTOMER active (the preferred role, since no role is requested)
+  const second = account(await call('GET', '/account/me', customer), 'second GET /account/me');
+  assert(second.accountId === first.accountId, 'the same identity must map to the same account');
+  assert(second.status === 'ACTIVE', `account status ${second.status}`);
+  assert(
+    second.roles.some((r) => r.code === 'CUSTOMER'),
+    `CUSTOMER missing from the roles (${codes(second)})`,
+  );
+  assert(
+    second.roles.every((r) => r.nameContentKey.startsWith('identity.role.')),
+    'role names must be content keys',
+  );
+  assert(second.activeRole === 'CUSTOMER' && second.primaryRole === 'CUSTOMER', `active ${second.activeRole} / primary ${second.primaryRole}`);
+
+  // (3) grant PROVIDER to THAT account the way the server does (no endpoint exists for it); idempotent across runs
+  const databaseUrl = process.env.DATABASE_URL;
+  assert(!!databaseUrl, 'DATABASE_URL is not set in the smoke environment');
+  const database = createDatabase(databaseUrl!, { role: 'tests' });
+  try {
+    await new AccountService({ database }).grantRole(first.accountId, 'PROVIDER', { actor: 'system:smoke', source: 'SYSTEM' });
+  } finally {
+    await database.close();
+  }
+
+  // (4) both roles now; switching is a validation that persists nothing and keeps the account; the header is validated on every request
+  const both = account(await call('GET', '/account/me', customer), 'GET /account/me after the grant');
+  assert(both.accountId === first.accountId, 'granting a role must not change the account');
+  assert(codes(both) === 'CUSTOMER,PROVIDER', `roles after the grant: ${codes(both)}`);
+  const switched = account(await call('POST', '/account/active-role', customer, { body: { role: 'PROVIDER' } }), 'POST /account/active-role');
+  assert(
+    switched.accountId === first.accountId && switched.activeRole === 'PROVIDER',
+    `switch answered ${switched.accountId === first.accountId ? '' : 'another account, '}active ${switched.activeRole}`,
+  );
+  assert(switched.primaryRole === first.primaryRole, 'switching the active role must not change the stored preferred role');
+  const afterSwitch = account(await call('GET', '/account/me', customer), 'GET /account/me after the switch');
+  assert(afterSwitch.activeRole === first.primaryRole, 'the switch is not persisted: without a role header the preferred role applies again');
+  const asProvider = account(await call('GET', '/account/me', customer, { headers: { [ACTIVE_ROLE_HEADER]: 'PROVIDER' } }), 'GET /account/me as PROVIDER');
+  assert(
+    asProvider.accountId === first.accountId && asProvider.activeRole === 'PROVIDER',
+    `${ACTIVE_ROLE_HEADER}: PROVIDER gave active ${asProvider.activeRole}`,
+  );
+  const asCustomer = account(await call('GET', '/account/me', customer, { headers: { [ACTIVE_ROLE_HEADER]: 'CUSTOMER' } }), 'GET /account/me as CUSTOMER');
+  assert(asCustomer.activeRole === 'CUSTOMER', `${ACTIVE_ROLE_HEADER}: CUSTOMER gave active ${asCustomer.activeRole}`);
+  for (const role of ['ADMIN', 'provider', 'NOPE ROLE']) {
+    const refused = await call('GET', '/account/me', customer, { headers: { [ACTIVE_ROLE_HEADER]: role } });
+    assert(
+      refused.status === 403 && refused.json?.error?.code === 'ACCOUNT_ROLE_NOT_HELD',
+      `a role the account does not hold (${role}) must be 403 ACCOUNT_ROLE_NOT_HELD (got ${refused.status})`,
+    );
+  }
+  const switchRefused = await call('POST', '/account/active-role', customer, { body: { role: 'ADMIN' } });
+  assert(switchRefused.status === 403, `switching to a role the account does not hold must be 403 (got ${switchRefused.status})`);
+
+  // (5) the admin identity context has no application account
+  const admin = await login('bananagig-admin', 'admin');
+  for (const [method, path, body] of [
+    ['GET', '/account/me', undefined],
+    ['POST', '/account/active-role', { role: 'CUSTOMER' }],
+  ] as const) {
+    const refused = await call(method, path, admin, { body });
+    assert(
+      refused.status === 403 && refused.json?.error?.code === 'ACCOUNT_CONTEXT_NOT_SUPPORTED',
+      `${method} ${path} for the admin context must be 403 ACCOUNT_CONTEXT_NOT_SUPPORTED (got ${refused.status} ${refused.json?.error?.code})`,
+    );
+  }
+
+  // (6) no token, no account
+  const anonymous = await call('GET', '/account/me');
+  assert(anonymous.status === 401, `anonymous /account/me must be 401 (got ${anonymous.status})`);
+
+  // (7) nothing a response says (bodies and headers) holds a token or the Keycloak subject
+  const everything = seen.join('\n');
+  assert(!everything.includes(customer) && !everything.includes(admin), 'a response contains an access token');
+  assert(subjectOfToken.length > 8 && !everything.includes(subjectOfToken), 'a response contains the Keycloak subject');
+  return `customer.dev -> account ${first.accountId.slice(0, 8)}... ACTIVE, roles CUSTOMER+PROVIDER (PROVIDER granted server-side), switch to PROVIDER validated and not persisted, ${ACTIVE_ROLE_HEADER} honored or refused with 403, admin context 403 ACCOUNT_CONTEXT_NOT_SUPPORTED, anonymous 401, no token or subject in any response`;
+});
+
 // Caddy routes are exercised exactly as a browser would reach them (Host header), from inside the network.
 const proxy = (host: string, path: string, method = 'GET'): Promise<{ status: number; body: string }> =>
   new Promise((resolve, reject) => {
@@ -1019,6 +1147,7 @@ const order = [
   'Content Registry',
   'Geography',
   'Addresses',
+  'Accounts',
   'NATS Events',
   'JetStream',
   'SeaweedFS Storage',

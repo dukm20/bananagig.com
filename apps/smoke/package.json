@@ -9,7 +9,9 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@bananagig/accounts": "workspace:*",
     "@bananagig/contracts": "workspace:*",
+    "@bananagig/database": "workspace:*",
     "@bananagig/identity": "workspace:*"
   }
 }

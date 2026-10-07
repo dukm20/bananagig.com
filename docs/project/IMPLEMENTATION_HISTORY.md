@@ -570,3 +570,47 @@ None required (no architecture change).
 
 ### Known follow-up
 DEBT-0043 (body coercion on configuration and content routes); DEBT-0030 stays OPEN; LRN-0032 and LRN-0033. Push GEO-002 and GEO-002A together and verify GitHub CI.
+
+
+## ID-001 — 2026-10-07
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(ID-001)"`.
+Summary: The canonical BananaGig application identity model: the account of a person linked to a verified Keycloak identity, application roles with membership and a role-switch context, an account status machine with an immutable history, a core profile, audit and domain events, and the account API with the web session page. Keycloak stays the only owner of authentication, credentials, MFA, protocol sessions and tokens; nothing of those is stored. No onboarding UI, email or phone verification, password recovery, consent, billing, photos, provider business or admin invitation.
+
+### Housekeeping at the start (requested)
+`PROJECT_STATE` records that GitHub Actions run 37587370637 (`566b28c`, pushed with `e4234e9`, so GEO-002 and GEO-002A) passed: `verify` and `compose-smoke`, every step, including `pnpm smoke` and the Trivy image scan. `la-oc` stays PLANNED and DEBT-0030 stays OPEN (the public address endpoints are not production-exposure-ready).
+
+### Delivered
+- Migration `0009_identity_accounts.sql`: schema `identity` with 7 tables (`roles`, `accounts`, `account_roles`, `external_identities`, `account_status_history`, `account_profiles`, `account_audit_events`), guard triggers with `identity_rule:<KEY>` details, a primary role pointer as a composite foreign key to the account's own membership, deferred constraint triggers that keep the current status equal to the newest history row in both directions, seeds: roles CUSTOMER and PROVIDER and 17 content entries (role names, status labels, session account labels, name and account-state messages). No account is seeded.
+- `packages/accounts` (new, `@bananagig/accounts`): `AccountService` (provisioning from a verified identity with the unique key deciding races, idempotent `grantRole`, `deactivateRole`, `setPrimaryRole`, `selectActiveRole`, `changeStatus`, `upsertProfile`), the pure helpers (identity key, one-time bootstrap roles, active-role resolution), typed errors with guard classification by key only.
+- Contracts `account.ts` (statuses and the transition table, role code, name rules and `validateProfileName`, `publicDisplayName`, account read model, requests, five identity events); config `IDENTITY_LAST_SEEN_TOUCH_SECONDS`.
+- API (3 operations under `/api/v1/account`): `GET /me`, `POST /active-role`, `PUT /profile`; the `requireAccount` guard (verified token to account, 403 for the admin and other contexts, SUSPENDED and CLOSED refused, the active role from `x-active-role` validated against ACTIVE memberships on every request, no client-supplied account id or role anywhere, no endpoint that grants a role); `Cache-Control: no-store`; a shared `strictBody` replacing three copies. OpenAPI valid; AsyncAPI gained five identity events.
+- Web: server session `activeRole`, BFF `POST /auth/active-role` (same-origin, session cookie, validated by the API, no token in the browser, no new Keycloak login), `/session` shows the account id, status, roles and active role from managed content keys; web client methods.
+- Smoke scenario "Accounts" (32 checks): real PKCE login as customer.dev, stable account id, CUSTOMER role, PROVIDER granted through the service, role switch, header validation, admin 403, no token or subject in any response.
+- Docs: `docs/engineering/ACCOUNTS.md`, ADR-0025 (application account and Keycloak identity separation) and ADR-0026 (account-role membership and active role context), data-model documents, skills `identity`, `database`, `api`, `web`, `testing`, `docs/content/CONTENT_OWNERSHIP.md`.
+- Quality process: unit, database and service integration, API integration, web and smoke tests written by independent workers with mutation checks on the service; review fixes applied before closing: literal bidirectional characters in a CHECK regex (the file-writing quirk, LRN-0036), the deferred history trigger read the queued row instead of the current account (found by an `it.fails` test, LRN-0035) and left a stray history row unchecked, `grantRole` validated its reason inside the transaction, `mapDbError(null)` threw, the outage log carried the driver message, a one-character display initial, closure now audits the primary role change, a PENDING role deactivation is audited but not announced, profile locale and zone reads take share locks, account routes send `no-store`.
+
+### Decisions
+- Bootstrap policy (ADR-0025): the account is created lazily at the first authenticated request of the normal web context with status ACTIVE; its initial roles are seeded ONCE from the Keycloak realm roles of that token (customer to CUSTOMER, provider to PROVIDER, none to no role), never read again; PostgreSQL is the only authority afterwards (DEBT-0044 until sign-up flows grant roles explicitly).
+- Active role (ADR-0026): request-scoped context kept in the web server session, never persisted and never trusted; the preferred (primary) role is the persisted default.
+- DEBT-0043: option B: the new account bodies use `strictBody` and tests prove they cannot be coerced; the debt stays OPEN for the configuration and content routes.
+- DEBT-0013: evaluated again; the idempotency records table is not needed (natural uniqueness and transactional retry cover every write path); stays OPEN with that note.
+
+### Schema
+New schema `identity` (7 tables); see `docs/data/DATA_MODEL_CHANGELOG.md` and `NORMALIZATION_LOG.md` (ID-001): current status with an immutable history is the one intentional denormalization (kept equal by deferred triggers); no contact data, no address ownership, no credential or token column.
+
+### Contracts
+OpenAPI: 3 account operations (valid, 15 pre-existing warnings). AsyncAPI: `bananagig.identity.account-created`, `external-identity-linked`, `account-role-granted`, `account-role-deactivated` and `account-status-changed` (v1).
+
+### Tests
+Unit 2564, root script tests 71, integration 890 in 24 files, smoke 32 checks (run twice).
+
+### Skills updated
+`skills/identity`, `skills/database`, `skills/api`, `skills/web`, `skills/testing`.
+
+### ADRs
+ADR-0025, ADR-0026.
+
+### Known follow-up
+DEBT-0044 to DEBT-0048 (bootstrap hint, closure and erasure, admin identity, account lookup cache, preferred-role endpoint and account screens); DEBT-0013, DEBT-0017, DEBT-0021, DEBT-0043 updated; LRN-0034 to LRN-0036. Owner decision still open: confirm or remove the seeded PLANNED market `la-oc`.

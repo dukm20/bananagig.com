@@ -238,6 +238,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@bananagig/accounts':
+        specifier: workspace:*
+        version: link:../../packages/accounts
       '@bananagig/config':
         specifier: workspace:*
         version: link:../../packages/config
@@ -287,9 +290,15 @@ importers:
 
   apps/smoke:
     dependencies:
+      '@bananagig/accounts':
+        specifier: workspace:*
+        version: link:../../packages/accounts
       '@bananagig/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@bananagig/database':
+        specifier: workspace:*
+        version: link:../../packages/database
       '@bananagig/identity':
         specifier: workspace:*
         version: link:../../packages/identity
@@ -367,6 +376,25 @@ importers:
       '@bananagig/testing':
         specifier: workspace:*
         version: link:../../packages/testing
+
+  packages/accounts:
+    dependencies:
+      '@bananagig/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@bananagig/database':
+        specifier: workspace:*
+        version: link:../database
+      '@bananagig/observability':
+        specifier: workspace:*
+        version: link:../observability
+      '@bananagig/platform':
+        specifier: workspace:*
+        version: link:../platform
+    devDependencies:
+      '@bananagig/testing':
+        specifier: workspace:*
+        version: link:../testing
 
   packages/config:
     dependencies:

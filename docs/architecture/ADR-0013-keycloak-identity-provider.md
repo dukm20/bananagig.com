@@ -20,7 +20,7 @@ Keycloak (OIDC) owns authentication, credentials, protocol sessions, MFA factors
 
 ## Consequences
 
-The IdP is swappable behind OIDC (issuer, audience and JWKS are configuration). Authentication outages affect authenticated routes only. No user table exists until ID-001.
+The IdP is swappable behind OIDC (issuer, audience and JWKS are configuration). Authentication outages affect authenticated routes only. No user table existed at INF-004; ID-001 added the application account model (`identity.accounts`, `identity.external_identities`, ADR-0025 and ADR-0026) without mirroring anything Keycloak owns.
 
 ## Migration / compatibility
 

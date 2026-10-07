@@ -19917,6 +19917,1101 @@ paths:
                 required:
                   - error
                 additionalProperties: false
+  /api/v1/account/me:
+    get:
+      operationId: getAccountMe
+      summary: "The caller's own application account: id, status, ACTIVE application roles, preferred (primary) role, the role this request acts as and the core profile. The account is created on the first authenticated request. The role named in the x-active-role header is accepted only when the account holds it as an ACTIVE role"
+      tags: &a9
+        - account
+      description: Application roles come from PostgreSQL, not from Keycloak. The admin identity context has no application account (403). A suspended or closed account is refused (403).
+      parameters:
+        - schema:
+            type: string
+          in: header
+          name: x-active-role
+          required: false
+      security: &a10
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      accountId:
+                        type: string
+                        format: uuid
+                        pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+                      status:
+                        type: string
+                        enum:
+                          - PENDING
+                          - ACTIVE
+                          - SUSPENDED
+                          - CLOSURE_REQUESTED
+                          - CLOSED
+                      roles:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            code:
+                              type: string
+                            nameContentKey:
+                              type: string
+                          required:
+                            - code
+                            - nameContentKey
+                          additionalProperties: false
+                      primaryRole:
+                        type:
+                          - "null"
+                          - string
+                      activeRole:
+                        type:
+                          - "null"
+                          - string
+                      profile:
+                        anyOf:
+                          - type: object
+                            properties:
+                              firstName:
+                                type: string
+                              lastName:
+                                type: string
+                              preferredLocale:
+                                type:
+                                  - string
+                                  - "null"
+                              timeZone:
+                                type:
+                                  - string
+                                  - "null"
+                            required:
+                              - firstName
+                              - lastName
+                              - preferredLocale
+                              - timeZone
+                            additionalProperties: false
+                          - type: "null"
+                      createdAt:
+                        type: string
+                    required:
+                      - accountId
+                      - status
+                      - roles
+                      - primaryRole
+                      - activeRole
+                      - profile
+                      - createdAt
+                    additionalProperties: false
+                  meta:
+                    type: object
+                    properties:
+                      correlationId:
+                        type: string
+                    required:
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - data
+                  - meta
+                additionalProperties: false
+        "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "401":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "403":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "409":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "503":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+  /api/v1/account/active-role:
+    post:
+      operationId: setAccountActiveRole
+      summary: "Switch the application role the caller acts as. The role must be an ACTIVE role of the caller's account (403 otherwise). This changes the application context only: it does not create a Keycloak login or session and persists nothing. The web server keeps the chosen role in its session and sends it as x-active-role"
+      tags: *a9
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role:
+                  type: string
+                  pattern: ^[A-Z][A-Z0-9_]{1,29}$
+              required:
+                - role
+              additionalProperties: false
+      security: *a10
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      accountId:
+                        type: string
+                        format: uuid
+                        pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+                      status:
+                        type: string
+                        enum:
+                          - PENDING
+                          - ACTIVE
+                          - SUSPENDED
+                          - CLOSURE_REQUESTED
+                          - CLOSED
+                      roles:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            code:
+                              type: string
+                            nameContentKey:
+                              type: string
+                          required:
+                            - code
+                            - nameContentKey
+                          additionalProperties: false
+                      primaryRole:
+                        type:
+                          - "null"
+                          - string
+                      activeRole:
+                        type:
+                          - "null"
+                          - string
+                      profile:
+                        anyOf:
+                          - type: object
+                            properties:
+                              firstName:
+                                type: string
+                              lastName:
+                                type: string
+                              preferredLocale:
+                                type:
+                                  - string
+                                  - "null"
+                              timeZone:
+                                type:
+                                  - string
+                                  - "null"
+                            required:
+                              - firstName
+                              - lastName
+                              - preferredLocale
+                              - timeZone
+                            additionalProperties: false
+                          - type: "null"
+                      createdAt:
+                        type: string
+                    required:
+                      - accountId
+                      - status
+                      - roles
+                      - primaryRole
+                      - activeRole
+                      - profile
+                      - createdAt
+                    additionalProperties: false
+                  meta:
+                    type: object
+                    properties:
+                      correlationId:
+                        type: string
+                    required:
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - data
+                  - meta
+                additionalProperties: false
+        "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "401":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "403":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "409":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "503":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+  /api/v1/account/profile:
+    put:
+      operationId: updateAccountProfile
+      summary: "Replace the caller's own core profile: first and last name (trimmed, 1 to 50 characters each), optional preferred locale and time zone override (omitted or null clears them). Idempotent: an unchanged profile writes nothing. Returns the updated account"
+      tags: *a9
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                firstName:
+                  type: string
+                  maxLength: 500
+                lastName:
+                  type: string
+                  maxLength: 500
+                preferredLocale:
+                  anyOf:
+                    - type: string
+                      maxLength: 20
+                      pattern: ^[a-z]{2,3}(-[A-Z][a-z]{3})?(-([A-Z]{2}|[0-9]{3}))?$
+                    - type: "null"
+                timeZone:
+                  anyOf:
+                    - type: string
+                      maxLength: 64
+                      pattern: ^[A-Za-z][A-Za-z0-9_+-]*(\/[A-Za-z0-9_+-]+)*$
+                    - type: "null"
+              required:
+                - firstName
+                - lastName
+              additionalProperties: false
+      security: *a10
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      accountId:
+                        type: string
+                        format: uuid
+                        pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+                      status:
+                        type: string
+                        enum:
+                          - PENDING
+                          - ACTIVE
+                          - SUSPENDED
+                          - CLOSURE_REQUESTED
+                          - CLOSED
+                      roles:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            code:
+                              type: string
+                            nameContentKey:
+                              type: string
+                          required:
+                            - code
+                            - nameContentKey
+                          additionalProperties: false
+                      primaryRole:
+                        type:
+                          - "null"
+                          - string
+                      activeRole:
+                        type:
+                          - "null"
+                          - string
+                      profile:
+                        anyOf:
+                          - type: object
+                            properties:
+                              firstName:
+                                type: string
+                              lastName:
+                                type: string
+                              preferredLocale:
+                                type:
+                                  - string
+                                  - "null"
+                              timeZone:
+                                type:
+                                  - string
+                                  - "null"
+                            required:
+                              - firstName
+                              - lastName
+                              - preferredLocale
+                              - timeZone
+                            additionalProperties: false
+                          - type: "null"
+                      createdAt:
+                        type: string
+                    required:
+                      - accountId
+                      - status
+                      - roles
+                      - primaryRole
+                      - activeRole
+                      - profile
+                      - createdAt
+                    additionalProperties: false
+                  meta:
+                    type: object
+                    properties:
+                      correlationId:
+                        type: string
+                    required:
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - data
+                  - meta
+                additionalProperties: false
+        "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "401":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "403":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "409":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "503":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
 servers:
   - url: http://api.localhost:8080
     description: Local development via Caddy
@@ -19929,3 +21024,5 @@ tags:
     description: "Content and localization registry: management is internal/admin only (admin identity context plus a content permission); resolve and the active locale list are public with visibility rules"
   - name: geography
     description: "Geography registry (countries, markets, currencies, time zones, market defaults): reads are public with visibility rules (ACTIVE data and public fields only), management is internal/admin only (admin identity context plus a geography permission)"
+  - name: account
+    description: "The caller's own application account (ID-001): account, application roles, active role and core profile. Authenticated with the normal web identity context; the admin context has no application account. Application roles live in PostgreSQL, not in Keycloak"

@@ -3,7 +3,7 @@ asyncapi: 3.0.0
 info:
   title: BananaGig Events
   version: 1.0.0
-  description: Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events and the geography registry events exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.
+  description: Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events and the identity account events exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.
 defaultContentType: application/json
 channels:
   infraPing:
@@ -114,6 +114,36 @@ channels:
     messages:
       GeographyAdministrativeAreasUpdated:
         $ref: "#/components/messages/GeographyAdministrativeAreasUpdated"
+  identity_accountCreated:
+    address: bananagig.identity.account-created.v1
+    description: An application account was created from the first verified identity of a person. Published through the transactional outbox (aggregate identity_account); the payload carries identifiers only, never a name, a token, a subject or any personal value.
+    messages:
+      IdentityAccountCreated:
+        $ref: "#/components/messages/IdentityAccountCreated"
+  identity_externalIdentityLinked:
+    address: bananagig.identity.external-identity-linked.v1
+    description: An identity provider login (Keycloak issuer and subject) was linked to an account. The payload never carries the subject or the issuer. Published through the transactional outbox (aggregate identity_account); the payload carries identifiers only, never a name, a token, a subject or any personal value.
+    messages:
+      IdentityExternalIdentityLinked:
+        $ref: "#/components/messages/IdentityExternalIdentityLinked"
+  identity_accountRoleGranted:
+    address: bananagig.identity.account-role-granted.v1
+    description: An application role (for example CUSTOMER or PROVIDER) became ACTIVE for an account, by a new grant or a reactivation. Published through the transactional outbox (aggregate identity_account); the payload carries identifiers only, never a name, a token, a subject or any personal value.
+    messages:
+      IdentityAccountRoleGranted:
+        $ref: "#/components/messages/IdentityAccountRoleGranted"
+  identity_accountRoleDeactivated:
+    address: bananagig.identity.account-role-deactivated.v1
+    description: An application role membership of an account was deactivated. Published through the transactional outbox (aggregate identity_account); the payload carries identifiers only, never a name, a token, a subject or any personal value.
+    messages:
+      IdentityAccountRoleDeactivated:
+        $ref: "#/components/messages/IdentityAccountRoleDeactivated"
+  identity_accountStatusChanged:
+    address: bananagig.identity.account-status-changed.v1
+    description: The status of an account changed along the account status machine (the creation of an account is announced by account-created instead). Published through the transactional outbox (aggregate identity_account); the payload carries identifiers only, never a name, a token, a subject or any personal value.
+    messages:
+      IdentityAccountStatusChanged:
+        $ref: "#/components/messages/IdentityAccountStatusChanged"
 operations:
   receiveInfraPing:
     action: receive
@@ -205,6 +235,31 @@ operations:
     channel:
       $ref: "#/channels/geography_administrativeAreasUpdated"
     summary: Administrative areas of a country were added or changed. The payload carries counts only; the audit trail lists the area codes.
+  sendIdentityAccountCreated:
+    action: send
+    channel:
+      $ref: "#/channels/identity_accountCreated"
+    summary: An application account was created from the first verified identity of a person.
+  sendIdentityExternalIdentityLinked:
+    action: send
+    channel:
+      $ref: "#/channels/identity_externalIdentityLinked"
+    summary: An identity provider login (Keycloak issuer and subject) was linked to an account. The payload never carries the subject or the issuer.
+  sendIdentityAccountRoleGranted:
+    action: send
+    channel:
+      $ref: "#/channels/identity_accountRoleGranted"
+    summary: An application role (for example CUSTOMER or PROVIDER) became ACTIVE for an account, by a new grant or a reactivation.
+  sendIdentityAccountRoleDeactivated:
+    action: send
+    channel:
+      $ref: "#/channels/identity_accountRoleDeactivated"
+    summary: An application role membership of an account was deactivated.
+  sendIdentityAccountStatusChanged:
+    action: send
+    channel:
+      $ref: "#/channels/identity_accountStatusChanged"
+    summary: The status of an account changed along the account status machine (the creation of an account is announced by account-created instead).
 components:
   messages:
     EventEnvelope:
@@ -387,6 +442,56 @@ components:
             type: string
       payload:
         $ref: "#/components/schemas/GeographyAdministrativeAreasUpdated"
+    IdentityAccountCreated:
+      name: IdentityAccountCreated
+      title: An application account was created from the first verified identity of a person.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/IdentityAccountCreated"
+    IdentityExternalIdentityLinked:
+      name: IdentityExternalIdentityLinked
+      title: An identity provider login (Keycloak issuer and subject) was linked to an account. The payload never carries the subject or the issuer.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/IdentityExternalIdentityLinked"
+    IdentityAccountRoleGranted:
+      name: IdentityAccountRoleGranted
+      title: An application role (for example CUSTOMER or PROVIDER) became ACTIVE for an account, by a new grant or a reactivation.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/IdentityAccountRoleGranted"
+    IdentityAccountRoleDeactivated:
+      name: IdentityAccountRoleDeactivated
+      title: An application role membership of an account was deactivated.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/IdentityAccountRoleDeactivated"
+    IdentityAccountStatusChanged:
+      name: IdentityAccountStatusChanged
+      title: The status of an account changed along the account status machine (the creation of an account is announced by account-created instead).
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/IdentityAccountStatusChanged"
   schemas:
     EventEnvelope:
       type: object
@@ -1866,6 +1971,385 @@ components:
             - countryCode
             - added
             - updated
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    IdentityAccountCreated:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.identity.account-created.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            accountId:
+              type: string
+            status:
+              type: string
+              enum:
+                - PENDING
+                - ACTIVE
+                - SUSPENDED
+                - CLOSURE_REQUESTED
+                - CLOSED
+          required:
+            - accountId
+            - status
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    IdentityExternalIdentityLinked:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.identity.external-identity-linked.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            accountId:
+              type: string
+            providerType:
+              type: string
+              enum:
+                - KEYCLOAK
+          required:
+            - accountId
+            - providerType
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    IdentityAccountRoleGranted:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.identity.account-role-granted.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            accountId:
+              type: string
+            roleCode:
+              type: string
+            source:
+              type: string
+              enum:
+                - BOOTSTRAP
+                - SIGNUP
+                - ADMIN
+                - SYSTEM
+          required:
+            - accountId
+            - roleCode
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    IdentityAccountRoleDeactivated:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.identity.account-role-deactivated.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            accountId:
+              type: string
+            roleCode:
+              type: string
+            source:
+              type: string
+              enum:
+                - BOOTSTRAP
+                - SIGNUP
+                - ADMIN
+                - SYSTEM
+          required:
+            - accountId
+            - roleCode
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    IdentityAccountStatusChanged:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.identity.account-status-changed.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            accountId:
+              type: string
+            fromStatus:
+              anyOf:
+                - type: string
+                  enum:
+                    - PENDING
+                    - ACTIVE
+                    - SUSPENDED
+                    - CLOSURE_REQUESTED
+                    - CLOSED
+                - type: "null"
+            toStatus:
+              type: string
+              enum:
+                - PENDING
+                - ACTIVE
+                - SUSPENDED
+                - CLOSURE_REQUESTED
+                - CLOSED
+          required:
+            - accountId
+            - fromStatus
+            - toStatus
           additionalProperties: false
       required:
         - eventId

@@ -834,3 +834,78 @@ Before adding syntax to a template language, write down which element owns every
 
 ### Evidence
 `packages/geography/src/address-engine.ts` (`renderLine`), `packages/geography/src/address-engine.test.ts` (punctuation of omitted fields), `docs/engineering/ADDRESSES.md`.
+
+## LRN-0034 — A get-or-create keyed by a unique constraint: insert, let the loser fail and roll back, then read
+
+Date: 2026-10-07
+Checkpoint: ID-001
+Domain: database / identity
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0025
+Related skill: skills/identity/SKILL.md
+
+### Context
+The first authenticated request of a person creates their account and links the Keycloak identity. Several requests of the same person can arrive at once (a page load fires parallel API calls). A "look up, then insert if absent" without protection creates one account per request.
+
+### Learning
+Let the unique key decide, not application locking: look the key up; when absent, run ONE transaction that inserts the account and the link; the concurrent loser blocks on the unique index until the winner commits, gets a unique violation (SQLSTATE 23505 on the key's constraint) and its whole transaction, including the half-created account, rolls back; it then re-reads the winner's row. Bound the retries (3) and report a retryable conflict after that. 25 parallel first requests produce exactly one account, one link, one history row and one creation event, checked over repeated runs because a race test that passes once proves little.
+
+### Why it matters
+Advisory locks serialize more than needed and hide the invariant in code; a plain unique constraint makes the duplicate impossible even for a second application instance or a raw SQL client.
+
+### Reuse rule
+Get-or-create = unique constraint + one creating transaction + catch 23505 on THAT constraint + re-read. Test with N parallel callers and global invariants, several rounds.
+
+### Evidence
+`packages/accounts/src/service.ts` (`ensureAccountForIdentity`), `packages/accounts/src/accounts.itest.ts` (parallel first requests), `apps/api/src/account.itest.ts` (20 concurrent HTTP calls).
+
+## LRN-0035 — A deferred consistency trigger reads the current row at commit and guards both sides of the invariant
+
+Date: 2026-10-07
+Checkpoint: ID-001
+Domain: database
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0025
+Related skill: skills/database/SKILL.md
+
+### Context
+The account status must always equal the newest row of its immutable history. The first version of the deferred constraint trigger compared the newest history row with `NEW.status` of the row version that queued the event. For a deferred AFTER ROW trigger `NEW` is that old version, so a transaction that suspends and reactivates an account (a transient status) was refused at COMMIT although the end state was consistent; and a stray history row, which fires nothing on the accounts table, went unnoticed. An integration test written with `it.fails` for the suspected defect proved the first, and the review of the second.
+
+### Learning
+A deferred check must read the CURRENT row at commit, not the queued row version, and an invariant between two tables needs a deferred trigger on each table (the status change without a history row, and the history row without or against a status change), plus continuity of the chain (`from_status` equals the previous `to_status`). When a suspected defect cannot be reached through the service, pin it with `it.fails` and fix the code, not the test.
+
+### Why it matters
+A latent false refusal appears the first time someone legitimately changes state twice in one transaction (a support script, a later checkpoint), and an unguarded side of the invariant lets raw SQL corrupt the history silently.
+
+### Reuse rule
+Deferred constraint triggers: read the live rows inside the function; install one per side of the invariant; test with a transient state, a stray row and a gap.
+
+### Evidence
+`db/migrations/0009_identity_accounts.sql` (`identity.check_status_history`, `identity.check_status_history_row`), `packages/testing/src/identity-model.itest.ts` (transient status, stray row, gap).
+
+## LRN-0036 — Literal bidirectional and invisible characters in source slip past eslint; scan for them
+
+Date: 2026-10-07
+Checkpoint: ID-001
+Domain: process / security
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/testing/SKILL.md
+
+### Context
+The file-writing tool decodes the TEXT of a Unicode escape (backslash, `u`, four hex digits) in the content it writes and puts the literal character on disk. It happened three times: zero-width characters in two regexes (eslint's `no-irregular-whitespace` caught them) and, in the identity migration, the bidirectional override characters U+202A to U+202E and U+2066 to U+2069 inside a CHECK regex. eslint does NOT flag bidi characters, so that one was found only by a reviewer reading the file. Bidirectional characters in source can make code read differently from how it executes (the "trojan source" class).
+
+### Learning
+Write any file that needs a Unicode escape through a shell heredoc or python, and scan the changed files before committing. Older committed test fixtures (`packages/content/src/format.test.ts`, `template.test.ts`, `packages/geography/src/address-engine.test.ts`) still hold such literals as test data.
+
+### Why it matters
+A literal bidi character in a regex or a migration is invisible in review and silently changes what a reader believes the constraint is.
+
+### Reuse rule
+Before a commit: `python3 -I -c` over `git ls-files` plus untracked files, flag U+202A to U+202E, U+2066 to U+2069, U+200B, U+2060, U+FEFF, U+180E, U+00AD and control characters outside tab and newline. New code builds such characters with escapes or `String.fromCodePoint`.
+
+### Evidence
+Migration `0009_identity_accounts.sql` (CHECKs `ck_account_profiles__first_name` and `__last_name` use escapes), `packages/geography/src/address-engine.ts` (`INVISIBLE`), the three older test files above (candidates to convert).

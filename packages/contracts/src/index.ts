@@ -113,3 +113,4 @@ export * from './content';
 export * from './geography';
 export * from './address';
 export * from './integer';
+export * from './account';

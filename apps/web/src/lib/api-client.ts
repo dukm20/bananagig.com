@@ -1,8 +1,10 @@
 // Typed internal API client. Knows only the public HTTP contract (/api/v1), never database internals.
 import {
+  ACTIVE_ROLE_HEADER,
   API_PREFIX,
   CORRELATION_HEADER,
   ErrorResponse,
+  AccountResponse,
   AddressFormatResponse,
   AddressValidationResponse,
   AdministrativeAreaListResponse,
@@ -12,6 +14,7 @@ import {
   ResolveManyContentResponse,
   SystemInfoResponse,
   WhoAmIResponse,
+  type AccountDto,
   type AddressFormatDto,
   type AddressInput,
   type AddressValidationResultDto,
@@ -22,6 +25,7 @@ import {
   type NormalizedAddressDto,
   type ResolvedContentDto,
   type SystemInfo,
+  type UpdateProfileRequest,
   type WhoAmI,
 } from '@bananagig/contracts';
 
@@ -66,6 +70,11 @@ export interface ResolveManyContentInput {
   timeZone?: string;
 }
 
+/** Options of the account calls: the application role this request acts as (the session's active role). The API validates it on every request. */
+export interface AccountCallOptions {
+  activeRole?: string;
+}
+
 /** Options of the central address formatter. */
 export interface FormatAddressInput {
   /** Locale of the country line (default: the country's default locale). */
@@ -76,8 +85,13 @@ export interface FormatAddressInput {
 
 export function createApiClient(opts: ApiClientOptions) {
   const f = opts.fetch ?? fetch;
-  async function request<T>(path: string, parse: (json: unknown) => T, body?: unknown): Promise<{ data: T; correlationId: string | undefined }> {
-    const headers: Record<string, string> = { accept: 'application/json' };
+  async function request<T>(
+    path: string,
+    parse: (json: unknown) => T,
+    body?: unknown,
+    extra: { method?: 'GET' | 'POST' | 'PUT'; headers?: Record<string, string> } = {},
+  ): Promise<{ data: T; correlationId: string | undefined }> {
+    const headers: Record<string, string> = { accept: 'application/json', ...extra.headers };
     const cid = opts.correlationId?.();
     if (cid) headers[CORRELATION_HEADER] = cid;
     const token = opts.accessToken?.();
@@ -86,7 +100,7 @@ export function createApiClient(opts: ApiClientOptions) {
     try {
       if (body !== undefined) headers['content-type'] = 'application/json';
       res = await f(`${opts.baseUrl.replace(/\/$/, '')}${API_PREFIX}${path}`, {
-        method: body === undefined ? 'GET' : 'POST',
+        method: extra.method ?? (body === undefined ? 'GET' : 'POST'),
         headers,
         body: body === undefined ? undefined : JSON.stringify(body),
         cache: 'no-store',
@@ -117,10 +131,29 @@ export function createApiClient(opts: ApiClientOptions) {
     }
     return { data, correlationId };
   }
+  const roleHeader = (o: AccountCallOptions): Record<string, string> => (o.activeRole ? { [ACTIVE_ROLE_HEADER]: o.activeRole } : {});
   return {
     /** GET /api/v1/system/whoami (requires an access token) */
     async getWhoAmI(): Promise<WhoAmI> {
       return (await request('/system/whoami', (j) => WhoAmIResponse.parse(j).data)).data;
+    },
+    /**
+     * GET /api/v1/account/me (requires an access token of the web identity context): the caller's own application account, ACTIVE roles and the role
+     * this request acts as. `activeRole` is sent as x-active-role and accepted by the API only when the account holds it as an ACTIVE role (403 otherwise).
+     */
+    async getAccount(o: AccountCallOptions = {}): Promise<AccountDto> {
+      return (await request('/account/me', (j) => AccountResponse.parse(j).data, undefined, { headers: roleHeader(o) })).data;
+    },
+    /**
+     * POST /api/v1/account/active-role: validates that the account holds the role as an ACTIVE role and returns the account acting as it. Persists
+     * nothing and starts no Keycloak login: the caller (the web session) remembers the role. A role the account does not hold is an ApiError (403).
+     */
+    async setActiveRole(role: string): Promise<AccountDto> {
+      return (await request('/account/active-role', (j) => AccountResponse.parse(j).data, { role }, { method: 'POST' })).data;
+    },
+    /** PUT /api/v1/account/profile: replaces the caller's own core profile (names, optional locale and time zone). Invalid names are an ApiError (400) with issue codes and message keys. */
+    async updateProfile(input: UpdateProfileRequest, o: AccountCallOptions = {}): Promise<AccountDto> {
+      return (await request('/account/profile', (j) => AccountResponse.parse(j).data, input, { method: 'PUT', headers: roleHeader(o) })).data;
     },
     /** GET /api/v1/system/info */
     async getSystemInfo(): Promise<SystemInfo> {

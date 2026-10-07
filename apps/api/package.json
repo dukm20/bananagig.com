@@ -10,6 +10,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@bananagig/accounts": "workspace:*",
     "@bananagig/config": "workspace:*",
     "@bananagig/configuration": "workspace:*",
     "@bananagig/content": "workspace:*",

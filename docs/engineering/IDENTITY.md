@@ -1,28 +1,35 @@
 # Identity (Keycloak baseline)
 
-Infrastructure only. No sign-up, onboarding, verification or recovery business flows exist yet. Decisions: ADR-0013 (provider and data ownership), ADR-0014 (web session and PKCE), ADR-0015 (admin separation and role split).
+Authentication infrastructure plus, since ID-001, the application account that a verified identity is mapped to. No sign-up, onboarding, verification or recovery business flows exist yet. Decisions: ADR-0013 (provider and data ownership), ADR-0014 (web session and PKCE), ADR-0015 (admin separation and role split), ADR-0025 (application account versus Keycloak identity), ADR-0026 (role membership and the active role context). The account side is described in `docs/engineering/ACCOUNTS.md`.
 
 ## Ownership boundary
 
-| Keycloak owns | The BananaGig database will own (later) |
+| Keycloak owns | The BananaGig database owns |
 |---|---|
-| Authentication and credentials (passwords) | Customer and provider profiles |
-| Protocol sessions and token issuance | Marketplace role-specific data, preferences, consents |
-| MFA factors (TOTP now, WebAuthn later) | Business relationships and application permissions |
-| Brute-force protection, login flows | Authorization policies that do not belong in a token |
+| Authentication and credentials (passwords) | The application account, its id, status and status history (`identity.accounts`) |
+| Protocol sessions and token issuance | The mapping of a login to its account (`identity.external_identities`: issuer + subject) |
+| MFA factors (TOTP now, WebAuthn later) | Application roles (`CUSTOMER`, `PROVIDER`) and role memberships, the preferred role, the core profile (names, locale, time zone) |
+| Brute-force protection, login flows | Later: contact data and verification, consents, role-specific data, business relationships and application permissions |
 
-Keycloak stores only what authentication needs (a username, an email for login and, in dev, a name). Profile data is not duplicated into Keycloak.
+Keycloak stores only what authentication needs (a username, an email for login and, in dev, a name). Profile data is not duplicated into Keycloak, and nothing of Keycloak (credentials, tokens, sessions) is duplicated into the BananaGig database; the only provider data stored is the issuer and subject that form the link. See `docs/engineering/ACCOUNTS.md` for the full ownership table.
 
-## Subject mapping (future)
+## Subject mapping (implemented in ID-001)
 
-Every BananaGig user will reference their Keycloak identity by the immutable `sub` claim, stored as an external identity reference in the future identity schema:
+Every BananaGig account references its Keycloak identity by the immutable `sub` claim and the issuer, stored in `identity.external_identities` (migration `0009_identity_accounts.sql`):
 
 ```
-identity.external_identities (external_identity_id uuid PK, provider text, subject text, user_id uuid -> identity.users, created_at ...)
-unique (provider, subject)
+identity.external_identities (
+  external_identity_id uuid PK, account_id uuid -> identity.accounts, provider_type text ('KEYCLOAK'),
+  issuer text, provider_subject text, created_at, last_seen_at,
+  UNIQUE (provider_type, issuer, provider_subject)
+)
 ```
 
-No user or profile table exists in INF-004 and none is needed: the API only validates tokens and echoes minimal identity. The table arrives with the first persisted account feature (checkpoint ID-001), through the Data Model Review Gate. Never key business data by username or email; both can change.
+There is no `users` table: `identity.accounts` carries no subject, no credentials and no contact data. The unique key makes one login link at most one account (a race between two first requests has exactly one winner), the link is immutable (only `last_seen_at` changes) and never deleted, and the key is the lookup of every authenticated request. Both the issuer and the subject are used verbatim; a person is never matched to an account by email or username (both can change). Keycloak's realm roles are not copied: they seed the first application roles of a new account once and are never read again (ADR-0025). Details, the account bootstrap policy and the active role are in `docs/engineering/ACCOUNTS.md`.
+
+## Application account
+
+A verified identity of the normal web context (`azp` `bananagig-web`) gets a BananaGig account on its first authenticated request, in one transaction, with status `ACTIVE`, an immutable status history row (the database checks at commit, in both directions, that the history and the current status agree), the external identity link and initial roles from the one-time bootstrap hint (`customer` gives `CUSTOMER`, `provider` gives `PROVIDER`). The application roles of an account come from PostgreSQL, never from the token; the role a request acts as (the active role) is request context validated against the account's ACTIVE roles on every request, sent by the web server as `x-active-role`, and never persisted. Switching role does not create a Keycloak login or session. Admin identities (`bananagig-admin`) have no account and get 403 on the account routes (SV-11.08). `requireAccount()` in `apps/api/src/plugins/account.ts` is the guard; routes read `request.account`, never the realm roles of the token, for application decisions.
 
 ## Realm and clients
 
@@ -103,9 +110,9 @@ Config (`@bananagig/config`): `KEYCLOAK_URL` (internal), `KEYCLOAK_PUBLIC_URL` (
 | Where | Keycloak (token claim) | BananaGig database / configuration |
 | Meaning | "This account is a customer / provider" | "May approve refunds", "may edit this provider's calendar" |
 | Granularity | Coarse, rarely changes | Fine, business-driven, auditable, changes often |
-| Now | Realm roles `customer`, `provider`. Client role `admin-console-access` on `bananagig-admin` | None. Built with the features that need them |
+| Now | Realm roles `customer`, `provider` (identity facts; a one-time hint when an account is created). Client role `admin-console-access` on `bananagig-admin` | Application roles `CUSTOMER` and `PROVIDER` as memberships of an account (`identity.account_roles`, ID-001: marketplace roles, not permissions). No fine-grained permission yet; those are built with the features that need them |
 
-Admin access is a **client role** on the admin client, never a realm role mixed into normal accounts, and admin tokens carry no `customer`/`provider` roles. Detailed admin permissions (finance, trust, support) are application data, not Keycloak roles. Authorization is always enforced server-side; hiding UI is not security.
+Admin access is a **client role** on the admin client, never a realm role mixed into normal accounts, and admin tokens carry no `customer`/`provider` roles; an admin login has no application account and cannot hold the customer or provider role. Detailed admin permissions (finance, trust, support) are application data, not Keycloak roles. Authorization is always enforced server-side; hiding UI is not security.
 
 ## Admin separation
 
@@ -113,7 +120,7 @@ Admin access is a **client role** on the admin client, never a realm role mixed 
 - Shorter access tokens (180 s vs 300 s), shorter client session (idle 15 min, max 8 h).
 - Its own browser authentication flow `bananagig-admin-browser` with an OTP step.
 - The API tells the contexts apart: `Principal.authContext` is `admin` when `azp` is `bananagig-admin` (guard: `requireAuthContext('admin')`, plus `requireClientRole('bananagig-admin','admin-console-access')`).
-- No public admin sign-up: public registration is off; admins arrive by invitation in a later checkpoint (AD-07).
+- No public admin sign-up: public registration is off; admins arrive by invitation in a later checkpoint (AD-07). Admin identities have no `identity.accounts` row: the account routes answer 403 `ACCOUNT_CONTEXT_NOT_SUPPORTED` for the admin context (DEBT-0046).
 
 ## MFA
 
@@ -143,7 +150,17 @@ Fastify guards in `apps/api/src/plugins/auth.ts`: `requireAuthenticated()`, `req
 | Authenticated but lacking the role | 403 `INSUFFICIENT_PERMISSIONS` |
 | Key set unreachable | 503 `AUTH_PROVIDER_UNAVAILABLE` (category DEPENDENCY) |
 
-`GET /api/v1/system/whoami` returns `{subject, clientId, audience, realmRoles, authContext}` plus the correlation id, never the token. Readiness of the API still depends on PostgreSQL only: a Keycloak outage fails authenticated routes, not public ones.
+`GET /api/v1/system/whoami` returns `{subject, clientId, audience, realmRoles, authContext}` plus the correlation id, never the token.
+
+The account routes (ID-001) build on these guards: `requireAccount({ includeProfile?, honorActiveRoleHeader? })` (`apps/api/src/plugins/account.ts`) authenticates (401), requires the normal web context (403 `ACCOUNT_CONTEXT_NOT_SUPPORTED` for the admin context and any other client), maps the verified issuer and subject to the account (creating it on the first request), refuses `SUSPENDED` and `CLOSED` accounts (403) and sets `request.account`. It never reads an account id, subject or role from the client (the subject comes from the verified token only).
+
+| Route | Purpose | Notes |
+|---|---|---|
+| GET `/api/v1/account/me` | the caller's own account: id, status, ACTIVE application roles, preferred role, active role, profile | optional `x-active-role` header validated against the ACTIVE roles on every request (403 `ACCOUNT_ROLE_NOT_HELD` or `ACCOUNT_ROLE_NOT_ACTIVE`; an empty header is refused as `ACCOUNT_ROLE_NOT_HELD`, the web server omits the header instead of sending it empty); no query parameters |
+| POST `/api/v1/account/active-role` | validate a role switch `{ role }` and return the account with that active role | persists nothing and does not touch Keycloak |
+| PUT `/api/v1/account/profile` | replace the caller's own profile (first and last name, optional locale and time zone) | strict body, idempotent |
+
+Errors use the standard model with `ACCOUNT_<code>` codes (`ACCOUNT_SUSPENDED`, `ACCOUNT_CLOSED`, `ACCOUNT_ROLE_NOT_HELD`, `ACCOUNT_ROLE_NOT_ACTIVE`, `ACCOUNT_VALIDATION_FAILED`, `ACCOUNT_CONFLICT`, `ACCOUNT_INVALID_STATE`, `ACCOUNT_UNAVAILABLE`); every response of a matched account route, errors included, carries `Cache-Control: no-store` (the caller's own personal data); the full reference is in `docs/engineering/ACCOUNTS.md`. Readiness of the API still depends on PostgreSQL only: a Keycloak outage fails authenticated routes, not public ones.
 
 ## Telemetry and logging
 

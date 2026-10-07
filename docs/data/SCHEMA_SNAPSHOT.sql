@@ -5,6 +5,7 @@
 CREATE SCHEMA configuration;
 CREATE SCHEMA content;
 CREATE SCHEMA geography;
+CREATE SCHEMA identity;
 CREATE SCHEMA integration;
 
 CREATE TABLE configuration.audit_events (
@@ -593,6 +594,126 @@ CREATE TABLE geography.time_zones (
   CONSTRAINT uq_time_zones__iana_name UNIQUE (iana_name),
   CONSTRAINT ck_time_zones__iana_name_format CHECK (((iana_name ~ '^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+)*$'::text) AND (length(iana_name) <= 64))),
   CONSTRAINT ck_time_zones__status CHECK ((status = ANY (ARRAY['PLANNED'::text, 'ACTIVE'::text, 'INACTIVE'::text])))
+);
+
+CREATE TABLE identity.account_audit_events (
+  audit_event_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  occurred_at timestamp with time zone NOT NULL DEFAULT clock_timestamp(),
+  actor text NOT NULL,
+  action text NOT NULL,
+  account_id uuid NOT NULL,
+  role_id uuid,
+  changes jsonb,
+  reason text,
+  correlation_id text NOT NULL,
+  CONSTRAINT pk_account_audit_events PRIMARY KEY (audit_event_id),
+  CONSTRAINT fk_account_audit_events__account_id FOREIGN KEY (account_id) REFERENCES identity.accounts(account_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_account_audit_events__role_id FOREIGN KEY (role_id) REFERENCES identity.roles(role_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_account_audit_events__action CHECK ((action = ANY (ARRAY['ACCOUNT_CREATED'::text, 'EXTERNAL_IDENTITY_LINKED'::text, 'ROLE_GRANTED'::text, 'ROLE_ACTIVATED'::text, 'ROLE_DEACTIVATED'::text, 'PRIMARY_ROLE_CHANGED'::text, 'PROFILE_UPDATED'::text]))),
+  CONSTRAINT ck_account_audit_events__actor CHECK (((length(btrim(actor)) > 0) AND (length(actor) <= 200))),
+  CONSTRAINT ck_account_audit_events__changes_object CHECK (((changes IS NULL) OR (jsonb_typeof(changes) = 'object'::text))),
+  CONSTRAINT ck_account_audit_events__role CHECK (((action ~~ 'ROLE\_%'::text) = (role_id IS NOT NULL)))
+);
+CREATE INDEX idx_account_audit_events__account ON identity.account_audit_events USING btree (account_id, occurred_at DESC);
+
+CREATE TABLE identity.account_profiles (
+  account_id uuid NOT NULL,
+  first_name text NOT NULL,
+  last_name text NOT NULL,
+  preferred_locale text,
+  time_zone_id uuid,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_account_profiles PRIMARY KEY (account_id),
+  CONSTRAINT fk_account_profiles__account_id FOREIGN KEY (account_id) REFERENCES identity.accounts(account_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_account_profiles__preferred_locale FOREIGN KEY (preferred_locale) REFERENCES content.locales(locale) ON DELETE RESTRICT,
+  CONSTRAINT fk_account_profiles__time_zone_id FOREIGN KEY (time_zone_id) REFERENCES geography.time_zones(time_zone_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_account_profiles__first_name CHECK ((((length(first_name) >= 1) AND (length(first_name) <= 50)) AND (first_name !~ '(^\s|\s$)'::text) AND (first_name !~ '[\u0001-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]'::text))),
+  CONSTRAINT ck_account_profiles__last_name CHECK ((((length(last_name) >= 1) AND (length(last_name) <= 50)) AND (last_name !~ '(^\s|\s$)'::text) AND (last_name !~ '[\u0001-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]'::text)))
+);
+
+CREATE TABLE identity.account_roles (
+  account_id uuid NOT NULL,
+  role_id uuid NOT NULL,
+  status text NOT NULL,
+  granted_at timestamp with time zone NOT NULL DEFAULT now(),
+  activated_at timestamp with time zone,
+  deactivated_at timestamp with time zone,
+  granted_by text NOT NULL,
+  grant_source text NOT NULL,
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_account_roles PRIMARY KEY (account_id, role_id),
+  CONSTRAINT fk_account_roles__account_id FOREIGN KEY (account_id) REFERENCES identity.accounts(account_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_account_roles__role_id FOREIGN KEY (role_id) REFERENCES identity.roles(role_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_account_roles__grant_source CHECK ((grant_source = ANY (ARRAY['BOOTSTRAP'::text, 'SIGNUP'::text, 'ADMIN'::text, 'SYSTEM'::text]))),
+  CONSTRAINT ck_account_roles__granted_by CHECK (((length(btrim(granted_by)) > 0) AND (length(granted_by) <= 200))),
+  CONSTRAINT ck_account_roles__lifecycle CHECK ((((status = 'PENDING'::text) AND (activated_at IS NULL) AND (deactivated_at IS NULL)) OR ((status = 'ACTIVE'::text) AND (activated_at IS NOT NULL) AND (deactivated_at IS NULL)) OR ((status = 'INACTIVE'::text) AND (deactivated_at IS NOT NULL)))),
+  CONSTRAINT ck_account_roles__status CHECK ((status = ANY (ARRAY['PENDING'::text, 'ACTIVE'::text, 'INACTIVE'::text])))
+);
+
+CREATE TABLE identity.account_status_history (
+  status_history_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  history_seq bigint NOT NULL GENERATED ALWAYS AS IDENTITY,
+  account_id uuid NOT NULL,
+  from_status text,
+  to_status text NOT NULL,
+  reason text,
+  actor text NOT NULL,
+  occurred_at timestamp with time zone NOT NULL DEFAULT clock_timestamp(),
+  correlation_id text NOT NULL,
+  CONSTRAINT pk_account_status_history PRIMARY KEY (status_history_id),
+  CONSTRAINT uq_account_status_history__seq UNIQUE (history_seq),
+  CONSTRAINT fk_account_status_history__account_id FOREIGN KEY (account_id) REFERENCES identity.accounts(account_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_account_status_history__actor CHECK (((length(btrim(actor)) > 0) AND (length(actor) <= 200))),
+  CONSTRAINT ck_account_status_history__changed CHECK ((from_status IS DISTINCT FROM to_status)),
+  CONSTRAINT ck_account_status_history__from_status CHECK (((from_status IS NULL) OR (from_status = ANY (ARRAY['PENDING'::text, 'ACTIVE'::text, 'SUSPENDED'::text, 'CLOSURE_REQUESTED'::text, 'CLOSED'::text])))),
+  CONSTRAINT ck_account_status_history__reason CHECK (((reason IS NULL) OR ((length(btrim(reason)) > 0) AND (length(reason) <= 1000)))),
+  CONSTRAINT ck_account_status_history__to_status CHECK ((to_status = ANY (ARRAY['PENDING'::text, 'ACTIVE'::text, 'SUSPENDED'::text, 'CLOSURE_REQUESTED'::text, 'CLOSED'::text])))
+);
+CREATE INDEX idx_account_status_history__account ON identity.account_status_history USING btree (account_id, history_seq DESC);
+
+CREATE TABLE identity.accounts (
+  account_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  status text NOT NULL,
+  primary_role_id uuid,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  closed_at timestamp with time zone,
+  CONSTRAINT pk_accounts PRIMARY KEY (account_id),
+  CONSTRAINT fk_accounts__primary_role FOREIGN KEY (account_id, primary_role_id) REFERENCES identity.account_roles(account_id, role_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_accounts__closed_at CHECK (((status = 'CLOSED'::text) = (closed_at IS NOT NULL))),
+  CONSTRAINT ck_accounts__status CHECK ((status = ANY (ARRAY['PENDING'::text, 'ACTIVE'::text, 'SUSPENDED'::text, 'CLOSURE_REQUESTED'::text, 'CLOSED'::text])))
+);
+
+CREATE TABLE identity.external_identities (
+  external_identity_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  account_id uuid NOT NULL,
+  provider_type text NOT NULL,
+  issuer text NOT NULL,
+  provider_subject text NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  last_seen_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_external_identities PRIMARY KEY (external_identity_id),
+  CONSTRAINT uq_external_identities__provider_issuer_subject UNIQUE (provider_type, issuer, provider_subject),
+  CONSTRAINT fk_external_identities__account_id FOREIGN KEY (account_id) REFERENCES identity.accounts(account_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_external_identities__issuer CHECK (((length(btrim(issuer)) > 0) AND (length(issuer) <= 512) AND (issuer !~ '[\u0001-\u001F\u007F]'::text))),
+  CONSTRAINT ck_external_identities__provider_type CHECK ((provider_type = 'KEYCLOAK'::text)),
+  CONSTRAINT ck_external_identities__subject CHECK (((length(btrim(provider_subject)) > 0) AND (length(provider_subject) <= 255) AND (provider_subject !~ '[\u0001-\u001F\u007F]'::text)))
+);
+
+CREATE TABLE identity.roles (
+  role_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  code text NOT NULL,
+  name_content_key text NOT NULL,
+  status text NOT NULL DEFAULT 'ACTIVE'::text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_roles PRIMARY KEY (role_id),
+  CONSTRAINT uq_roles__code UNIQUE (code),
+  CONSTRAINT fk_roles__name_content_key FOREIGN KEY (name_content_key) REFERENCES content.entries(key) ON DELETE RESTRICT,
+  CONSTRAINT ck_roles__code_format CHECK ((code ~ '^[A-Z][A-Z0-9_]{1,29}$'::text)),
+  CONSTRAINT ck_roles__name_content_key_format CHECK ((name_content_key ~ '^[a-z][a-z0-9_]*([.][a-z][a-z0-9_]*)+$'::text)),
+  CONSTRAINT ck_roles__status CHECK ((status = ANY (ARRAY['ACTIVE'::text, 'INACTIVE'::text])))
 );
 
 CREATE TABLE integration.outbox_events (

@@ -29,6 +29,11 @@ export interface ContentStub {
   /** 'down' answers 503 with the standard error envelope. */
   mode: 'up' | 'down';
   catalog: StubCatalog;
+  /**
+   * Optional extra routes (for example the account endpoints, see account-stub.ts). Called first for every request with the parsed JSON body; return true
+   * when the request was answered. Requests it answers are not recorded in `calls` and are not affected by `mode`.
+   */
+  extra?: (req: http.IncomingMessage, body: unknown, res: http.ServerResponse) => boolean;
   close(): Promise<void>;
 }
 
@@ -74,6 +79,7 @@ export async function startContentStub(catalog: StubCatalog): Promise<ContentStu
       } catch {
         body = undefined;
       }
+      if (stub.extra?.(req, body, res)) return;
       const isLocaleList = req.method === 'GET' && req.url === '/api/v1/content/locales';
       if (isLocaleList) stub.localeCalls++;
       else stub.calls.push({ path: req.url ?? '', body, correlationId });

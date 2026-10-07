@@ -2,8 +2,8 @@
 // context plus a temporary content permission (content-read | content-write | content-approve) and, for entries owned by LEGAL, content-legal.
 // Resolution and the active locale list are PUBLIC routes with visibility rules: anonymous callers only ever see PUBLIC entries, never the
 // template source and never `at` previews. Routes are thin; all rules live in @bananagig/content.
-import type { FastifyInstance, FastifyRequest, preValidationAsyncHookHandler } from 'fastify';
-import type { ZodType } from 'zod';
+import { parseBody as parse, strictBody } from '../../plugins/strict-body';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
   ContentDecisionRequest,
   ContentSnapshotResponse,
@@ -38,25 +38,7 @@ const failures = { ...authErrorResponses, 400: errorResponses[400], 403: errorRe
 /** Public routes: 401 only for a credential that was presented and is invalid; 403 for privileged request options used anonymously. */
 const publicFailures = { ...authErrorResponses, 400: errorResponses[400], 403: errorResponses[400], 404: errorResponses[404] };
 const meta = (req: FastifyRequest) => ({ correlationId: req.correlationId });
-const parse = <T>(schema: ZodType<T>, body: unknown): T => {
-  const r = schema.safeParse(body);
-  if (!r.success)
-    throw new AppError('VALIDATION', 'VALIDATION_FAILED', 'Request validation failed', {
-      issues: r.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
-    });
-  return r.data;
-};
 const run = async <T>(fn: () => Promise<T>): Promise<T> => fn().catch(toAppError);
-/**
- * preValidation hook for management bodies that carry booleans: validates the RAW parsed body with the contract schema BEFORE Fastify's ajv step,
- * which coerces types ({"active":1} would become true, {"active":"false"} false). Ajv coercion stays on app-wide (query strings need it); these
- * bodies must be exactly the contract. Listed after the authorization hook, so 401/403 still win over 400. Same envelope as `parse`.
- */
-const strictBody =
-  <T>(schema: ZodType<T>): preValidationAsyncHookHandler =>
-  async (req) => {
-    parse(schema, req.body);
-  };
 /** Synchronous variant for the pure rendering step (its typed failures map the same way). */
 const runSync = <T>(fn: () => T): T => {
   try {
