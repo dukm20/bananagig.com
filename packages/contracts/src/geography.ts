@@ -3,6 +3,8 @@
 import { z } from 'zod';
 import { Locale } from './content';
 import { envelope } from './envelope';
+import { adminText } from './text';
+export { adminText } from './text';
 
 // ---------------------------------------------------------------- codes
 /** ISO 3166-1 alpha-2, upper case. This is also the canonical COUNTRY scope reference used by configuration and content. */
@@ -122,23 +124,6 @@ export const MarketReadinessDto = z.object({ market: z.string(), ready: z.boolea
 export type MarketReadinessDto = z.infer<typeof MarketReadinessDto>;
 
 // ---------------------------------------------------------------- management requests
-/**
- * Free text typed by an administrator (market name, change reason). Beyond the length limits it rejects what is never legitimate in a label or
- * an audit reason and what makes either misleading or unstorable: C0/C1 control characters (NUL, newlines, tabs, escape, DEL), bidirectional
- * override and isolate controls (U+202A-202E, U+2066-2069: they reorder rendered text), unpaired surrogates (not valid Unicode, unstorable as
- * UTF-8) and values that are blank once whitespace is ignored (including NBSP and zero-width spaces). The messages never echo the value.
- */
-const FORBIDDEN_TEXT_CHARACTER =
-  // eslint-disable-next-line no-control-regex
-  /[\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
-const BLANK_TEXT = /^[\s\u200B\u2060\u180E]*$/;
-export const adminText = (max: number) =>
-  z
-    .string()
-    .min(1)
-    .max(max)
-    .refine((v) => !FORBIDDEN_TEXT_CHARACTER.test(v), { message: 'must not contain control, bidirectional-override or unpaired surrogate characters' })
-    .refine((v) => !BLANK_TEXT.test(v), { message: 'must not be blank' });
 const reason = adminText(1000);
 const marketName = adminText(120);
 const locales = z.array(Locale).min(1).max(30);

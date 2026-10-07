@@ -387,3 +387,14 @@ Why deferred: Addresses and geocoding are GEO-002 and later.
 Exit criteria: Time zone derived from a validated address or coordinates, overriding the market default per service location.
 Target checkpoint: GEO-002 and the geocoding checkpoint
 
+
+## DEBT-0035 — A few unit tests assert latency against small deadlines and can flake on a loaded runner
+
+Status: OPEN
+Severity: LOW
+Introduced by: CFG-002 and GEO-001 (found by CI-003)
+Owner/domain: testing
+Description: CI run #5 failed because a unit test asserted that a large template validated in under 3 s (0.3 s locally, 3.6 s on the runner); CI-003 replaced it with a deterministic render count and widened two catastrophic-backtracking ceilings. The cache tests (`packages/configuration/src/cache.test.ts`, `packages/content/src/cache.test.ts`, `packages/geography/src/cache.test.ts`) still assert real elapsed time against the small per-call deadlines they exercise (for example under 500 ms with 40 ms deadlines). Their margins are the point of the tests and they passed on CI and under a 1-CPU container twice, but they remain load-sensitive.
+Why deferred: Replacing real timers with an injected clock changes the cache adapters' API for tests only and is not needed while they pass.
+Exit criteria: Inject a clock and a controllable fake cache client into the bounded-I/O adapters so the tests count calls and simulated time instead of waiting, or quarantine them behind a generous ceiling.
+Target checkpoint: next change to the cache adapters

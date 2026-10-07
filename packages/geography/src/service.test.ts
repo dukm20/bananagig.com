@@ -318,15 +318,19 @@ describe('mapDbError: constraint and guard failures become typed errors without 
       'CURRENCY_NOT_ACTIVE',
     );
   });
-  it('deadlocks and serialization failures are a retryable CONFLICT (CONCURRENT_UPDATE), never a raw error', () => {
-    for (const code of ['40P01', '40001']) {
+  it('deadlocks, serialization failures, and lock timeouts are retryable CONFLICTs (CONCURRENT_UPDATE)', () => {
+    for (const code of ['40P01', '40001', '55P03']) {
       const e = map({
         code,
-        message: 'deadlock detected\nProcess 123 waits for ShareLock on transaction 456; blocked by process 789',
-        detail: 'Process 123 ...',
+        message:
+          code === '55P03'
+            ? 'canceling statement due to lock timeout'
+            : 'deadlock detected\nProcess 123 waits for ShareLock on transaction 456; blocked by process 789',
+        detail: code === '55P03' ? 'lock timeout' : 'Process 123 ...',
       });
       expect(e).toMatchObject({ code: 'CONFLICT', details: { reason: 'CONCURRENT_UPDATE', retryable: true } });
       expect(JSON.stringify([e.message, e.details])).not.toMatch(/Process|ShareLock|transaction/);
+      expect(JSON.stringify([e.message, e.details])).not.toMatch(/lock timeout/);
     }
   });
   it('NUL bytes (22021) and untranslatable characters in JSON (22P05) are VALIDATION_FAILED / FORBIDDEN_CHARACTER, not a 500', () => {

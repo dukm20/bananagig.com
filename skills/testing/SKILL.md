@@ -71,6 +71,7 @@ Schema changes also need constraint-violation and rollback tests, and the data-m
 - Concurrent integration runs collide through the global setup that drops idle test databases; run `pnpm test:integration` alone or use a private config without `globalSetup` for parallel runs (LRN-0022). Cache outage tests need a hanging or slow-failing client and a real client on a dead port, not only an instant-failure fake (LRN-0019).
 
 - Run the CI governance step exactly as CI does before pushing a schema change: `pnpm skills:check`, then `pnpm project-state:check --base=<previous remote head>` and `pnpm data-model:check --base=<previous remote head>` with NO checkpoint id and the full real SHA. The first CI run had an empty base, so the git-diff rules had never run; a mistyped base now fails instead of silently selecting baseline mode (LRN-0023).
+- Never assert wall-clock time in a unit test (CI failed at 3.6 s against 0.3 s locally): assert counts; use order-of-magnitude ceilings for catastrophic-backtracking guards. The failing assertion of a CI job is readable in its public check-run annotations when the log needs authentication (LRN-0028).
 
 ## Do not
 
@@ -84,4 +85,4 @@ ADR-0004, ADR-0006
 
 ## Last reviewed
 
-2026-10-07 (GEO-001)
+2026-10-07 (CI-003)

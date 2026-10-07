@@ -24,6 +24,51 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function get(url: string, init?: RequestInit): Promise<Response> {
   return fetch(url, { signal: AbortSignal.timeout(8000), ...init });
 }
+async function ensureDevtestGeography(admin: string): Promise<void> {
+  type Method = 'GET' | 'POST';
+  const request = async (module: 'geography' | 'content', method: Method, path: string, body?: unknown, okStatuses = [200, 201]) => {
+    const r = await get(`${api}/api/v1/${module}${path}`, {
+      method,
+      headers: { authorization: `Bearer ${admin}`, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    const json = (await r.json().catch(() => ({}))) as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    if (!okStatuses.includes(r.status)) throw new Error(`${method} /${module}${path} -> ${r.status} ${json?.error?.code ?? ''}`);
+    return { status: r.status, json };
+  };
+  const locales = (await request('content', 'GET', '/locales')).json.data as { locale: string; isActive: boolean }[];
+  const qaa = locales.find((l) => l.locale === 'qaa');
+  if (!qaa)
+    await request('content', 'POST', '/locales', { locale: 'qaa', active: false, displayName: 'DEV/TEST private-use', reason: 'smoke test' }, [201, 409]);
+  if (!qaa?.isActive) await request('content', 'POST', '/locales/qaa/activation', { active: true, reason: 'smoke test' });
+
+  const zzLookup = await request('geography', 'GET', '/countries/ZZ', undefined, [200, 404]);
+  if (zzLookup.status === 404)
+    await request(
+      'geography',
+      'POST',
+      '/countries',
+      {
+        code: 'ZZ',
+        alpha3: 'ZZZ',
+        numeric: '999',
+        displayNameContentKey: 'geography.country.us.name',
+        dialingCode: '+999',
+        defaultCurrencyCode: 'USD',
+        defaultLocale: 'qaa',
+        supportedLocales: ['en-US', 'qaa'],
+        timeZones: ['America/Los_Angeles'],
+        distanceUnit: 'KILOMETERS',
+        firstDayOfWeek: 'MONDAY',
+        dateFormat: 'DMY',
+        timeFormat: '24_HOUR',
+        reason: 'DEV/TEST ONLY smoke country',
+      },
+      [201, 409],
+    );
+  const zz = (await request('geography', 'GET', '/countries/ZZ')).json.data;
+  if (zz.status !== 'ACTIVE') await request('geography', 'POST', '/countries/ZZ/activation', { active: true, reason: 'smoke test' });
+}
 async function check(name: string, fn: () => Promise<string | void>): Promise<void> {
   try {
     record(name, true, (await fn()) ?? '');
@@ -385,7 +430,7 @@ await check('Web App session', async () => {
 });
 
 await check('Configuration Registry', async () => {
-  // DEV/TEST-only records (devtest.* keys are refused in production); market references are validated, so the seeded market la-oc is used. Two real administrators, real PKCE logins, real HTTP.
+  // DEV/TEST-only records (devtest.* keys and markets are refused in production). Two real administrators, real PKCE logins, real HTTP.
   const tokenFor = async (user: keyof typeof DEV_USERS): Promise<string> => {
     const login = await authorizationCodeLogin(kc, { clientId: 'bananagig-admin', redirectUri: ADMIN_REDIRECT_URI, ...DEV_USERS[user] });
     return (
@@ -399,6 +444,23 @@ await check('Configuration Registry', async () => {
     ).accessToken;
   };
   const [a, b] = [await tokenFor('admin'), await tokenFor('admin2')];
+  await ensureDevtestGeography(a);
+  const runId = `r${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  const marketCode = `devtest-${runId}`;
+  const geoMarket = await get(`${api}/api/v1/geography/markets`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${a}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      code: marketCode,
+      name: `DEV/TEST configuration smoke market ${runId}`,
+      countryCode: 'ZZ',
+      defaultLocale: 'qaa',
+      currencyCode: 'USD',
+      defaultTimeZone: 'America/Los_Angeles',
+      reason: 'DEV/TEST ONLY configuration smoke market',
+    }),
+  });
+  if (geoMarket.status !== 201) throw new Error(`POST /geography/markets -> ${geoMarket.status}`);
   const call = async (token: string, method: 'GET' | 'POST', path: string, body?: unknown, okStatuses = [200, 201]) => {
     const r = await get(`${api}/api/v1/configuration${path}`, {
       method,
@@ -441,20 +503,20 @@ await check('Configuration Registry', async () => {
   };
   const base = 10 + (Date.now() % 500);
   await publish('PLATFORM', null, base); // 2. platform value
-  await publish('MARKET', 'la-oc', base + 1); // 3. market override
+  await publish('MARKET', marketCode, base + 1); // 3. market override
   const resolve = async (market?: string) =>
     (await call(a, 'POST', '/resolve', { keys: [key], context: market ? { market } : {} })).json.data.values[0] as {
       value: number;
       sourceScope: string;
       version: number;
     };
-  const inMarket = await resolve('la-oc'); // 4. resolve with market context
+  const inMarket = await resolve(marketCode); // 4. resolve with market context
   if (inMarket.value !== base + 1 || inMarket.sourceScope !== 'MARKET') throw new Error('market override did not win'); // 5.
   const elsewhere = await resolve('other-market');
   if (elsewhere.value !== base || elsewhere.sourceScope !== 'PLATFORM') throw new Error('platform value should apply outside the override market');
-  const snap = (await call(a, 'POST', '/snapshots', { keys: [key], context: { market: 'la-oc' }, purpose: 'smoke test' })).json.data; // 6.
-  await publish('MARKET', 'la-oc', base + 2); // 7. change active configuration
-  const now = await resolve('la-oc');
+  const snap = (await call(a, 'POST', '/snapshots', { keys: [key], context: { market: marketCode }, purpose: 'smoke test' })).json.data; // 6.
+  await publish('MARKET', marketCode, base + 2); // 7. change active configuration
+  const now = await resolve(marketCode);
   if (now.value !== base + 2) throw new Error('new market value is not effective');
   const again = (await call(a, 'GET', `/snapshots/${snap.snapshotId}`)).json.data; // 8. old snapshot unchanged
   if (again.items[0].value !== base + 1 || again.items[0].version !== inMarket.version) throw new Error('snapshot changed after a configuration change');
@@ -639,42 +701,13 @@ await check('Geography', async () => {
 
   // (3) DEV/TEST market flow: private-use locale qaa, DEV/TEST country ZZ, a unique devtest market
   const runId = `r${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-  const locales = (await content(admin, 'GET', '/locales')).json.data as { locale: string; isActive: boolean }[];
-  const qaa = locales.find((l) => l.locale === 'qaa');
-  if (!qaa) await content(admin, 'POST', '/locales', { locale: 'qaa', active: false, displayName: 'DEV/TEST private-use', reason: 'smoke test' }, [201, 409]);
-  if (!qaa?.isActive) await content(admin, 'POST', '/locales/qaa/activation', { active: true, reason: 'smoke test' });
+  await ensureDevtestGeography(admin);
   const activeLocales = (await content(null, 'GET', '/locales')).json.data as { locale: string }[];
   assert(
     activeLocales.some((l) => l.locale === 'qaa'),
     'locale qaa is not active',
   );
 
-  const zzLookup = await geo(admin, 'GET', '/countries/ZZ', undefined, [200, 404]);
-  if (zzLookup.status === 404)
-    await geo(
-      admin,
-      'POST',
-      '/countries',
-      {
-        code: 'ZZ',
-        alpha3: 'ZZZ',
-        numeric: '999',
-        displayNameContentKey: 'geography.country.us.name',
-        dialingCode: '+999',
-        defaultCurrencyCode: 'USD',
-        defaultLocale: 'qaa',
-        supportedLocales: ['en-US', 'qaa'],
-        timeZones: ['America/Los_Angeles'],
-        distanceUnit: 'KILOMETERS',
-        firstDayOfWeek: 'MONDAY',
-        dateFormat: 'DMY',
-        timeFormat: '24_HOUR',
-        reason: 'DEV/TEST ONLY smoke country',
-      },
-      [201, 409],
-    );
-  const zz = (await geo(admin, 'GET', '/countries/ZZ')).json.data;
-  if (zz.status !== 'ACTIVE') await geo(admin, 'POST', '/countries/ZZ/activation', { active: true, reason: 'smoke test' });
   const zzActive = (await geo(admin, 'GET', '/countries/ZZ')).json.data;
   assert(zzActive.status === 'ACTIVE', `country ZZ should be ACTIVE (got ${zzActive.status})`);
 

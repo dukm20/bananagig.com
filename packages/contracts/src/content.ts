@@ -3,6 +3,7 @@
 import { z } from 'zod';
 import { ApprovalPolicy, Criticality } from './configuration';
 import { envelope } from './envelope';
+import { adminText } from './text';
 
 // ---------------------------------------------------------------- locales
 /** Canonical BCP 47 subset: language[-Script][-REGION] (for example en-US, es-US, es, zh-Hant-TW). No variants or extensions yet. The database CHECK is identical. */
@@ -202,7 +203,7 @@ export const RegisterLocaleRequest = z.object({
   locale: Locale,
   active: z.boolean().default(false),
   /** Optional human-readable name; when omitted the service derives one (Intl.DisplayNames in English, the tag itself when Intl has none). */
-  displayName: z.string().trim().min(1).max(100).optional(),
+  displayName: z.string().trim().pipe(adminText(100)).optional(),
   reason: z.string().min(1).max(1000),
 });
 export type RegisterLocaleRequest = z.infer<typeof RegisterLocaleRequest>;

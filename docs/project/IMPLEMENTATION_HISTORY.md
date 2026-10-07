@@ -463,3 +463,39 @@ None required.
 
 ### Known follow-up
 None.
+
+
+## CI-003 — 2026-10-07
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(CI-003)"`.
+Summary: Corrective checkpoint. CI run #5 (`b55713d`: CI-002A, GEO-001, CI-002B) failed in `pnpm test` on a wall-clock assertion. The fix and several small refinements that were in progress in the working tree are committed together at the owner's request. No schema, migration or public API change.
+
+### Delivered
+- `packages/content/src/template.test.ts`: the "198 plural constructs validate in under 3 s" assertion (3.6 s on the runner, 0.3 s locally) is replaced by the deterministic render count (exactly 6 renders versus 198 x 6 + 1 for the old per-construct loop); `packages/content/src/markup.test.ts` and the parse test in `template.test.ts`: the catastrophic-backtracking ceilings are widened to 15 s and 10 s (a real regression takes minutes)
+- `packages/contracts/src/text.ts` (new): the shared `adminText` helper extracted from the geography contracts (control, bidi-override and unpaired-surrogate characters, blank values); `geography.ts` re-exports it and `content.ts` applies it to the locale display name (`RegisterLocaleRequest.displayName`), with contract tests
+- `packages/geography/src/service.ts`: a lock timeout (SQLSTATE `55P03`) is mapped, like a deadlock, to the retryable CONFLICT `CONCURRENT_UPDATE`, with a test that also checks the message never leaks the driver text
+- `apps/smoke/src/index.ts`: a shared `ensureDevtestGeography` helper (private-use locale `qaa` and DEV/TEST country `ZZ`); the Configuration Registry scenario now creates its own devtest market instead of using the seeded `la-oc`, so activating or retiring the seeded market can no longer break smoke
+- `apps/api/src/geography-integration.itest.ts`: a test regex updated for the real country codes used there
+- Docs: LRN-0028, DEBT-0035, testing skill lesson
+
+### Finding recorded
+Four attempts to reproduce the failure locally (a clean Linux container with the same Node and ICU, twice with a 2-CPU limit, and once with CI=true and a POSIX locale) all passed; the failing assertion was identified from the public check-run annotations of the failed job. The final tree also passed twice in a 1-CPU container.
+
+### Schema
+None. No migration. Data model: NOT_REQUIRED.
+
+### Contracts
+None changed in the generated specs (`pnpm specs:check` passes without regeneration).
+
+### Tests
+Unit 1221, root script tests 71, integration 385 in 18 files, smoke 30 checks (run twice on the rebuilt stack).
+
+### Skills updated
+`skills/testing` (one lesson bullet).
+
+### ADRs
+None required.
+
+### Known follow-up
+DEBT-0035 (the cache tests still assert real elapsed time against their own small deadlines). CI-003 has to run green on GitHub before this checkpoint is considered verified in CI.

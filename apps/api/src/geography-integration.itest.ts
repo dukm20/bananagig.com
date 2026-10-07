@@ -481,7 +481,7 @@ describe('deactivating a locale that an ACTIVE country or market uses as its def
     const http = await contentApi('/locales/qac/activation', { active: false, reason: 'retire the locale' }, contentWriter);
     expect(http.status).toBe(409);
     expect(http.body.error).toMatchObject({ category: 'CONFLICT', code: 'CONTENT_INVALID_STATE', details: { reason: 'LOCALE_IN_USE_BY_GEOGRAPHY' } });
-    expect(JSON.stringify(http.body)).not.toMatch(/ZY|geography_rule|trigger|integrity/);
+    expect(JSON.stringify(http.body)).not.toMatch(/GB|geography_rule|trigger|integrity/);
     expect(await localeActive('qac')).toBe(true);
     await geography.setCountryActive('GB', false, 'retire the country', A);
     expect((await contentApi('/locales/qac/activation', { active: false, reason: 'retire the locale' }, contentWriter)).body.data?.isActive).toBe(false);

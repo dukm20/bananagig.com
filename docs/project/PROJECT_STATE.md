@@ -2,8 +2,8 @@
 
 Current truth only. History lives in `IMPLEMENTATION_HISTORY.md`; decisions in `docs/architecture/`.
 
-Current checkpoint: CI-002B
-Last completed checkpoint: CI-002B
+Current checkpoint: CI-003
+Last completed checkpoint: CI-003
 Next approved checkpoint: GEO-002 — International Address Formats and Structured Addresses
 Latest migration: 0007_geography_registry.sql
 Latest ADR: ADR-0022
@@ -77,7 +77,7 @@ None to external services. Local-only stand-ins: Mailpit (SMTP sink), Keycloak r
 - Geography: US-only dataset and no management API or bulk import for currencies, time zones or locale activation (DEBT-0031), only the four built-in readiness checks (DEBT-0032), cache generation coupled to content's locale generation key (DEBT-0033), no automatic time zone lookup (DEBT-0034); scope references of CATEGORY, PLAN, PROVIDER, GIG and DROP still unvalidated (DEBT-0024 in progress)
 - Idempotency records table designed, not built (DEBT-0013)
 - Least-privilege runtime database roles designed, not built (DEBT-0012)
-- CI: CFG-002 is fully verified in GitHub CI. Run #4 (commit 40ec528, after CI-002 fixed the governance step that failed in run #3) passed every job: `verify` (format, lint, typecheck, workspace boundaries, unit tests, spec drift, OpenAPI and AsyncAPI validation, build, identity check, integration tests, `pnpm audit --prod`, and the governance checks) and `compose-smoke` (Docker build of all images, `pnpm migrate` applying migrations 0005 and 0006 from zero, the full smoke test including the content registry scenario, and Trivy HIGH/CRITICAL image scans of web, api and worker). CI-002A (`b163a08`, hardening of the checkpoint-id inference) is committed locally and not yet pushed, so it has not run in CI. Branch protection requiring CI is not configured (DEBT-0001)
+- CI: run #4 (`40ec528`) passed every job. The next push (`CI-002A`, `GEO-001`, `CI-002B`; run #5, `b55713d`) failed in `pnpm test` on a wall-clock assertion that CI-003 replaced with a deterministic count; `compose-smoke`, which has never run for the geography work, was skipped by that failure. Whether CI-003 turns CI green is not yet recorded here. Branch protection requiring CI is not configured (DEBT-0001)
 - Web telemetry: SDK registered; page-level traces and logs not verified in Tempo/Loki (DEBT-0011)
 
 ## Known blockers

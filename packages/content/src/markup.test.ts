@@ -489,7 +489,8 @@ describe('pathological inputs finish fast (no ReDoS / quadratic behavior)', () =
         expect(e).toBeInstanceOf(ContentError);
       }
       const elapsed = performance.now() - started;
-      expect(elapsed).toBeLessThan(2000);
+      // A catastrophic-backtracking regression takes minutes or never finishes; the generous ceiling is immune to slow shared CI runners.
+      expect(elapsed).toBeLessThan(15_000);
       if (html !== null) {
         assertSafeHtml(html);
         expectNoRawMarkup(html);

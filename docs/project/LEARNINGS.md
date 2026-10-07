@@ -683,3 +683,28 @@ Filter seed assertions by `key = ANY(<the migration's keys>)` or by the migratio
 
 ### Evidence
 `packages/testing/src/content-seed.itest.ts`, `packages/testing/src/geography-seed.itest.ts`.
+
+## LRN-0028 — Do not assert wall-clock time in unit tests; assert counts, and read CI failures from the public check-run annotations
+
+Date: 2026-10-07
+Checkpoint: CI-003
+Domain: testing / ci
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/testing/SKILL.md
+
+### Context
+A unit test required validating a large template in under 3 seconds. It took 0.3 s locally and passed in an emulated clean Linux container (same Node and ICU, a 2-CPU limit, `CI=true`, a POSIX locale), yet failed on the GitHub runner at 3.6 s and turned the whole run red, skipping the build, the integration tests and `compose-smoke`. The CI log itself needs authentication, but the check-run annotations of the failed job are public (`GET /repos/<owner>/<repo>/check-runs/<id>/annotations`) and named the exact assertion.
+
+### Learning
+A latency threshold on shared hardware is flaky by construction. Assert the work done (a render count, a query count) instead, which is exact and fails for the same regressions. When a time bound is the only guard against catastrophic backtracking, make the ceiling an order of magnitude above the normal time: the regressions it guards against take minutes. When CI fails and the log is unavailable, read the annotations first.
+
+### Why it matters
+A flaky guard costs a full CI cycle each time, and local or containerized runs cannot prove its absence.
+
+### Reuse rule
+No `toBeLessThan(<small ms>)` on real time unless it compares against a deliberately tiny deadline the test controls; prefer counts or an injected clock.
+
+### Evidence
+`packages/content/src/template.test.ts` (render-count test), `packages/content/src/markup.test.ts` (generous ceiling), DEBT-0035.

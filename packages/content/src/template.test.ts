@@ -168,7 +168,8 @@ describe('parseTemplate', () => {
     it('parses a large body quickly (linear)', () => {
       const started = performance.now();
       parseTemplate('lorem ipsum {{x}} dolor '.repeat(9000).slice(0, MAX_TEMPLATE_LENGTH));
-      expect(performance.now() - started).toBeLessThan(1000);
+      // Linear parsing takes milliseconds; a quadratic or exponential regression takes tens of seconds. The ceiling is immune to slow shared CI runners.
+      expect(performance.now() - started).toBeLessThan(10_000);
     });
   });
 });
@@ -384,16 +385,16 @@ describe('validateTemplate', () => {
       fn();
       return spy.mock.calls.length;
     };
-    it('renders a body with 198 six-category plural constructs in at most 6 full renders and well under 3 s', () => {
+    it('renders a body with 198 six-category plural constructs in at most 6 full renders (a count, not a wall-clock bound: timing is flaky on shared CI)', () => {
       const filler = '*a* [x](https://x.com/) text\n- item\n';
       let src = six.repeat(198);
       src += filler.repeat(Math.floor((MAX_TEMPLATE_LENGTH - src.length) / filler.length));
       expect(src.length).toBeLessThanOrEqual(MAX_TEMPLATE_LENGTH);
       for (const type of ['MARKDOWN', 'EMAIL_BODY'] as const) {
-        const started = performance.now();
+        // The work is bounded by the render COUNT: 6 here versus 198 x 6 + 1 for the old per-construct loop. A wall-clock threshold
+        // failed on a loaded CI runner (3.6 s against 0.3 s locally), so the deterministic count is the regression guard.
         const renders = rendersOf(() => validateTemplate(src, ALL, type));
         expect(renders).toBe(6);
-        expect(performance.now() - started).toBeLessThan(3000);
       }
     });
     it('uses one render without plurals and as many as the richest construct has categories', () => {

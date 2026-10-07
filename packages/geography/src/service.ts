@@ -134,8 +134,8 @@ export function mapDbError(err: unknown): never {
   if (err instanceof GeographyError) throw err;
   const e = err as { code?: string; detail?: string; constraint?: string };
   const constraint = e.constraint;
-  // deadlock victim or serialization failure: nothing was committed and the same request can simply be repeated
-  if (e.code === '40P01' || e.code === '40001')
+  // Deadlock, serialization failure, or lock timeout: retry the request as a concurrent update.
+  if (e.code === '40P01' || e.code === '40001' || e.code === '55P03')
     throw new GeographyError('CONFLICT', 'the change conflicted with a concurrent update; repeat the request', {
       reason: 'CONCURRENT_UPDATE',
       retryable: true,

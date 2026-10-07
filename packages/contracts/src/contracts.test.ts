@@ -261,6 +261,9 @@ describe('content contracts', () => {
       expect(RegisterLocaleRequest.safeParse({ locale: 'es-US', reason: 'r', displayName: '' }).success).toBe(false);
       expect(RegisterLocaleRequest.safeParse({ locale: 'es-US', reason: 'r', displayName: 'x'.repeat(101) }).success).toBe(false);
       expect(RegisterLocaleRequest.safeParse({ locale: 'es-US', reason: 'r', displayName: 5 }).success).toBe(false);
+      for (const displayName of ['Name\u0000Tail', 'line\nbreak', 'abc\u202Edef', 'abc\u2067def', 'abc\uD800', 'abc\uDC00', '\u00A0\u200B']) {
+        expect(RegisterLocaleRequest.safeParse({ locale: 'es-US', reason: 'r', displayName }).success).toBe(false);
+      }
     });
     it('LocaleDto carries the display name and the derived language, script and region', () => {
       const full = {
