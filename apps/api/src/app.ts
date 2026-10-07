@@ -10,6 +10,7 @@ import { metrics } from '@bananagig/observability';
 import { authPlugin } from './plugins/auth';
 import { correlationPlugin } from './plugins/correlation';
 import { errorPlugin, frameworkErrors } from './plugins/errors';
+import { enforceStrictIntegerParams } from './plugins/strict-params';
 import { configurationRoutes } from './modules/configuration/routes';
 import { contentRoutes } from './modules/content/routes';
 import { addressRoutes } from './modules/geography/address-routes';
@@ -54,6 +55,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     routerOptions: { maxParamLength: MAX_PATH_PARAM_LENGTH },
     frameworkErrors,
   });
+  // before any route: numeric params/querystring properties must use the strict integer hook (plugins/strict-params.ts)
+  enforceStrictIntegerParams(app);
   const sys = { cfg: deps.cfg, startedAt: Date.now() };
 
   await app.register(swagger, {

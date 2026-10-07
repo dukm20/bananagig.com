@@ -338,7 +338,7 @@ Status: OPEN
 Severity: MEDIUM
 Introduced by: INF-002 (surfaced by the CFG-002 security review)
 Owner/domain: api / infrastructure
-Description: The API has no rate limiting, request-cost budgets or abuse controls on any route. The public content resolve endpoints (`/api/v1/content/resolve`, `/resolve-many`, public `/locales`) are unauthenticated, perform database reads and server-side rendering, and can be called repeatedly. CFG-002 added bounds that limit the cost of one call (at most 100 keys, a 500,000-character total template budget per call, no caching or last-known-good for unknown locales and contexts) but cannot limit the call rate.
+Description: The API has no rate limiting, request-cost budgets or abuse controls on any route. The public content resolve endpoints (`/api/v1/content/resolve`, `/resolve-many`, public `/locales`) are unauthenticated, perform database reads and server-side rendering, and can be called repeatedly. CFG-002 added bounds that limit the cost of one call (at most 100 keys, a 500,000-character total template budget per call, no caching or last-known-good for unknown locales and contexts) but cannot limit the call rate. Since GEO-002 the public address `validate` and `format` endpoints (`POST /api/v1/geography/addresses/validate` and `/format`) are unauthenticated and accept address data; they are stateless, size-limited (16 KiB) and do not persist or log it, but they must NOT be considered production-exposure-ready until this debt is resolved (GEO-002A confirmed this and left the debt OPEN).
 Why deferred: Rate limiting belongs at the edge or in a shared plugin and needs a policy (limits per client, per route class, behind which proxy headers); that is a platform decision, not content logic.
 Exit criteria: A documented rate-limit policy enforced at Caddy or by an API plugin (with trusted client IP handling), tests, and per-route classes (public read, authenticated read, admin write).
 Target checkpoint: before the first public customer screen goes live
@@ -475,3 +475,15 @@ Description: Field validation patterns come from the database and run as JavaScr
 Why deferred: A linear-time engine (RE2) or isolation in a worker is a dependency and runtime decision; the controls above bound the risk to administrators acting in error.
 Exit criteria: Evaluate patterns with a linear-time engine or a time-boxed worker, keeping the vetting as a first filter.
 Target checkpoint: before pattern authoring is opened to anyone beyond platform administrators
+
+## DEBT-0043 — Ajv still coerces integer and boolean values in request bodies of the configuration and content routes
+
+Status: OPEN
+Severity: LOW
+Introduced by: INF-002 and CFG-001/CFG-002 (found by the GEO-002A adversarial review)
+Owner/domain: api
+Description: Fastify's Ajv runs with type coercion on. GEO-002A put integers in path and query parameters behind one strict parser, and the geography management and address routes validate the RAW body with zod (`strictBody`) before Ajv. The configuration and content management routes do not, so a body value such as `"1e3"`, `"0x10"`, `" 5"` or `"+7"` for an integer field (for example `validationRules.minLength`, or a `version`), or `"true"` or `1` for a boolean, is coerced to a number or boolean before the route's own zod parse sees it. Reproduced against the real app with a fake service: `POST /api/v1/configuration/parameters` stored `minLength` 1000 for `"1e3"`. Every affected route is internal (admin context plus a write permission), and the coerced value is always a valid in-range number or boolean that zod and the service then validate, so nothing invalid is stored; the effect is that sloppy input is interpreted instead of rejected.
+Why deferred: Outside the GEO-002A scope (path and query identifiers); adding `strictBody` to every configuration and content route touches their tests and error shapes.
+Exit criteria: `strictBody(<schema>)` after the authorization hook on every configuration and content route with a body (or a body validator with coercion off), with tests that `"1e3"`, `"0x10"` and `"true"` are rejected with the standard envelope, and a start-up guard like `enforceStrictIntegerParams` for body schemas.
+Target checkpoint: next change to the configuration or content API, or before a public (non-admin) write endpoint is added
+

@@ -63,6 +63,8 @@ Schema changes also need constraint-violation and rollback tests, and the data-m
 
 - Vitest 5 is required; vitest 3 pulled critical `tinypool` advisories (`docs/security/SCAN_RESULTS.md`).
 - Governance scripts are tested against scratch git repositories in `scripts/governance.test.mjs`.
+- Conditional rendering (a display template with optional parts) is tested over EVERY subset of present fields with invariants (balanced brackets, nothing dangling, each value once and in order), plus a differential test of the new renderer against the old one on inputs the change must not affect; a hand-picked full-address case hides the bug (GEO-002A). To prove an error message does not echo the input, compare it with the fixed message text; a short needle such as `1` or `-` is also in the static text and fails for the wrong reason.
+- Numeric path and query parameters are tested at the HTTP boundary with the non-canonical forms Ajv coercion would accept (`1e3`, `1.0`, `+1`, `01`, ` 1`, `0x10`, `Infinity`), including percent-encoded and Unicode digits, and the test asserts the service was never called.
 - Tests that copy the real migrations must derive numbering from the directory, not hardcode the latest version. Use isolated databases for anything that mutates shared timelines (activation, concurrency). Use `devtest.*` parameter keys, which exist only when `allowTestKeys` is on. The real-Valkey cache test self-skips when Valkey is unreachable; say so in reports.
 - Content tests: count database queries with the `onQuery` hook of `createIsolatedDatabase` (a batch resolve must stay at 3 queries), prove time-derived resolution with a short real delay and `at`, force races with deterministic interleavings, and use `devtest.*` entry keys. Web tests use `apps/web/src/testing/content-stub.ts`, which validates requests and responses with the contracts schemas. Keep an XSS vector corpus (`packages/content/src/markup.test.ts`) and add every new vector to it.
 
@@ -85,4 +87,4 @@ ADR-0004, ADR-0006
 
 ## Last reviewed
 
-2026-10-07 (CI-003)
+2026-10-07 (GEO-002A)

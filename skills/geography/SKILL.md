@@ -108,6 +108,10 @@ Any change to `geography.*` (including the GEO-002 address tables) or to the col
 - Public validation and address creation read the cached public view, so a just-published format or area can lag by the cache bound; management reads and the readiness check read the database. The US dataset (51 areas, format version 1, 12 content entries) comes from migration 0008; PostGIS coordinates are validated before the point is built because PostGIS coerces silently.
 - Retiring a PLANNED country or market (PLANNED to INACTIVE) is audited but emits no event; the US is seeded with four time zones only (DEBT-0031); `la-oc` is a business assumption awaiting owner confirmation; the smoke Geography scenario adapts to the status of `la-oc` and reuses country `ZZ` and locale `qaa`.
 
+- Display templates are punctuation-safe by construction (`renderLine`): text in front of a token belongs to that token and is written only when the token and an earlier token of the line have values; a bracket pair is allowed only as a direct wrapper of ONE field, `({FIELD})` or `[{FIELD}]`, and is written only with that field (and only when the field starts the line or an earlier field is present), so `{LOCALITY} ({ADMINISTRATIVE_AREA})` renders `Irvine (CA)`, `Irvine` or `CA`, never `CA)`. There are no conditionals, expressions, nesting or escapes; `templateProblem` refuses every other bracket. Test a new template shape with all subsets of present fields, not only the full address (GEO-002A, LRN-0032).
+- Pattern vetting is deliberately conservative: any backslash followed by 1 to 9 is refused, including the pattern text `\\1` (write `[\\]1`); relax it only for a demonstrated product requirement (`docs/engineering/ADDRESSES.md`).
+- The public address `validate` and `format` endpoints are not production-exposure-ready until the platform rate-limit checkpoint resolves DEBT-0030.
+
 ## Do not
 
 - Do not hardcode countries, currencies, time zones, markets or format rules in code.
@@ -129,4 +133,4 @@ ADR-0021, ADR-0022, ADR-0023, ADR-0024 (builds on ADR-0001, ADR-0008, ADR-0011, 
 
 ## Last reviewed
 
-2026-10-07 (GEO-002)
+2026-10-07 (GEO-002A)

@@ -102,16 +102,31 @@ The read model `GET /countries/:code/address-format` returns exactly these (plus
 {LOCALITY}, {ADMINISTRATIVE_AREA} {POSTAL_CODE}
 ```
 
-Rules at draft time (`templateProblem`; the database repeats the essential ones at publication): 1 to 500 characters, no control character except the newline, every token names a field of the format, no field twice, EVERY field of the format appears, no stray brace. A line with no token is a literal line and is kept (trimmed).
+Rules at draft time (`templateProblem`; the database repeats the essential ones at publication): 1 to 500 characters, no control character except the newline, every token names a field of the format, no field twice, EVERY field of the format appears, no stray brace, and every round or square bracket wraps exactly one field. A line with no token is a literal line and is kept (trimmed).
 
-How a line is rendered (`renderLine`, the exact literal-attachment rule): the literal text in front of a token belongs to that token. It is written only when the token has a value AND an earlier token of the same line has a value; the first token of a line owns the text before it and writes it whenever that token has a value. The text after the last token is written only when that last token has a value. A token without a value writes nothing, and a line without any value is dropped. So a missing field removes its own separator and never leaves ", ," or a dangling space or bracket.
+The grammar is deliberately tiny and not executable: literal text, `{FIELD}` tokens, and one decoration. A token may be wrapped in brackets written directly around it, `({FIELD})` or `[{FIELD}]`; the brackets then belong to that field. There are no conditionals, expressions, escapes, nesting, or brackets around several fields or around text (those are refused when a draft is created: `has a bracket that does not wrap exactly one field`). A template stored before this rule (none exists) with such brackets renders them as plain text, as it always did.
 
-| Values present on the third US line | Rendered |
-|---|---|
-| locality, area, postal code | `Los Angeles, CA 90001` |
-| area, postal code (no locality) | `CA 90001` (the ", " belongs to the area and is dropped because no earlier token is present) |
-| locality, postal code (no area) | `Los Angeles 90001` |
-| locality only | `Los Angeles` |
+How a line is rendered (`renderLine`, the exact rule; punctuation travels with the field it belongs to):
+
+1. The literal text in front of a token belongs to that token. It is written only when the token has a value AND an earlier token of the same line has a value; the first token of a line owns the text before it and writes it whenever that token has a value. The text after the last token is written only when that last token has a value.
+2. The brackets around a token belong to it and qualify what precedes it: they are written when the token has a value and either it is the first token of the line or an earlier token of the line has a value. When it has a value but nothing precedes it, the value is written bare.
+3. A token without a value writes nothing, and a line without any value is dropped. So a missing field removes its own separator and its own brackets, and never leaves ", ," or a dangling space or bracket. Brackets that are part of a VALUE (`Springfield (East)`) are never touched.
+
+| Template line | Values present | Rendered |
+|---|---|---|
+| `{LOCALITY}, {ADMINISTRATIVE_AREA} {POSTAL_CODE}` (US) | locality, area, postal code | `Los Angeles, CA 90001` |
+| same | area, postal code (no locality) | `CA 90001` (the ", " belongs to the area and is dropped because no earlier token is present) |
+| same | locality, postal code (no area) | `Los Angeles 90001` |
+| same | locality only | `Los Angeles` |
+| `{LOCALITY} ({ADMINISTRATIVE_AREA})` | locality, area | `Los Angeles (CA)` |
+| same | locality only | `Los Angeles` |
+| same | area only | `CA` (the brackets qualify the locality, so there is nothing to qualify) |
+| same | neither | the line is dropped |
+| `({LOCALITY}) {POSTAL_CODE}` | locality, postal code | `(Los Angeles) 90001` |
+| same | locality only / postal code only | `(Los Angeles)` / `90001` |
+| `{LOCALITY} ({ADMINISTRATIVE_AREA}) ({POSTAL_CODE})` | locality, postal code | `Los Angeles (90001)` |
+
+Before GEO-002A the closing bracket belonged to the last token while the opening one belonged to the following token, so `{LOCALITY} ({ADMINISTRATIVE_AREA})` rendered `CA)` when only the area was present. The rule for templates without brackets is unchanged (the seeded US template renders byte for byte as before; the test suite compares the old and new renderers on random bracket-free templates).
 
 A lookup area shows its canonical code (`CA`); a free-text area shows its text. Empty lines are dropped. The formatted result is `{ lines, text, singleLine, formatVersion }` (`singleLine` joins the lines with ", "); `includeCountry` appends the country name as the last line, resolved in the requested locale (default: the country default locale) through the content registry; if the name cannot be resolved the line is simply omitted. The stored `formatted_address` never contains the country line.
 
@@ -140,7 +155,7 @@ Per field, in order:
 
 Messages are managed content, not strings in code: `addressIssueMessageKey(code)` is `address.error.<code in lower case>`, and the form and the server show the same text (PRD SV-10.11). All seven entries are seeded with platform copy; a country or locale can override them through the content registry.
 
-`validateFieldValue(format, fieldType, raw)` applies the same rules to one field (for example a postal code of a service-area list) and `AddressService.validatePostalCode(countryCode, value)` wraps it. `createFormatDraft` vets a pattern with `patternProblem` (1 to 200 characters, no backreferences, no lookbehind, no group that is repeated and already repeats, must compile) and checks that an example matches. A vetted pattern runs against input already capped by `maxLength`; the residual risk is DEBT-0042.
+`validateFieldValue(format, fieldType, raw)` applies the same rules to one field (for example a postal code of a service-area list) and `AddressService.validatePostalCode(countryCode, value)` wraps it. `createFormatDraft` vets a pattern with `patternProblem` (1 to 200 characters, no backreferences, no lookbehind, no group that is repeated and already repeats, must compile) and checks that an example matches. The refusal of backreference-like text is an INTENTIONAL safety restriction, not a gap: a backreference (`\1`, `\k<name>`) can make a regular expression exponential, so any pattern containing a backslash immediately followed by 1 to 9, or `\k<`, is rejected. The check is lexical, so it also rejects the rare legitimate pattern text `\\1` (a literal backslash followed by the digit 1, whose second backslash precedes the digit); no address format needs it, and `[\\]1` expresses it if one ever does. The restriction is relaxed only for a demonstrated product requirement. A vetted pattern runs against input already capped by `maxLength`; the residual risk is DEBT-0042.
 
 ## Normalization rules
 
@@ -299,7 +314,7 @@ Test files (counts change with every test; run them rather than quoting numbers)
 
 | Debt | Subject |
 |---|---|
-| DEBT-0030 | no rate limiting on public endpoints (covers `validate` and `format`) |
+| DEBT-0030 | no rate limiting on public endpoints (covers `validate` and `format`); OPEN: the public address `validate` and `format` endpoints are NOT production-exposure-ready until the platform rate-limit checkpoint resolves it |
 | DEBT-0032 | readiness checks; ADDRESS_FORMAT done, country-level checklist open |
 | DEBT-0034 | per-address time zone reference exists; no geocoder supplies it, scheduling still uses the market default |
 | DEBT-0036 | address retention, erasure and exact-location access policy |

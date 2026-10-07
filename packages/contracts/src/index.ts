@@ -112,3 +112,4 @@ export * from './configuration';
 export * from './content';
 export * from './geography';
 export * from './address';
+export * from './integer';

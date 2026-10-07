@@ -19536,6 +19536,7 @@ paths:
           in: path
           name: version
           required: true
+          description: "Canonical base-10 integer text: must be a base-10 integer from 1 to 100000, written without sign, leading zeros, decimals, exponent, radix prefix or whitespace."
       security: *a8
       responses:
         "200":

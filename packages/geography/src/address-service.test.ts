@@ -346,6 +346,16 @@ describe('AddressService: rejections that never reach the database', () => {
       expect(await reasonOf(withTemplate('{ADDRESS_LINE_1} {ADDRESS_LINE_1}', line1))).toMatchObject({ reason: 'INVALID_TEMPLATE' });
       expect(await reasonOf(withTemplate('{ADDRESS_LINE_1} }', line1))).toMatchObject({ reason: 'INVALID_TEMPLATE' });
       expect(await reasonOf(withTemplate('{ADDRESS_LINE_1}\t', line1))).toMatchObject({ reason: 'INVALID_TEMPLATE' });
+      // GEO-002A: a bracket must wrap exactly one field, ({FIELD}) or [{FIELD}]; anything else is refused before the database is touched
+      for (const bad of [
+        '{ADDRESS_LINE_1} (',
+        '{ADDRESS_LINE_1} )',
+        '({ADDRESS_LINE_1} {ADDRESS_LINE_1})',
+        '({ADDRESS_LINE_1}\n)',
+        '(c/o) {ADDRESS_LINE_1}',
+        '{ADDRESS_LINE_1} ()',
+      ])
+        expect(await reasonOf(withTemplate(bad, line1)), bad).toMatchObject({ reason: 'INVALID_TEMPLATE', field: 'displayTemplate' });
     });
     it('rejects a LOOKUP on any field but ADMINISTRATIVE_AREA, and a lookup with a pattern or normalization', async () => {
       expect((await reasonOf(withTemplate('{ADDRESS_LINE_1}', { ...line1, inputType: 'LOOKUP' }))).reason).toBe('INVALID_LOOKUP_FIELD');

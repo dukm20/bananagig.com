@@ -22,11 +22,13 @@ import {
   UpsertAdministrativeAreasRequest,
   UpsertAdministrativeAreasResponse,
   ValidateAddressRequest,
+  ADDRESS_FORMAT_VERSION_BOUNDS,
 } from '@bananagig/contracts';
 import { toAddressFormatDto, toAdministrativeAreaDto, type AddressService } from '@bananagig/geography';
 import { hasGeographyPermission, optionalAuthenticated, requireGeographyPermission } from '../../plugins/auth';
 import { AppError } from '../../errors';
 import { authErrorResponses, errorResponses, schemaOf } from '../../schema';
+import { integerParamSchema, strictIntegerParams } from '../../plugins/strict-params';
 import { toAppError } from './dto';
 
 const bearer = [{ bearerAuth: [] }];
@@ -65,7 +67,7 @@ const parse = <T>(schema: ZodType<T>, body: unknown): T => {
 const countryParams = { type: 'object', properties: { code: schemaOf(CountryCode) }, required: ['code'], additionalProperties: false };
 const versionParams = {
   type: 'object',
-  properties: { code: schemaOf(CountryCode), version: { type: 'integer', minimum: 1, maximum: 100000 } },
+  properties: { code: schemaOf(CountryCode), version: integerParamSchema(ADDRESS_FORMAT_VERSION_BOUNDS) },
   required: ['code', 'version'],
   additionalProperties: false,
 };
@@ -210,7 +212,11 @@ export async function addressRoutes(app: FastifyInstance, deps: { address: Addre
   app.post(
     '/countries/:code/address-formats/:version/publication',
     {
-      preValidation: [requireGeographyPermission('write'), strictBody(PublishAddressFormatRequest)],
+      preValidation: [
+        requireGeographyPermission('write'),
+        strictIntegerParams({ version: ADDRESS_FORMAT_VERSION_BOUNDS }),
+        strictBody(PublishAddressFormatRequest),
+      ],
       schema: {
         operationId: 'publishGeographyAddressFormat',
         summary:

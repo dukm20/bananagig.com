@@ -259,7 +259,7 @@ function tokenValue(address: NormalizedAddressDto, type: string): string {
     case 'ORGANIZATION':
       return address.organization ?? '';
     case 'ADDRESS_LINE_1':
-      return address.addressLine1;
+      return address.addressLine1 ?? '';
     case 'ADDRESS_LINE_2':
       return address.addressLine2 ?? '';
     case 'DEPENDENT_LOCALITY':
@@ -277,32 +277,56 @@ function tokenValue(address: NormalizedAddressDto, type: string): string {
   }
 }
 
-/**
- * Renders one template line. The literal text in front of a token belongs to that token: it is written only when the token is present AND an
- * earlier token of the line is present (the first token owns the text before it); the text after the last token is written when that token is
- * present. So a missing field removes its own separator and never leaves ", ," or a dangling space.
- */
-function renderLine(line: string, address: NormalizedAddressDto): string {
+// A template line is literal text and {FIELD} tokens. The grammar is deliberately tiny and NOT executable: no conditionals, expressions or escapes.
+// One decoration exists: a token may be wrapped in round or square brackets written directly around it, `({FIELD})` or `[{FIELD}]`. The brackets belong to
+// that field: they are written only together with it. Any other bracket in a template is plain text (templateProblem refuses it when a template is drafted).
+const WRAPPED_TOKEN = /\(\{([A-Z0-9_]+)\}\)|\[\{([A-Z0-9_]+)\}\]|\{([A-Z0-9_]+)\}/g;
+interface LineToken {
+  type: string;
+  wrap: '()' | '[]' | null;
+}
+
+/** Splits a template line into the literal text around its tokens: `literals[i]` is the text in front of `tokens[i]`, the last literal follows the last token. */
+function parseLine(line: string): { literals: string[]; tokens: LineToken[] } {
   const literals: string[] = [];
-  const tokens: string[] = [];
+  const tokens: LineToken[] = [];
   let last = 0;
-  for (const m of line.matchAll(TOKEN)) {
+  for (const m of line.matchAll(WRAPPED_TOKEN)) {
     literals.push(line.slice(last, m.index));
-    tokens.push(m[1]!);
+    tokens.push(m[1] !== undefined ? { type: m[1], wrap: '()' } : m[2] !== undefined ? { type: m[2], wrap: '[]' } : { type: m[3]!, wrap: null });
     last = m.index! + m[0].length;
   }
   literals.push(line.slice(last));
+  return { literals, tokens };
+}
+
+/**
+ * Renders one template line. Punctuation travels with the field it belongs to, so a missing field never leaves a dangling separator or bracket:
+ *  - The literal text in front of a token belongs to that token: it is written only when the token is present AND an earlier token of the line is
+ *    present (the first token of the line owns the text before it). The text after the last token belongs to the last token.
+ *  - Brackets around a token belong to it and qualify what precedes it: they are written when the token is present and either it is the first token
+ *    of the line or an earlier token is present. `{LOCALITY} ({ADMINISTRATIVE_AREA})` gives `Irvine (CA)`, `Irvine` and `CA`, never `Irvine (` or `CA)`.
+ * Deterministic and country-neutral: the same line and the same field values always give the same text.
+ */
+function renderLine(line: string, address: NormalizedAddressDto): string {
+  const { literals, tokens } = parseLine(line);
   if (tokens.length === 0) return line.trim();
   let out = '';
   let any = false;
   tokens.forEach((token, i) => {
-    const value = tokenValue(address, token);
+    const value = tokenValue(address, token.type);
     if (value === '') return;
-    out += (i === 0 ? literals[0]! : any ? literals[i]! : '') + value;
+    const text = token.wrap !== null && (i === 0 || any) ? `${token.wrap[0]}${value}${token.wrap[1]}` : value;
+    out += (i === 0 ? literals[0]! : any ? literals[i]! : '') + text;
     any = true;
   });
-  if (any && tokenValue(address, tokens[tokens.length - 1]!) !== '') out += literals[tokens.length]!;
+  if (any && tokenValue(address, tokens[tokens.length - 1]!.type) !== '') out += literals[tokens.length]!;
   return out.trim();
+}
+
+/** Why the brackets of a template cannot be used, or null. A bracket must wrap exactly one field, written `({FIELD})` or `[{FIELD}]`. */
+function bracketProblem(template: string): string | null {
+  return /[()[\]]/.test(template.replace(WRAPPED_TOKEN, '')) ? 'has a bracket that does not wrap exactly one field; write ({FIELD}) or [{FIELD}]' : null;
 }
 
 export interface FormatAddressOptions {
@@ -335,7 +359,7 @@ export function templateProblem(template: string, fieldTypes: readonly AddressFi
   for (const t of fieldTypes) if (!seen.has(t)) return `must include every field of the format`;
   const stripped = template.replace(TOKEN, '');
   if (/[{}]/.test(stripped)) return 'contains a stray brace';
-  return null;
+  return bracketProblem(template);
 }
 // eslint-disable-next-line no-control-regex
 const containsForbiddenTextExceptNewline = (s: string): boolean => containsForbiddenText(s.replace(/\n/g, '')) || /[\u0000-\u0009\u000B-\u001F\u007F]/.test(s);

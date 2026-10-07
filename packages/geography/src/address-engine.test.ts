@@ -480,6 +480,12 @@ describe('patternProblem', () => {
   ])('rejects %s', (_n, p) => {
     expect(patternProblem(p)).toBe('must not use backreferences');
   });
+  // INTENTIONAL, documented in docs/engineering/ADDRESSES.md: the check is lexical (a backslash immediately followed by 1-9), so the pattern text for a
+  // literal backslash and the digit 1 is refused as well. Do not loosen this without a product requirement; `[\\]1` is the supported way to write it.
+  it('conservatively rejects the pattern text \\\\1 (a literal backslash and the digit 1) and accepts the character-class spelling', () => {
+    expect(patternProblem('\\\\1')).toBe('must not use backreferences');
+    expect(patternProblem('[\\\\]1')).toBeNull();
+  });
   it.each([
     ['positive lookbehind', '(?<=a)b'],
     ['negative lookbehind', '(?<!a)b'],
@@ -911,5 +917,299 @@ describe('redactAddress fails closed', () => {
     expect(JSON.stringify(redactAddress(deep))).not.toContain('secret street');
     const when = new Date(0);
     expect((redactAddress({ at: when }) as { at: Date }).at).toBe(when);
+  });
+});
+
+// ---------------------------------------------------------------- punctuation travels with the fields it belongs to (GEO-002A)
+// Defect: `{LOCALITY} ({ADMINISTRATIVE_AREA})` with no locality rendered `CA)`: the text in front of a token went with that token but the closing
+// bracket went with the last token. A token may now be wrapped in brackets written directly around it, ({FIELD}) or [{FIELD}], and the brackets belong
+// to that field: they are written only together with it, and only when something precedes it that is present (or it starts the line).
+describe('formatAddressWithFormat: punctuation of omitted fields', () => {
+  const render = (template: string, over: Partial<NormalizedAddressDto> = {}): string[] => {
+    const types = [...template.matchAll(/\{([A-Z0-9_]+)\}/g)].map((m) => m[1] as AddressFieldType);
+    return formatAddressWithFormat(
+      format(
+        'QT',
+        template,
+        types.map((t) => field(t)),
+      ),
+      normalized({ addressLine1: 'L1', ...over }),
+    ).lines;
+  };
+  const NO_AREA = { administrativeAreaCode: null, administrativeAreaName: null };
+  const L1 = 'L1'; // every template below starts with {ADDRESS_LINE_1} on its own line
+
+  describe('{LOCALITY} ({ADMINISTRATIVE_AREA})', () => {
+    const t = '{ADDRESS_LINE_1}\n{LOCALITY} ({ADMINISTRATIVE_AREA})';
+    it('writes the whole line when both fields are present (unchanged output)', () => {
+      expect(render(t)).toEqual([L1, 'Mountain View (CA)']);
+    });
+    it('writes the locality alone when the area is missing: no "(" and no ")"', () => {
+      expect(render(t, NO_AREA)).toEqual([L1, 'Mountain View']);
+    });
+    it('writes the area alone, without brackets, when the locality is missing (the brackets qualify the locality)', () => {
+      expect(render(t, { locality: null })).toEqual([L1, 'CA']);
+    });
+    it('drops the whole line when neither is present', () => {
+      expect(render(t, { locality: null, ...NO_AREA })).toEqual([L1]);
+    });
+  });
+
+  describe('square brackets behave like round ones', () => {
+    const t = '{ADDRESS_LINE_1}\n{LOCALITY} [{ADMINISTRATIVE_AREA}]';
+    it.each([
+      [{}, 'Mountain View [CA]'],
+      [NO_AREA, 'Mountain View'],
+      [{ locality: null }, 'CA'],
+    ])('%j', (over, expected) => {
+      expect(render(t, over)).toEqual([L1, expected]);
+    });
+  });
+
+  describe('a pair at the start of the line wraps its field whenever the field is present', () => {
+    const t = '{ADDRESS_LINE_1}\n({LOCALITY}) {POSTAL_CODE}';
+    it.each([
+      [{}, '(Mountain View) 94043'],
+      [{ postalCode: null }, '(Mountain View)'],
+      [{ locality: null }, '94043'],
+    ])('%j', (over, expected) => {
+      expect(render(t, over)).toEqual([L1, expected]);
+    });
+    it('drops the line when both are missing', () => {
+      expect(render(t, { locality: null, postalCode: null })).toEqual([L1]);
+    });
+  });
+
+  describe('sequential pairs: {LOCALITY} ({ADMINISTRATIVE_AREA}) ({POSTAL_CODE})', () => {
+    const t = '{ADDRESS_LINE_1}\n{LOCALITY} ({ADMINISTRATIVE_AREA}) ({POSTAL_CODE})';
+    it.each([
+      ['all present', {}, 'Mountain View (CA) (94043)'],
+      ['no area', NO_AREA, 'Mountain View (94043)'],
+      ['no postal code', { postalCode: null }, 'Mountain View (CA)'],
+      ['locality only', { ...NO_AREA, postalCode: null }, 'Mountain View'],
+      ['no locality', { locality: null }, 'CA (94043)'],
+      ['area only', { locality: null, postalCode: null }, 'CA'],
+      ['postal code only', { locality: null, ...NO_AREA }, '94043'],
+    ])('%s', (_name, over, expected) => {
+      expect(render(t, over)).toEqual([L1, expected]);
+    });
+    it('drops the line when nothing is present', () => {
+      expect(render(t, { locality: null, ...NO_AREA, postalCode: null })).toEqual([L1]);
+    });
+  });
+
+  describe('a bracket that does not wrap exactly one field is plain text when a legacy template is rendered', () => {
+    const t = '{ADDRESS_LINE_1}\n{ORGANIZATION} ({LOCALITY} [{ADMINISTRATIVE_AREA}])';
+    it('renders as before (the text belongs to the following token) instead of guessing; drafting such a template is refused', () => {
+      // the outer brackets are plain text here, so they follow the old rule (text belongs to the following token); only [{ADMINISTRATIVE_AREA}] is a wrapper
+      expect(render(t, { organization: 'Acme' })).toEqual([L1, 'Acme (Mountain View [CA])']);
+      expect(render(t, { organization: 'Acme', ...NO_AREA })).toEqual([L1, 'Acme (Mountain View']);
+      expect(templateProblem('{ORGANIZATION} ({LOCALITY} [{ADMINISTRATIVE_AREA}])', ['ORGANIZATION', 'LOCALITY', 'ADMINISTRATIVE_AREA'])).toBe(
+        'has a bracket that does not wrap exactly one field; write ({FIELD}) or [{FIELD}]',
+      );
+    });
+  });
+
+  describe('sequential separators', () => {
+    it.each([
+      ['{LOCALITY}, {ADMINISTRATIVE_AREA}, {POSTAL_CODE}', {}, 'Mountain View, CA, 94043'],
+      ['{LOCALITY}, {ADMINISTRATIVE_AREA}, {POSTAL_CODE}', NO_AREA, 'Mountain View, 94043'],
+      ['{LOCALITY}, {ADMINISTRATIVE_AREA}, {POSTAL_CODE}', { locality: null }, 'CA, 94043'],
+      ['{LOCALITY}, {ADMINISTRATIVE_AREA}, {POSTAL_CODE}', { postalCode: null }, 'Mountain View, CA'],
+      ['{LOCALITY}, {ADMINISTRATIVE_AREA}, {POSTAL_CODE}', { locality: null, postalCode: null }, 'CA'],
+      ['{LOCALITY} - {ADMINISTRATIVE_AREA} - {POSTAL_CODE}', NO_AREA, 'Mountain View - 94043'],
+      ['{LOCALITY} / {ADMINISTRATIVE_AREA} / {POSTAL_CODE}', { locality: null, ...NO_AREA }, '94043'],
+      ['{LOCALITY}; {ADMINISTRATIVE_AREA}', { locality: null }, 'CA'],
+    ])('%s with %j', (template, over, expected) => {
+      expect(render(`{ADDRESS_LINE_1}\n${template}`, over)).toEqual([L1, expected]);
+    });
+  });
+
+  it('never alters a bracket that is part of a VALUE: only the brackets of the template are conditional', () => {
+    const t = '{ADDRESS_LINE_1}\n{LOCALITY} ({ADMINISTRATIVE_AREA})';
+    expect(render(t, { locality: 'Springfield (East)', ...NO_AREA })).toEqual([L1, 'Springfield (East)']);
+    expect(render(t, { locality: null, administrativeAreaCode: null, administrativeAreaName: 'Region )' })).toEqual([L1, 'Region )']);
+    expect(render(t, { locality: 'Springfield (East)' })).toEqual([L1, 'Springfield (East) (CA)']);
+  });
+
+  it('invariant over every combination of present fields and several templates: balanced brackets, no dangling separators, values once and in order', () => {
+    const templates = [
+      '{LOCALITY} ({ADMINISTRATIVE_AREA}) {POSTAL_CODE}',
+      '({LOCALITY}) {ADMINISTRATIVE_AREA} - {POSTAL_CODE}',
+      '{POSTAL_CODE} [{LOCALITY}] ({ADMINISTRATIVE_AREA})',
+      '{LOCALITY}, {ADMINISTRATIVE_AREA}, {POSTAL_CODE}',
+      '{ORGANIZATION} ({LOCALITY}) [{ADMINISTRATIVE_AREA}] {POSTAL_CODE}',
+    ];
+    const values: [string, Partial<NormalizedAddressDto>][] = [
+      ['ORGANIZATION', { organization: 'Org' }],
+      ['LOCALITY', { locality: 'Loc' }],
+      ['ADMINISTRATIVE_AREA', { administrativeAreaCode: 'AR', administrativeAreaName: 'AR' }],
+      ['POSTAL_CODE', { postalCode: 'PC' }],
+    ];
+    const absent: Partial<NormalizedAddressDto> = {
+      organization: null,
+      locality: null,
+      administrativeAreaCode: null,
+      administrativeAreaName: null,
+      postalCode: null,
+    };
+    for (const template of templates) {
+      const used = values.filter(([type]) => template.includes(`{${type}}`));
+      for (let mask = 0; mask < 1 << used.length; mask++) {
+        const present = used.filter((_, i) => mask & (1 << i));
+        const over = Object.assign({}, absent, ...present.map(([, v]) => v));
+        const lines = render(`{ADDRESS_LINE_1}\n${template}`, over);
+        const line = lines[1];
+        const label = `${template} with ${present.map(([t]) => t).join('+') || 'nothing'}`;
+        if (present.length === 0) {
+          expect(lines, label).toEqual([L1]);
+          continue;
+        }
+        expect(line, label).toBeDefined();
+        const text = line!;
+        // brackets are balanced and each pair is non-empty
+        let depth = 0;
+        for (const ch of text) depth += ch === '(' || ch === '[' ? 1 : ch === ')' || ch === ']' ? -1 : 0;
+        expect(depth, `${label}: ${text}`).toBe(0);
+        expect(text, label).not.toMatch(/\(\s*\)|\[\s*\]|\(\s*[\])]|\[\s*[\])]/);
+        // nothing dangles at the ends or doubles up
+        expect(text, label).toBe(text.trim());
+        expect(text, label).not.toMatch(/^[,;\-/ ]|[,;\-/ ]$| {2}|,\s*,|-\s*-/);
+        // every present value once, in template order; no absent value
+        const expectedOrder = template
+          .match(/\{[A-Z_0-9]+\}/g)!
+          .map((m) => m.slice(1, -1))
+          .filter((type) => present.some(([t]) => t === type))
+          .map((type) => ({ ORGANIZATION: 'Org', LOCALITY: 'Loc', ADMINISTRATIVE_AREA: 'AR', POSTAL_CODE: 'PC' })[type]!);
+        expect(text.match(/Org|Loc|AR|PC/g), label).toEqual(expectedOrder);
+      }
+    }
+  });
+
+  it('is deterministic, does not mutate the address and does not depend on the country', () => {
+    const t = '{ADDRESS_LINE_1}\n{LOCALITY} ({ADMINISTRATIVE_AREA})';
+    const addr = normalized({ locality: null });
+    const snapshot = JSON.stringify(addr);
+    const a = formatAddressWithFormat(format('US', t, [field('ADDRESS_LINE_1'), field('LOCALITY'), field('ADMINISTRATIVE_AREA')]), addr);
+    const b = formatAddressWithFormat(format('FR', t, [field('ADDRESS_LINE_1'), field('LOCALITY'), field('ADMINISTRATIVE_AREA')]), addr);
+    expect(a).toEqual(b);
+    expect(formatAddressWithFormat(format('US', t, [field('ADDRESS_LINE_1'), field('LOCALITY'), field('ADMINISTRATIVE_AREA')]), addr)).toEqual(a);
+    expect(JSON.stringify(addr)).toBe(snapshot);
+  });
+
+  it('keeps the seeded US output byte for byte: three lines with every field, two without line 2', () => {
+    expect(formatAddressWithFormat(US, normalized({ addressLine2: 'Suite 5' })).text).toBe('1600 Amphitheatre Pkwy\nSuite 5\nMountain View, CA 94043');
+    expect(formatAddressWithFormat(US, normalized()).text).toBe('1600 Amphitheatre Pkwy\nMountain View, CA 94043');
+  });
+
+  it('renders a legacy template with an unmatched bracket as it always did: the bracket is plain text', () => {
+    expect(render('{ADDRESS_LINE_1}\n{LOCALITY} (')).toEqual([L1, 'Mountain View (']);
+    expect(render('{ADDRESS_LINE_1}\n{LOCALITY} )')).toEqual([L1, 'Mountain View )']);
+    expect(render('{ADDRESS_LINE_1}\n{LOCALITY} [)')).toEqual([L1, 'Mountain View [)']);
+  });
+});
+
+describe('templateProblem: brackets', () => {
+  const types: AddressFieldType[] = ['LOCALITY', 'ADMINISTRATIVE_AREA'];
+  const MESSAGE = 'has a bracket that does not wrap exactly one field; write ({FIELD}) or [{FIELD}]';
+  it('accepts a field wrapped in round or square brackets, several of them, on any line', () => {
+    for (const t of [
+      '{LOCALITY} ({ADMINISTRATIVE_AREA})',
+      '{LOCALITY} [{ADMINISTRATIVE_AREA}]',
+      '({LOCALITY}) [{ADMINISTRATIVE_AREA}]',
+      '({LOCALITY})\n[{ADMINISTRATIVE_AREA}]',
+      '{LOCALITY}\n({ADMINISTRATIVE_AREA})',
+    ])
+      expect(templateProblem(t, types), t).toBeNull();
+  });
+  it.each([
+    ['{LOCALITY} ({ADMINISTRATIVE_AREA}', 'an opening bracket without a partner'],
+    ['{LOCALITY} {ADMINISTRATIVE_AREA})', 'a closing bracket without a partner'],
+    ['{LOCALITY} [{ADMINISTRATIVE_AREA})', 'mismatched kinds'],
+    ['{LOCALITY} ({ADMINISTRATIVE_AREA}]', 'mismatched kinds'],
+    ['({LOCALITY}\n{ADMINISTRATIVE_AREA})', 'a pair across two lines'],
+    ['({LOCALITY} {ADMINISTRATIVE_AREA})', 'a pair around two fields'],
+    ['({LOCALITY} [{ADMINISTRATIVE_AREA}])', 'nested pairs'],
+    ['( {LOCALITY}) {ADMINISTRATIVE_AREA}', 'text inside the brackets'],
+    ['{LOCALITY} () {ADMINISTRATIVE_AREA}', 'an empty pair'],
+    ['{LOCALITY} (c/o) {ADMINISTRATIVE_AREA}', 'a pair around text only'],
+    ['{LOCALITY} {ADMINISTRATIVE_AREA} []', 'an empty square pair'],
+    ['(({LOCALITY})) {ADMINISTRATIVE_AREA}', 'a doubled wrapper'],
+  ])('rejects %j (%s)', (t) => {
+    expect(templateProblem(t, types)).toBe(MESSAGE);
+  });
+});
+
+describe('formatAddressWithFormat: robustness and equivalence (GEO-002A)', () => {
+  it('treats a missing line 1 like every other missing field instead of writing the text "null" or "undefined"', () => {
+    const t = format('QT', '{ADDRESS_LINE_1}, {LOCALITY}', [field('ADDRESS_LINE_1'), field('LOCALITY')]);
+    for (const addressLine1 of [null, undefined])
+      expect(formatAddressWithFormat(t, normalized({ addressLine1: addressLine1 as never })).lines).toEqual(['Mountain View']);
+  });
+
+  // A frozen copy of the renderer before GEO-002A (the literal-attachment rule without bracket wrappers). For templates without brackets the new renderer
+  // must be IDENTICAL to it: the change may only affect lines that contain ({FIELD}) or [{FIELD}].
+  const oldRenderLine = (line: string, values: Record<string, string>): string => {
+    const literals: string[] = [];
+    const tokens: string[] = [];
+    let last = 0;
+    for (const m of line.matchAll(/\{([A-Z0-9_]+)\}/g)) {
+      literals.push(line.slice(last, m.index));
+      tokens.push(m[1]!);
+      last = m.index! + m[0].length;
+    }
+    literals.push(line.slice(last));
+    if (tokens.length === 0) return line.trim();
+    let out = '';
+    let any = false;
+    tokens.forEach((token, i) => {
+      const value = values[token] ?? '';
+      if (value === '') return;
+      out += (i === 0 ? literals[0]! : any ? literals[i]! : '') + value;
+      any = true;
+    });
+    if (any && (values[tokens[tokens.length - 1]!] ?? '') !== '') out += literals[tokens.length]!;
+    return out.trim();
+  };
+  it('is identical to the previous renderer for 6000 pseudo-random templates without brackets', () => {
+    let seed = 20261007;
+    const next = (n: number): number => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed % n;
+    };
+    const types = ['ORGANIZATION', 'ADDRESS_LINE_1', 'ADDRESS_LINE_2', 'DEPENDENT_LOCALITY', 'LOCALITY', 'ADMINISTRATIVE_AREA', 'POSTAL_CODE', 'SORTING_CODE'];
+    const fragments = ['', ' ', ', ', ' - ', '/', '; ', '. ', ': ', 'Attn ', '〒', ' · ', '\u00a0', '  ', '$&', '$1'];
+    const props: Record<string, (v: string | null) => Partial<NormalizedAddressDto>> = {
+      ORGANIZATION: (v) => ({ organization: v }),
+      ADDRESS_LINE_1: (v) => ({ addressLine1: v ?? '' }),
+      ADDRESS_LINE_2: (v) => ({ addressLine2: v }),
+      DEPENDENT_LOCALITY: (v) => ({ dependentLocality: v }),
+      LOCALITY: (v) => ({ locality: v }),
+      ADMINISTRATIVE_AREA: (v) => ({ administrativeAreaCode: v, administrativeAreaName: v }),
+      POSTAL_CODE: (v) => ({ postalCode: v }),
+      SORTING_CODE: (v) => ({ sortingCode: v }),
+    };
+    for (let n = 0; n < 6000; n++) {
+      const lines: string[] = [];
+      for (let l = 0, count = 1 + next(3); l < count; l++) {
+        let line = fragments[next(fragments.length)]!;
+        for (let t = 0, tokens = next(5); t < tokens; t++) line += `{${types[next(types.length)]}}${fragments[next(fragments.length)]}`;
+        lines.push(line);
+      }
+      const template = lines.join('\n');
+      let over: Partial<NormalizedAddressDto> = {};
+      const values: Record<string, string> = {};
+      for (const type of types) {
+        const v = next(3) === 0 ? null : `v${type.slice(0, 2)}${next(10)}`;
+        over = { ...over, ...props[type]!(v) };
+        values[type] = v ?? '';
+      }
+      const expected = template
+        .split('\n')
+        .map((line) => oldRenderLine(line, values))
+        .filter((line) => line !== '');
+      const actual = formatAddressWithFormat(format('QT', template, []), normalized(over)).lines;
+      expect(actual, JSON.stringify({ template, values })).toEqual(expected);
+    }
   });
 });

@@ -4,7 +4,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { loadConfig } from '@bananagig/config';
-import { ErrorResponse, GEOGRAPHY_ERROR_CODES, type GeographyErrorCode } from '@bananagig/contracts';
+import { ADDRESS_FORMAT_VERSION_BOUNDS, ErrorResponse, GEOGRAPHY_ERROR_CODES, decimalIntegerMessage, type GeographyErrorCode } from '@bananagig/contracts';
 import { GeographyError, type AddressFormatModel, type AddressService, type AdministrativeAreaModel } from '@bananagig/geography';
 import { createTokenVerifier } from '@bananagig/identity';
 import { createTestKeys, signToken, TEST_ISSUER, type TestKeys } from '@bananagig/identity/testing';
@@ -790,5 +790,93 @@ describe('address API error mapping', () => {
     expect(errorOf(missing).correlationId).toBe('corr-addr-2');
     const posted = await call('POST', '/addresses/validate', undefined, { address: validAddress }, { 'x-correlation-id': 'corr-addr-3' });
     expect(posted.json().meta.correlationId).toBe('corr-addr-3');
+  });
+});
+
+// ====================================================================== strict integer version parameter (GEO-002A)
+// Fastify's Ajv coercion read `1e3` as 1000, `1.0`, `+1` and `01` as 1, `0x10` as 16 and ` 1` as 1. The version is parsed by the one strict parser
+// (parseDecimalInteger) in a preValidation hook, so only canonical base-10 text reaches the service.
+describe('address API strict version path parameter', () => {
+  const publish = (version: string, token?: string) => call('POST', `/countries/US/address-formats/${version}/publication`, token, publishBody);
+
+  it.each([
+    ['1', 1],
+    ['2', 2],
+    ['10', 10],
+    ['1000', 1000],
+    ['100000', 100000],
+  ])('accepts the canonical version %s and hands the service the number %i', async (version, expected) => {
+    svc.publishFormat.mockResolvedValue(US_FORMAT);
+    const res = await publish(version, await adminToken([WRITE]));
+    expect(res.statusCode).toBe(200);
+    expect(svc.publishFormat).toHaveBeenCalledWith('US', expected, publishBody, 'admin-a');
+    expect(typeof svc.publishFormat.mock.calls[0]![1]).toBe('number');
+  });
+
+  it.each([
+    ['1e3', 'exponent'],
+    ['1E3', 'exponent'],
+    ['1e2', 'exponent'],
+    ['1e999', 'exponent overflow'],
+    ['1.0', 'decimal point'],
+    ['1.', 'trailing decimal point'],
+    ['.5', 'leading decimal point'],
+    ['+1', 'plus sign'],
+    ['-1', 'negative'],
+    ['-0', 'negative zero'],
+    ['0', 'zero (below the minimum)'],
+    ['00', 'leading zeros'],
+    ['01', 'leading zero'],
+    ['007', 'leading zeros'],
+    ['%201', 'leading space'],
+    ['1%20', 'trailing space'],
+    ['%091', 'leading tab'],
+    ['1%0A', 'trailing line feed'],
+    ['%C2%A01', 'leading non-breaking space'],
+    ['0x10', 'hex'],
+    ['0X1F', 'hex'],
+    ['0b1', 'binary'],
+    ['0o7', 'octal'],
+    ['Infinity', 'Infinity'],
+    ['-Infinity', 'negative Infinity'],
+    ['NaN', 'NaN'],
+    ['1_000', 'separator'],
+    ['1,000', 'separator'],
+    ['%D9%A1', 'Arabic-Indic digit'],
+    ['%EF%BC%91', 'full-width digit'],
+    ['9007199254740993', 'beyond the safe integer range'],
+    ['100001', 'above the maximum'],
+    ['abc', 'letters'],
+  ])('rejects %s (%s) with the standard validation envelope and never calls the service', async (version) => {
+    const res = await publish(version, await adminToken([WRITE]));
+    expect(res.statusCode).toBe(400);
+    const error = errorOf(res);
+    expect(error.category).toBe('VALIDATION');
+    expect(error.code).toBe('VALIDATION_FAILED');
+    expect(error.message).toBe('Request validation failed');
+    expect(typeof error.correlationId).toBe('string');
+    const issues = (error.details as { issues: { path: string; message: string }[] }).issues;
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.path).toBe('params.version');
+    // the message is the fixed text of the bounds: nothing the client sent is interpolated into it
+    expect(issues[0]!.message).toBe(decimalIntegerMessage(ADDRESS_FORMAT_VERSION_BOUNDS));
+    expect(noMocksCalled()).toBe(true);
+  });
+
+  it('keeps 401 before 400 and 403 before 400: authorization still wins over parameter validation', async () => {
+    expect((await publish('1e3')).statusCode).toBe(401);
+    expect((await publish('1e3', await adminToken([READ]))).statusCode).toBe(403);
+    expect((await publish('1e3', await adminToken([]))).statusCode).toBe(403);
+    expect(noMocksCalled()).toBe(true);
+  });
+
+  it('validates the version before the body, and still rejects a bad body for a good version', async () => {
+    const t = await adminToken([WRITE]);
+    const badBoth = await call('POST', '/countries/US/address-formats/1e3/publication', t, { reason: 7 });
+    expect((errorOf(badBoth).details as { issues: { path: string }[] }).issues[0]!.path).toBe('params.version');
+    const badBody = await call('POST', '/countries/US/address-formats/1/publication', t, { reason: 7 });
+    expect(badBody.statusCode).toBe(400);
+    expect((errorOf(badBody).details as { issues: { path: string }[] }).issues[0]!.path).toBe('reason');
+    expect(noMocksCalled()).toBe(true);
   });
 });

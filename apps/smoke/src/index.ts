@@ -725,6 +725,19 @@ await check('Geography', async () => {
   // (3) DEV/TEST market flow: private-use locale qaa, DEV/TEST country ZZ, a unique devtest market
   const runId = `r${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   await ensureDevtestGeography(admin);
+  // strict integer path parameter (GEO-002A): Ajv coercion used to read 1e3 as 1000; only canonical base-10 text may reach the service
+  for (const version of ['1e3', '1.0', '01', '+1', '0x10']) {
+    const bad = await geo(admin, 'POST', `/countries/US/address-formats/${version}/publication`, { reason: 'smoke strict version check' }, [400]);
+    assert(
+      bad.json.error?.code === 'VALIDATION_FAILED' && bad.json.error.details?.issues?.[0]?.path === 'params.version',
+      `version ${version} must be rejected with the standard validation envelope (${JSON.stringify(bad.json).slice(0, 160)})`,
+    );
+  }
+  const republished = await geo(admin, 'POST', '/countries/US/address-formats/1/publication', { reason: 'smoke strict version check (idempotent)' });
+  assert(
+    republished.json.data?.version === 1 && republished.json.data?.status === 'PUBLISHED',
+    'publishing the already published US format 1 must be an idempotent no-op',
+  );
   const activeLocales = (await content(null, 'GET', '/locales')).json.data as { locale: string }[];
   assert(
     activeLocales.some((l) => l.locale === 'qaa'),

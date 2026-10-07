@@ -534,3 +534,39 @@ ADR-0023, ADR-0024.
 
 ### Known follow-up
 DEBT-0036 to DEBT-0042 (retention and exact-location access, provider vendor and per-country selection, phone rules, admin UI, US-only data, market to area link, pattern isolation); DEBT-0032 and DEBT-0034 in progress; LRN-0029 to LRN-0031. Owner decision still open: confirm or remove the seeded PLANNED market `la-oc`.
+
+
+## GEO-002A — 2026-10-07
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(GEO-002A)"`.
+Summary: Corrective checkpoint for two verified GEO-002 gaps before GEO-002 is pushed: a display template with a bracketed field rendered malformed punctuation when a field was missing, and the `:version` path parameter accepted non-canonical numbers. No new address feature, no schema change.
+
+### Defects reproduced
+- Formatter: `{LOCALITY} ({ADMINISTRATIVE_AREA})` with only the area rendered `CA)` (the closing bracket belonged to the last token, the opening one to the following token).
+- Path parameter: Ajv coercion read `1e3` and `1e2` as 1000 and 100, `1.0`, `+1`, `01` and ` 1` as 1, `0x10` as 16 and `Infinity` as `null` for `POST /countries/:code/address-formats/:version/publication`.
+
+### Delivered
+- Formatter (`packages/geography/src/address-engine.ts`): a token may be wrapped in brackets written directly around it, `({FIELD})` or `[{FIELD}]`; the brackets belong to that field and are written only with it, and only when it starts the line or an earlier field is present. Text still belongs to the following token. Templates without brackets render identically (a 6,000-case differential test against a frozen copy of the old renderer, plus 200,000 cases in the review); `templateProblem` refuses any bracket that does not wrap exactly one field (an earlier design that matched bracket pairs across fields was dropped after all-subsets tests produced `Acme( [CA])`); `addressLine1` null or undefined is treated as absent
+- Strict integers: one parser `parseDecimalInteger` (`packages/contracts/src/integer.ts`: canonical base-10 only, at most 15 digits, checked lexically before conversion), the `strictIntegerParams` preValidation hook and the fail-closed start-up guard `enforceStrictIntegerParams` (`apps/api/src/plugins/strict-params.ts`; refuses an unguarded numeric `params` or `querystring` property, a numeric type outside `properties`, and any `$ref`), `integerParamSchema` documents the bounds and syntax in OpenAPI; the address publication route uses them; rejections are the standard `VALIDATION_FAILED` envelope with `params.version` and a fixed message
+- Smoke: the Geography scenario now proves on the running stack that `1e3`, `1.0`, `01`, `+1` and `0x10` are rejected with the standard envelope (`params.version`) and that re-publishing format 1 is an idempotent no-op
+- The intentional refusal of backreference-like pattern text (including `\\1`) is documented and pinned by a test; `la-oc` untouched and PLANNED; DEBT-0030 kept OPEN with a note that the public address endpoints are not production-exposure-ready
+- Independent verification workflow (11 agents): an oracle fuzz of the formatter (340,000 cases, no mismatch), an HTTP bypass attack of the parser (about 140 encodings, none reached the service), a regression review (identical output for bracket-free templates), then a verifier per finding; confirmed and fixed: the guard did not see `$ref` or composition keywords, `addressLine1` null, an unproven documentation claim (now a real test); confirmed and recorded as DEBT-0043: body coercion on the configuration and content routes
+
+### Schema
+None. No migration, no change to `docs/data/SCHEMA_SNAPSHOT.sql`. Data model: NOT_REQUIRED (formatter and API input-validation corrective checkpoint).
+
+### Contracts
+OpenAPI: the `version` path parameter gained a description (valid, 15 pre-existing warnings). AsyncAPI unchanged.
+
+### Tests
+Unit 1716, root script tests 71, integration 507 in 21 files, smoke 31 checks (run twice).
+
+### Skills updated
+`skills/geography`, `skills/api`, `skills/testing`.
+
+### ADRs
+None required (no architecture change).
+
+### Known follow-up
+DEBT-0043 (body coercion on configuration and content routes); DEBT-0030 stays OPEN; LRN-0032 and LRN-0033. Push GEO-002 and GEO-002A together and verify GitHub CI.

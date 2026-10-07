@@ -784,3 +784,53 @@ Use the API when it answers; fall back to the run page text for the final status
 ### Evidence
 Run 37578136291 (CI-003) read as `Status Success`, verify 4m 18s, compose-smoke 3m 49s.
 
+
+## LRN-0032 — Ajv type coercion accepts non-canonical numbers; check integer text lexically before it is converted
+
+Date: 2026-10-07
+Checkpoint: GEO-002A
+Domain: api
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/api/SKILL.md
+
+### Context
+The address format `:version` path parameter was declared `{ type: 'integer', minimum: 1, maximum: 100000 }`. Fastify's Ajv runs with type coercion on (query strings need it), so `1e3` became 1000, `1.0`, `+1` and `01` became 1, `0x10` became 16, ` 1` became 1 and `Infinity` reached the handler as `null`. The schema looked strict and the earlier tests only tried `0`, `-1`, `1.5` and `abc`.
+
+### Learning
+A schema type is not a syntax check when coercion is enabled. Integers that arrive as text are validated with an anchored base-10 pattern (`^(0|[1-9][0-9]*)$`, at most 15 digits) BEFORE any conversion, by one shared parser, in a `preValidation` hook that runs ahead of Ajv. A start-up guard that refuses to register a route with an unguarded numeric `params` or `querystring` property turns "remember the hook" into a failure nobody can skip.
+
+### Why it matters
+`Number()`, `parseInt` and Ajv coercion all read exponents, hex, signs and whitespace; an identifier written two ways (`1` and `1e3`) breaks caching, audit trails and any comparison of the raw text.
+
+### Reuse rule
+Never convert user text to a number with `Number`, `parseInt`, `parseFloat`, unary plus or coercion without a prior lexical check. Use `parseDecimalInteger` and `strictIntegerParams`; test the non-canonical forms at the HTTP boundary.
+
+### Evidence
+`packages/contracts/src/integer.ts`, `apps/api/src/plugins/strict-params.ts`, `apps/api/src/strict-params.test.ts`, `apps/api/src/address.test.ts` (strict version path parameter), `docs/engineering/API_CONVENTIONS.md`.
+
+## LRN-0033 — Conditional punctuation needs an owner per character; test every subset of present fields
+
+Date: 2026-10-07
+Checkpoint: GEO-002A
+Domain: geography
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/geography/SKILL.md
+
+### Context
+The address template rule gave the text in front of a token to that token and the text after the last token to the last token. For `{LOCALITY} ({ADMINISTRATIVE_AREA})` the opening bracket therefore followed the area but the closing bracket followed the last token, and with no locality the line rendered `CA)`. Every test used a complete address or dropped one separator-only field, so none of them could fail. A first fix that matched bracket pairs across several fields and nested pairs produced `Acme( [CA])` and glued separators, which only the all-subsets tests exposed.
+
+### Learning
+Punctuation that comes in pairs must have ONE owner: the field it wraps. The smallest grammar that gives this is a bracket written directly around a single field; brackets around several fields, around text or nested need ownership rules that cannot be explained in one sentence, so they are refused when a template is drafted instead of being guessed at render time. Prove a renderer by enumerating every subset of present fields (invariants: balanced, nothing dangling, each value once and in order) and by a differential test against the old renderer on inputs the change must not affect.
+
+### Why it matters
+A formatted address is shown to customers and providers and stored in snapshots; a dangling bracket is visible, and it appears only for the incomplete addresses nobody tried.
+
+### Reuse rule
+Before adding syntax to a template language, write down which element owns every character and what happens when each owner is absent; test all subsets.
+
+### Evidence
+`packages/geography/src/address-engine.ts` (`renderLine`), `packages/geography/src/address-engine.test.ts` (punctuation of omitted fields), `docs/engineering/ADDRESSES.md`.

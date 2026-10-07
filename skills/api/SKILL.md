@@ -78,6 +78,7 @@ Services never write SQL in routes. Persistence changes go through the database 
 - Do not invent business error codes outside the feature that needs them.
 - Do not import `@bananagig/web` or put database types in contracts.
 - Do not trust a route to be private because it is unlisted or because the UI hides it: add a guard.
+- Integers that arrive as text (path parameters, query strings) use the one strict parser: `strictIntegerParams({ name: bounds })` in `preValidation` (after the authorization hook) plus `integerParamSchema(bounds)` in the route schema; never rely on Ajv coercion, which reads `1e3` as 1000 and `0x10` as 16 (LRN-0032). `enforceStrictIntegerParams` makes a route with an unguarded numeric `params`/`querystring` property, a numeric type outside `properties`, or any `$ref` in those schemas fail to register (the hook must be a direct entry of the route's own `preValidation`), so adding one without the hook fails in every test that builds the app. It does not cover request bodies: Ajv still coerces body integers and booleans on the configuration and content routes (DEBT-0043); use `strictBody` there.
 - Endpoints that receive personal data and persist nothing (address validate/format, `docs/engineering/ADDRESSES.md`) are stateless POSTs: `Cache-Control: no-store`, a small `bodyLimit`, `strictBody` first, errors and issues carry field names and codes only (never the rejected value), no logging of the body (the app has `logger: false`; keep it so), and no sibling route that reads a persisted record until its access policy exists.
 
 ## Related ADRs
@@ -86,4 +87,4 @@ ADR-0006, ADR-0004, ADR-0013, ADR-0024
 
 ## Last reviewed
 
-2026-10-07 (GEO-002)
+2026-10-07 (GEO-002A)
