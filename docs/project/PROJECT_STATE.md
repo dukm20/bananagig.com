@@ -2,8 +2,8 @@
 
 Current truth only. History lives in `IMPLEMENTATION_HISTORY.md`; decisions in `docs/architecture/`.
 
-Current checkpoint: GEO-001
-Last completed checkpoint: GEO-001
+Current checkpoint: CI-002B
+Last completed checkpoint: CI-002B
 Next approved checkpoint: GEO-002 — International Address Formats and Structured Addresses
 Latest migration: 0007_geography_registry.sql
 Latest ADR: ADR-0022

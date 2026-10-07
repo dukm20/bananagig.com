@@ -80,6 +80,7 @@ if (!baselineMode) {
 function inferCheckpoints() {
   const log = git(['log', '--format=%H%x09%s', `${base}..HEAD`, '--', 'db/migrations'], { allowFail: true }) ?? '';
   const byId = new Map();
+  const unattributed = new Set(newMigrationPaths);
   for (const line of log.split('\n').filter(Boolean)) {
     const [hash, subject = ''] = line.split('\t');
     const added = [
@@ -88,16 +89,15 @@ function inferCheckpoints() {
           .split('\n')
           .filter(Boolean),
       ),
-    ]
-      .filter((f) => newMigrationPaths.includes(f))
-      .map((f) => f.split('/').pop());
+    ].filter((f) => unattributed.has(f));
     if (!added.length) continue;
+    for (const f of added) unattributed.delete(f);
     const id = subject.match(/^[a-z]+\(([A-Z][A-Z0-9]*-\d{3}[A-Z]?)\)/)?.[1];
     if (!id) {
       r.fail(`commit ${hash.slice(0, 7)} adds a migration but its subject has no (<ID>) checkpoint: "${subject}"`);
       continue;
     }
-    byId.set(id, [...(byId.get(id) ?? []), ...added]);
+    byId.set(id, [...(byId.get(id) ?? []), ...added.map((f) => f.split('/').pop())]);
   }
   return [...byId].map(([id, migrations]) => ({ id, migrations }));
 }

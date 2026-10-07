@@ -434,3 +434,32 @@ ADR-0021, ADR-0022.
 
 ### Known follow-up
 DEBT-0031 to DEBT-0034, DEBT-0024 (in progress), DEBT-0030 applies to public geography reads. LRN-0024 to LRN-0027. GEO-002 will bring address formats and structured addresses; the market default time zone can then be overridden per service address (DEBT-0034).
+
+
+## CI-002B — 2026-10-07
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(CI-002B)"`.
+Summary: Corrective hardening of the checkpoint-id inference in `data-model:check` (second round, after CI-002A), found while GEO-001 was being committed. The edits were made outside the checkpoint tooling by the repository owner and were kept out of the GEO-001 commit; they are committed here at the owner's request. No application behavior, schema or migration changed.
+
+### Delivered
+- `scripts/data-model-check.mjs`: each migration file in the final base diff is attributed to exactly one checkpoint, the newest commit that added the surviving file, so a migration that was added, deleted and re-added inside the pushed range is not counted twice or credited to an earlier checkpoint
+- `scripts/governance.test.mjs`: regression test "attributes a deleted and re-added migration only to the checkpoint that added the surviving file"
+
+### Schema
+None. No migration. Data model: NOT_REQUIRED.
+
+### Contracts
+None.
+
+### Tests
+Unit 1221, root script tests 71 (governance 46, identity realm 24, migration files 1), integration 385, smoke 30 checks (unchanged). The CI-equivalent `data-model:check` against the GEO-001 range (`40ec528..HEAD`, no checkpoint id) passes.
+
+### Skills updated
+None (the testing-skill lesson from CI-002 already covers running the governance step as CI does).
+
+### ADRs
+None required.
+
+### Known follow-up
+None.

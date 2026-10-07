@@ -219,6 +219,27 @@ describe('data-model:check', () => {
       expect(out.out).toBe('data-model:check: OK\n');
       expect(out.code).toBe(0);
     });
+    it('attributes a deleted and re-added migration only to the checkpoint that added the surviving file', () => {
+      const r = repo(dmDocs());
+      const base = sh(r, 'git', ['rev-parse', 'HEAD']).trim();
+      write(r, 'db/migrations/0002_booking.sql', `${HDR}SELECT 1;\n`);
+      sh(r, 'git', ['add', '-A']);
+      sh(r, 'git', ['commit', '-q', '-m', 'feat(TST-002): add initial migration']);
+      rmSync(path.join(r, 'db/migrations/0002_booking.sql'));
+      sh(r, 'git', ['add', '-A']);
+      sh(r, 'git', ['commit', '-q', '-m', 'chore(TST-002): remove initial migration']);
+      write(r, 'db/migrations/0002_booking.sql', `${HDR}CREATE SCHEMA booking;\n`);
+      write(r, 'docs/data/SCHEMA_SNAPSHOT.sql', SNAP_BOOKING);
+      write(r, 'docs/data/DATA_MODEL.md', '# Data model\n\nbooking.reservation\n');
+      write(r, 'docs/data/DATA_DICTIONARY.md', '# Dictionary\n\n### booking.reservation\n\nrows\n');
+      write(r, 'docs/data/DATA_MODEL_CHANGELOG.md', `# Changelog\n${CHG('TST-003', '0002_booking.sql')}`);
+      write(r, 'docs/data/NORMALIZATION_LOG.md', `# Normalization\n${NORM('TST-003')}`);
+      sh(r, 'git', ['add', '-A']);
+      sh(r, 'git', ['commit', '-q', '-m', 'feat(TST-003): re-add booking migration']);
+      const out = dm(r, SNAP_BOOKING, [`--base=${base}`]);
+      expect(out.out).toBe('data-model:check: OK\n');
+      expect(out.code).toBe(0);
+    });
     it('infers a migration added by a merge commit by comparing against each parent', () => {
       const r = repo(dmDocs());
       write(r, 'db/migrations/0002_booking.sql', `${HDR}CREATE SCHEMA booking;\n`);
