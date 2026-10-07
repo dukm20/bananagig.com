@@ -2,8 +2,8 @@
 
 Current truth only. History lives in `IMPLEMENTATION_HISTORY.md`; decisions in `docs/architecture/`.
 
-Current checkpoint: CFG-002
-Last completed checkpoint: CFG-002
+Current checkpoint: CI-002
+Last completed checkpoint: CI-002
 Next approved checkpoint: GEO-001 — Countries, Markets, Locale and Currency
 Latest migration: 0006_content_seed_shell_copy.sql
 Latest ADR: ADR-0020
@@ -74,7 +74,7 @@ None to external services. Local-only stand-ins: Mailpit (SMTP sink), Keycloak r
 - No rate limiting on public API endpoints (DEBT-0030)
 - Idempotency records table designed, not built (DEBT-0013)
 - Least-privilege runtime database roles designed, not built (DEBT-0012)
-- CI: green on the remote since CI-001 (run #2, commit 14db38d: verify with governance, and compose-smoke); branch protection requiring it is not configured (DEBT-0001)
+- CI: run #2 (commit 14db38d, CI-001) was fully green; run #3 (CFG-001A and CFG-002) failed in the governance step because CI passes no checkpoint id to `data-model:check`, fixed by CI-002 (the check now infers ids from commit subjects). The `compose-smoke` job has not yet run for the content registry; branch protection requiring CI is not configured (DEBT-0001)
 - Web telemetry: SDK registered; page-level traces and logs not verified in Tempo/Loki (DEBT-0011)
 
 ## Known blockers
@@ -83,4 +83,4 @@ None.
 
 ## Test counts
 
-Unit: 1035 (config 6, contracts 88, observability 2, identity 20, configuration 35, content 725, api 82, worker 10, web 67) plus 61 root script tests (governance 37, identity realm 23, migration files 1). Integration: 236 in 14 files (includes content 80, API content 11, worker content 2, content seed 9, configuration 47, Keycloak 21). Smoke: 29 checks.
+Unit: 1035 (config 6, contracts 88, observability 2, identity 20, configuration 35, content 725, api 82, worker 10, web 67) plus 66 root script tests (governance 42, identity realm 23, migration files 1). Integration: 236 in 14 files (includes content 80, API content 11, worker content 2, content seed 9, configuration 47, Keycloak 21). Smoke: 29 checks.

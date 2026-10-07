@@ -149,6 +149,49 @@ describe('data-model:check', () => {
     expect(out.code).toBe(0);
   });
 
+  it('rejects an explicit --base that does not exist once the repository has commits (it would silently skip the git-diff rules)', () => {
+    const r = repo(dmDocs());
+    const out = dm(r, SNAP_EMPTY, ['--base=0000000000000000000000000000000000000000']);
+    expect(out.code).toBe(1);
+    expect(out.out).toContain('does not exist in this repository');
+    expect(out.out).toContain('git-diff rules would be silently skipped');
+  });
+
+  describe('CI mode (no checkpoint id: it is inferred from the commits since the base)', () => {
+    const committed = (message, withReview = true) => {
+      const r = repo(dmDocs());
+      const base = sh(r, 'git', ['rev-parse', 'HEAD']).trim();
+      write(r, 'db/migrations/0002_booking.sql', `${HDR}CREATE SCHEMA booking;\n`);
+      write(r, 'docs/data/SCHEMA_SNAPSHOT.sql', SNAP_BOOKING);
+      write(r, 'docs/data/DATA_MODEL.md', '# Data model\n\nbooking.reservation\n');
+      write(r, 'docs/data/DATA_DICTIONARY.md', '# Dictionary\n\n### booking.reservation\n\nrows\n');
+      write(r, 'docs/data/DATA_MODEL_CHANGELOG.md', `# Changelog\n${withReview ? CHG('TST-002', '0002_booking.sql') : ''}`);
+      write(r, 'docs/data/NORMALIZATION_LOG.md', `# Normalization\n${withReview ? NORM('TST-002') : ''}`);
+      sh(r, 'git', ['add', '-A']);
+      sh(r, 'git', ['commit', '-q', '-m', message]);
+      return { r, base };
+    };
+    it('infers the id from the subject of the commit that added the migration and accepts a complete review', () => {
+      const { r, base } = committed('feat(TST-002): add booking schema');
+      const out = dm(r, SNAP_BOOKING, [`--base=${base}`]);
+      expect(out.out).toBe('data-model:check: OK\n');
+      expect(out.code).toBe(0);
+    });
+    it('still verifies the inferred checkpoint review entries', () => {
+      const { r, base } = committed('feat(TST-002): add booking schema', false);
+      const out = dm(r, SNAP_BOOKING, [`--base=${base}`]);
+      expect(out.code).toBe(1);
+      expect(out.out).toContain('NORMALIZATION_LOG.md has no "## TST-002" entry');
+      expect(out.out).toContain('DATA_MODEL_CHANGELOG.md has no "## TST-002" entry');
+    });
+    it('rejects a commit that adds a migration without a checkpoint id in its subject', () => {
+      const { r, base } = committed('add booking schema');
+      const out = dm(r, SNAP_BOOKING, [`--base=${base}`]);
+      expect(out.code).toBe(1);
+      expect(out.out).toContain('adds a migration but its subject has no (<ID>) checkpoint');
+    });
+  });
+
   it('requires the ERD to change when a foreign key changes', () => {
     const snapFk = `${SNAP_BOOKING}\nCREATE TABLE booking.item (\n  id uuid NOT NULL,\n  reservation_id uuid NOT NULL,\n  CONSTRAINT item_pkey PRIMARY KEY (id),\n  CONSTRAINT item_fk FOREIGN KEY (reservation_id) REFERENCES booking.reservation(id)\n);\n`;
     const r = repo(
@@ -260,6 +303,11 @@ describe('project-state:check', () => {
     expect(out.code).toBe(1);
     expect(out.out).toContain('IMPLEMENTATION_HISTORY.md has no entry for it');
     expect(out.out).toContain('latest migration');
+  });
+  it('rejects an explicit --base that does not exist once the repository has commits', () => {
+    const out = node(realFiles(), 'project-state-check.mjs', ['--base=0000000000000000000000000000000000000000']);
+    expect(out.code).toBe(1);
+    expect(out.out).toContain('does not exist in this repository');
   });
   it('requires a history entry and PROJECT_STATE update for the finalized checkpoint', () => {
     const r = realFiles();

@@ -558,3 +558,28 @@ Run `pnpm test:integration` alone, or point parallel runs at a private config wi
 
 ### Evidence
 `vitest.integration.config.ts`, `vitest.integration.setup.ts`, `packages/testing/src/index.ts` (`dropStaleTestDatabases`).
+
+## LRN-0023 — The CI governance step runs the git-diff rules with no checkpoint id; run it locally exactly as CI does
+
+Date: 2026-10-06
+Checkpoint: CI-002
+Domain: governance / ci
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/testing/SKILL.md
+
+### Context
+The first CFG-002 push failed CI in the governance step. `data-model:check` runs there with `--base=<previous remote head>` and no checkpoint id, and a schema-changing range requires an id, which CI never had. The rule had never run in CI before: the first CI run had an empty base (baseline mode skips every git-diff rule). It also never ran in my local verification, because I typed a base that did not exist (`14db38d9`), and a base that does not resolve silently selected baseline mode. Moreover `git rev-parse --verify <40 hex>` succeeds even when the object does not exist.
+
+### Learning
+`data-model:check` now infers the checkpoint id or ids from the `<type>(<ID>)` subjects of the commits in `base..HEAD` that added a migration and verifies each id's review entries; a commit that adds a migration without an id in its subject fails. An explicit `--base` that does not resolve to a commit is now an error once the repository has commits (use `<ref>^{commit}` to test existence).
+
+### Why it matters
+A governance check that is skipped looks identical to one that passed, and the first push that changes the schema is exactly when the skipped rule matters.
+
+### Reuse rule
+Before pushing a schema change, run `pnpm data-model:check --base=<full previous remote SHA>` with no id and `pnpm project-state:check --base=...`, and read the output for the "baseline" note, which means the diff rules did not run. Keep the checkpoint id in the subject of every commit that adds a migration.
+
+### Evidence
+`scripts/data-model-check.mjs` (`inferCheckpoints`), `scripts/lib/governance.mjs` (`explicitBaseProblem`), `scripts/governance.test.mjs` ("CI mode" tests and the explicit-base tests), `.github/workflows/ci.yml` (Governance checks step).

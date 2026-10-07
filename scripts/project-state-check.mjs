@@ -3,12 +3,31 @@
 // With a checkpoint id it also requires that checkpoint's knowledge updates (state, history, git-diff rules).
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
-import { Report, adrFiles, changedSince, exists, isGitRepo, isoDate, migrationFiles, p, parseArgs, read, root, sections } from './lib/governance.mjs';
+import {
+  Report,
+  adrFiles,
+  changedSince,
+  exists,
+  explicitBaseProblem,
+  isGitRepo,
+  isoDate,
+  migrationFiles,
+  p,
+  parseArgs,
+  read,
+  root,
+  sections,
+} from './lib/governance.mjs';
 
 const { positional, flag } = parseArgs(process.argv.slice(2));
 const checkpoint = positional[0];
 const base = flag('base') || 'HEAD';
 const r = new Report('project-state:check');
+const badBase = explicitBaseProblem(flag('base'));
+if (badBase) {
+  r.fail(badBase);
+  r.finish();
+}
 
 const FILES = [
   'CLAUDE.md',

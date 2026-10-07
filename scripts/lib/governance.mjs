@@ -17,6 +17,16 @@ export function git(args, { allowFail = false } = {}) {
 }
 export const isGitRepo = () => git(['rev-parse', '--is-inside-work-tree'], { allowFail: true })?.trim() === 'true';
 export const hasHead = () => git(['rev-parse', '--verify', '-q', 'HEAD'], { allowFail: true }) !== null;
+/**
+ * An explicit --base that does not resolve is an error once the repository has commits: otherwise every git-diff rule is silently
+ * skipped (baseline mode is only legitimate before the first commit). Returns a message, or null when the base is fine or not given.
+ */
+export function explicitBaseProblem(baseFlag) {
+  if (!baseFlag || !hasHead() || !isGitRepo()) return null;
+  return git(['rev-parse', '--verify', '-q', `${baseFlag}^{commit}`], { allowFail: true }) === null
+    ? `--base ref "${baseFlag}" does not exist in this repository, so the git-diff rules would be silently skipped; pass an existing commit`
+    : null;
+}
 
 /** Porcelain status entries: [{ code, file }] (untracked listed per file). */
 export function status() {

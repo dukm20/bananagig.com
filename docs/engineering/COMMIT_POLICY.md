@@ -16,6 +16,7 @@ Examples: `chore(INF-001): establish local platform containers` · `feat(ID-002)
 - Commit only after the validation gate passes (`pnpm checkpoint:finalize`). Do not commit unless the user asked for commits in the checkpoint.
 - Never commit `.env`, `.env.host`, secrets, build output or `.checkpoint/`.
 - Never push, force-push, amend unrelated commits or rewrite history from checkpoint tooling. Pushing is a separate, explicit human action.
+- The `(<checkpoint>)` in the subject is load-bearing: CI runs `data-model:check` without an id and infers it from the subject of every commit in the pushed range that adds a migration (and fails if such a commit has no id). Never add a migration in a commit whose subject lacks the checkpoint id.
 - The implementation-history entry cannot contain its own commit hash. Find a checkpoint's commit with `git log --grep "(<ID>)"`.
 
 ## Flow

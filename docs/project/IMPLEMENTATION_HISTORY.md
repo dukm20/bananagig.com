@@ -336,3 +336,37 @@ ADR-0018 (content registry model and the `content` schema), ADR-0019 (restricted
 
 ### Known follow-up
 DEBT-0026 to DEBT-0030 and extensions to DEBT-0022 and DEBT-0024. LRN-0019 to LRN-0022. GEO-001 supplies the market default locale that callers currently pass in the resolution context.
+
+
+## CI-002 — 2026-10-06
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(CI-002)"`.
+Summary: Corrective checkpoint. The first CI run for CFG-001A and CFG-002 (run #3) failed in the `Governance checks` step: CI runs `data-model:check` with the real previous head as base and no checkpoint id, and the check demanded an id because migration 0005 changed the schema. The git-diff rules had never run in CI before (the first run had an empty base) nor locally against a real base. No application behavior, schema or migration changed.
+
+### Delivered
+- `scripts/data-model-check.mjs`: without an id, infers the checkpoint id(s) from the `<type>(<ID>)` subject of every commit in `base..HEAD` that added a migration, verifies each id's normalization and changelog entries (and that the changelog names that commit's migrations), and fails a migration-adding commit whose subject has no id
+- `scripts/lib/governance.mjs`, `data-model-check.mjs`, `project-state-check.mjs`: an explicit `--base` that is not a commit is an error once the repository has commits (it previously selected baseline mode silently); the first-commit flow is unchanged
+- `scripts/governance.test.mjs`: five regression tests (id inference with a complete review, missing review entries, missing id in the subject, unresolvable base for both checks); all five fail against the previous scripts
+- Documentation: `docs/engineering/COMMIT_POLICY.md` (the checkpoint id in commit subjects is load-bearing), `skills/testing` lesson, LRN-0023
+
+### Finding recorded
+The failure was in the CI workflow's use of the check, not in application code: everything before the governance step passed in CI (format, lint, typecheck, unit tests, specs, build, integration tests, audit). `compose-smoke` was skipped because it depends on `verify`.
+
+### Schema
+None. No migration. Data model: NOT_REQUIRED.
+
+### Contracts
+None.
+
+### Tests
+Unit 1035, root script tests 66 (governance 42, identity realm 23, migration files 1), integration 236, smoke 29 checks (unchanged except the governance suite).
+
+### Skills updated
+`skills/testing` (one lesson bullet).
+
+### ADRs
+None required.
+
+### Known follow-up
+`compose-smoke` (including Trivy) has not yet run for the content registry; it runs after `verify` passes on the next push.

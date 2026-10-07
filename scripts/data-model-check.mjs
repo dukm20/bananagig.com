@@ -1,15 +1,21 @@
 // Data-model review gate. Fails when schema documentation is stale or a schema-changing checkpoint skipped its review.
 //   node scripts/data-model-check.mjs [<CHECKPOINT_ID>] [--base=<git ref>] [--snapshot=<file>]
 // --snapshot supplies a pre-generated snapshot (tests/CI); otherwise one is generated from db/migrations in a scratch database.
+// Without a checkpoint id (CI) the id(s) are inferred from the `<type>(<ID>): ...` subject of every commit in <base>..HEAD that added a migration.
 import { readFileSync } from 'node:fs';
 import { snapshotFromMigrations, SNAPSHOT_PATH } from './schema-snapshot.mjs';
 import { loadMigrations } from './lib/migrator.mjs';
-import { Report, changedSince, exists, isGitRepo, p, parseArgs, read, run, sections, showAt } from './lib/governance.mjs';
+import { Report, changedSince, exists, explicitBaseProblem, git, isGitRepo, p, parseArgs, read, run, sections, showAt } from './lib/governance.mjs';
 
 const { positional, flag } = parseArgs(process.argv.slice(2));
 const checkpoint = positional[0];
 const base = flag('base') || 'HEAD';
 const r = new Report('data-model:check');
+const badBase = explicitBaseProblem(flag('base'));
+if (badBase) {
+  r.fail(badBase);
+  r.finish();
+}
 
 const REQUIRED_DOCS = [
   'docs/data/DATA_MODEL.md',
@@ -66,17 +72,43 @@ if (!baselineMode) {
       .join('\n');
   fkChanged = fks(prev) !== fks(generated);
 }
+/**
+ * Checkpoints responsible for the schema change when no id was passed (CI): the `<type>(<ID>)` subject of each commit in
+ * <base>..HEAD that ADDED a migration, with the migrations that commit added. A commit that adds a migration without an id fails.
+ */
+function inferCheckpoints() {
+  const log = git(['log', '--format=%H%x09%s', `${base}..HEAD`, '--', 'db/migrations'], { allowFail: true }) ?? '';
+  const byId = new Map();
+  for (const line of log.split('\n').filter(Boolean)) {
+    const [hash, subject = ''] = line.split('\t');
+    const added = (git(['diff-tree', '--no-commit-id', '--name-only', '--diff-filter=A', '-r', hash, '--', 'db/migrations'], { allowFail: true }) ?? '')
+      .split('\n')
+      .filter(Boolean)
+      .map((f) => f.split('/').pop());
+    if (!added.length) continue;
+    const id = subject.match(/^[a-z]+\(([A-Z][A-Z0-9]*-\d{3}[A-Z]?)\)/)?.[1];
+    if (!id) {
+      r.fail(`commit ${hash.slice(0, 7)} adds a migration but its subject has no (<ID>) checkpoint: "${subject}"`);
+      continue;
+    }
+    byId.set(id, [...(byId.get(id) ?? []), ...added]);
+  }
+  return [...byId].map(([id, migrations]) => ({ id, migrations }));
+}
+
 if (schemaChanged) {
-  if (!checkpoint) r.fail('schema changed: pass the checkpoint id (pnpm data-model:check <ID>) so the review entries can be verified');
+  const targets = checkpoint ? [{ id: checkpoint, migrations: newMigrations }] : inferCheckpoints();
+  if (!targets.length && !r.errors.length)
+    r.fail('schema changed: pass the checkpoint id (pnpm data-model:check <ID>); none could be inferred from the commits since the base');
   const touched = (f) => changes.has(f);
   if (!newMigrations.length) r.fail('schema snapshot changed but no new migration was added');
   for (const f of ['docs/data/DATA_MODEL.md', 'docs/data/DATA_MODEL_CHANGELOG.md', 'docs/data/DATA_DICTIONARY.md', 'docs/data/NORMALIZATION_LOG.md']) {
     if (!touched(f)) r.fail(`schema changed but ${f} was not updated`);
   }
   if (fkChanged && !touched('docs/data/ERD.md')) r.fail('relationships (foreign keys) changed but docs/data/ERD.md was not updated');
-  if (checkpoint) {
-    const norm = sections(read('docs/data/NORMALIZATION_LOG.md'), 2).find((s) => s.title.startsWith(checkpoint));
-    if (!norm) r.fail(`NORMALIZATION_LOG.md has no "## ${checkpoint}" entry`);
+  for (const { id, migrations } of targets) {
+    const norm = sections(read('docs/data/NORMALIZATION_LOG.md'), 2).find((s) => s.title.startsWith(id));
+    if (!norm) r.fail(`NORMALIZATION_LOG.md has no "## ${id}" entry`);
     else {
       for (const h of [
         'Tables reviewed:',
@@ -90,11 +122,11 @@ if (schemaChanged) {
         '### Index review',
         '### Final decision',
       ]) {
-        if (!norm.body.includes(h)) r.fail(`NORMALIZATION_LOG.md "${checkpoint}" entry is missing "${h}"`);
+        if (!norm.body.includes(h)) r.fail(`NORMALIZATION_LOG.md "${id}" entry is missing "${h}"`);
       }
     }
-    const log = sections(read('docs/data/DATA_MODEL_CHANGELOG.md'), 2).find((s) => s.title.startsWith(checkpoint));
-    if (!log) r.fail(`DATA_MODEL_CHANGELOG.md has no "## ${checkpoint}" entry`);
+    const log = sections(read('docs/data/DATA_MODEL_CHANGELOG.md'), 2).find((s) => s.title.startsWith(id));
+    if (!log) r.fail(`DATA_MODEL_CHANGELOG.md has no "## ${id}" entry`);
     else
       for (const h of [
         'Migration:',
@@ -110,8 +142,8 @@ if (schemaChanged) {
         'Rollback:',
         'Reason:',
       ])
-        if (!log.body.includes(h)) r.fail(`DATA_MODEL_CHANGELOG.md "${checkpoint}" entry is missing "${h}"`);
-    for (const m of newMigrations) if (log && !log.body.includes(m)) r.fail(`DATA_MODEL_CHANGELOG.md "${checkpoint}" entry does not name migration ${m}`);
+        if (!log.body.includes(h)) r.fail(`DATA_MODEL_CHANGELOG.md "${id}" entry is missing "${h}"`);
+    for (const m of migrations) if (log && !log.body.includes(m)) r.fail(`DATA_MODEL_CHANGELOG.md "${id}" entry does not name migration ${m}`);
   }
 } else if (!baselineMode) {
   r.note('schema unchanged: no data-model documentation changes required');
