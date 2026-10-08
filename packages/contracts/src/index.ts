@@ -114,3 +114,4 @@ export * from './geography';
 export * from './address';
 export * from './integer';
 export * from './account';
+export * from './email';

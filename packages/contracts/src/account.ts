@@ -3,6 +3,7 @@
 // an authenticated Keycloak identity is mapped to. Nothing here carries a credential, a token, a Keycloak subject or a contact detail.
 import { z } from 'zod';
 import { Locale } from './content';
+import { AccountEmailSummaryDto, EMAIL_ERROR_CODES } from './email';
 import { envelope } from './envelope';
 import { IanaTimeZone } from './geography';
 import { containsForbiddenText } from './text';
@@ -126,6 +127,8 @@ export const AccountDto = z.object({
   /** The role this request acts as: the one the request named (validated), else the primary role, else the only role, else null. */
   activeRole: z.string().nullable(),
   profile: AccountProfileDto.nullable(),
+  /** Email contact state (ID-002): the verification status application services read, with the address MASKED. */
+  email: AccountEmailSummaryDto,
   createdAt: z.string(),
 });
 export type AccountDto = z.infer<typeof AccountDto>;
@@ -175,5 +178,6 @@ export const ACCOUNT_ERROR_CODES = [
   'CONFLICT',
   'INVALID_STATE',
   'UNAVAILABLE',
+  ...EMAIL_ERROR_CODES,
 ] as const;
 export type AccountErrorCode = (typeof ACCOUNT_ERROR_CODES)[number];

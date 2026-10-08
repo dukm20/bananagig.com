@@ -4,26 +4,34 @@ import {
   API_PREFIX,
   CORRELATION_HEADER,
   ErrorResponse,
+  AccountEmailResponse,
   AccountResponse,
   AddressFormatResponse,
   AddressValidationResponse,
   AdministrativeAreaListResponse,
+  EmailVerificationSentResponse,
+  EmailVerifiedResponse,
   FormatAddressResponse,
   LocaleListResponse,
   ResolveContentResponse,
   ResolveManyContentResponse,
+  SetEmailResponse,
   SystemInfoResponse,
   WhoAmIResponse,
   type AccountDto,
+  type AccountEmailDetailDto,
   type AddressFormatDto,
   type AddressInput,
   type AddressValidationResultDto,
   type AdministrativeAreaListDto,
   type ContentContext,
+  type EmailVerificationSentDto,
+  type EmailVerifiedDto,
   type FormattedAddressDto,
   type LocaleDto,
   type NormalizedAddressDto,
   type ResolvedContentDto,
+  type SetEmailResultDto,
   type SystemInfo,
   type UpdateProfileRequest,
   type WhoAmI,
@@ -73,6 +81,11 @@ export interface ResolveManyContentInput {
 /** Options of the account calls: the application role this request acts as (the session's active role). The API validates it on every request. */
 export interface AccountCallOptions {
   activeRole?: string;
+  /**
+   * The browser's address as seen by the web server (the first entry of the proxy's x-forwarded-for). Forwarded as x-forwarded-for so the API's abuse
+   * limits count real clients and not the web server itself. Only the email verification calls use it.
+   */
+  clientIp?: string;
 }
 
 /** Options of the central address formatter. */
@@ -132,6 +145,7 @@ export function createApiClient(opts: ApiClientOptions) {
     return { data, correlationId };
   }
   const roleHeader = (o: AccountCallOptions): Record<string, string> => (o.activeRole ? { [ACTIVE_ROLE_HEADER]: o.activeRole } : {});
+  const emailHeaders = (o: AccountCallOptions): Record<string, string> => ({ ...roleHeader(o), ...(o.clientIp ? { 'x-forwarded-for': o.clientIp } : {}) });
   return {
     /** GET /api/v1/system/whoami (requires an access token) */
     async getWhoAmI(): Promise<WhoAmI> {
@@ -154,6 +168,42 @@ export function createApiClient(opts: ApiClientOptions) {
     /** PUT /api/v1/account/profile: replaces the caller's own core profile (names, optional locale and time zone). Invalid names are an ApiError (400) with issue codes and message keys. */
     async updateProfile(input: UpdateProfileRequest, o: AccountCallOptions = {}): Promise<AccountDto> {
       return (await request('/account/profile', (j) => AccountResponse.parse(j).data, input, { method: 'PUT', headers: roleHeader(o) })).data;
+    },
+    /** GET /api/v1/account/email: the caller's email verification state (addresses masked), resend countdown, attempts left and the code length. */
+    async getAccountEmail(o: AccountCallOptions = {}): Promise<AccountEmailDetailDto> {
+      return (await request('/account/email', (j) => AccountEmailResponse.parse(j).data, undefined, { headers: emailHeaders(o) })).data;
+    },
+    /** POST /api/v1/account/email: sets the address to verify (first address or a pending replacement). Sends nothing. */
+    async setAccountEmail(email: string, o: AccountCallOptions = {}): Promise<SetEmailResultDto> {
+      return (await request('/account/email', (j) => SetEmailResponse.parse(j).data, { email }, { method: 'POST', headers: emailHeaders(o) })).data;
+    },
+    /** POST /api/v1/account/email/verification/send: sends (or resends) the verification email. Cooldown and caps are ApiErrors (429). */
+    async sendEmailVerification(o: AccountCallOptions = {}): Promise<EmailVerificationSentDto> {
+      return (
+        await request('/account/email/verification/send', (j) => EmailVerificationSentResponse.parse(j).data, {}, { method: 'POST', headers: emailHeaders(o) })
+      ).data;
+    },
+    /** POST /api/v1/account/email/verification/confirm-code: confirms with the emailed code. A wrong code is an ApiError (400) with attemptsRemaining. */
+    async confirmEmailCode(code: string, o: AccountCallOptions = {}): Promise<EmailVerifiedDto> {
+      return (
+        await request(
+          '/account/email/verification/confirm-code',
+          (j) => EmailVerifiedResponse.parse(j).data,
+          { code },
+          { method: 'POST', headers: emailHeaders(o) },
+        )
+      ).data;
+    },
+    /** POST /api/v1/account/email/verification/confirm-link: confirms with the magic-link token (sent in the body, never in a URL). */
+    async confirmEmailLink(token: string, o: AccountCallOptions = {}): Promise<EmailVerifiedDto> {
+      return (
+        await request(
+          '/account/email/verification/confirm-link',
+          (j) => EmailVerifiedResponse.parse(j).data,
+          { token },
+          { method: 'POST', headers: emailHeaders(o) },
+        )
+      ).data;
     },
     /** GET /api/v1/system/info */
     async getSystemInfo(): Promise<SystemInfo> {

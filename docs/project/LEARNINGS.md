@@ -909,3 +909,53 @@ Before a commit: `python3 -I -c` over `git ls-files` plus untracked files, flag 
 
 ### Evidence
 Migration `0009_identity_accounts.sql` (CHECKs `ck_account_profiles__first_name` and `__last_name` use escapes), `packages/geography/src/address-engine.ts` (`INVISIBLE`), the three older test files above (candidates to convert).
+
+## LRN-0037 — A failed attempt that must be remembered cannot throw inside its transaction
+
+Date: 2026-10-07
+Checkpoint: ID-002
+Domain: database / identity
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0028
+Related skill: skills/identity/SKILL.md
+
+### Context
+Wrong verification codes must be counted and the challenge locked at the maximum, atomically and under concurrency. The natural code throws "wrong code" from inside the service transaction, which rolls back the very `attempt_count` increment it just made, so an attacker would get unlimited guesses.
+
+### Learning
+When a failure has to leave a durable trace (an attempt counter, a lock, an audit row), the transaction must RETURN an outcome (`WRONG`, `LOCKED`, `FAIL`) and commit, and the caller throws after the commit. Take the row lock first (`FOR UPDATE` on the account, then the challenge) so concurrent attempts are counted one after the other, and make the lock part of the same update (`CASE WHEN attempt_count + 1 >= max`).
+
+### Why it matters
+The unit test with a mocked database passes while the real behaviour is "no limit". Only a concurrent integration test (N parallel wrong codes ending at exactly the maximum) and a check that the count survived the failed call show it.
+
+### Reuse rule
+Any "count and reject" flow (attempts, lockouts, quota use): outcome-returning transaction, throw after commit, concurrent test that asserts the persisted count.
+
+### Evidence
+`packages/accounts/src/email-verification.ts` (`confirmCode`, `AttemptOutcome`, `settle`), `packages/accounts/src/email-verification.itest.ts` (attempt race, count persisted after the failed call).
+
+## LRN-0038 — A one-time secret in a URL query is a logged secret; use the fragment and never let a GET change state
+
+Date: 2026-10-07
+Checkpoint: ID-002
+Domain: web / security / observability
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0028
+Related skill: skills/web/SKILL.md
+
+### Context
+The first design put the magic-link token in `?token=`. The Node HTTP instrumentation records the query on spans, proxies and servers log request URLs, the Referer header carries the page address, and a login redirect stores the return URL server-side. Mail scanners and link previewers also open links with GET, so a GET that verifies would verify addresses nobody confirmed.
+
+### Learning
+Put one-time tokens in the URL fragment (`/verify-email#token=...`, never sent to any server), read and remove them in a client component, show a confirm button, and POST the token in a body to the API. Do not carry the token through the login redirect (the fragment is dropped, deliberately): a signed-out visitor signs in and opens the link again. Hash the secret at rest with a KEYED hash (HMAC); a plain SHA-256 of a 6-digit code can be reversed from a leaked table in a millisecond.
+
+### Why it matters
+A logged or traced token is a credential in the observability stack, which has a different audience and retention than the database.
+
+### Reuse rule
+Any emailed or shared one-time link: fragment for the secret, POST to act, keyed hash at rest, a smoke check that searches Loki for the secret after the flow.
+
+### Evidence
+`apps/web/src/app/verify-email/link-confirm.tsx`, `apps/api/src/modules/account/email-wiring.ts` (`createVerificationLinkBuilder`), `apps/smoke/src/index.ts` (check `Email verification`, Loki absence queries), `packages/accounts/src/email-crypto.ts`.

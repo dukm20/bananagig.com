@@ -6,7 +6,7 @@ import { createIsolatedDatabase, rejection, sleep, type IsolatedDatabase } from 
 // Migration 0009 creates the identity schema (roles, accounts, account_roles, external_identities, account_status_history, account_profiles,
 // account_audit_events), their guard triggers and the deferred status-history trigger, and seeds the two roles and 17 content entries. These tests drive the
 // REAL tables with raw SQL: the seeded state from zero, every CHECK/UNIQUE/FK/PK by constraint name, every guard rule (SQLSTATE 23000, DETAIL
-// identity_rule:<KEY>), the deferred trigger at COMMIT, and the shape of the schema (no credentials, contacts, addresses or country-specific columns).
+// identity_rule:<KEY>), the deferred trigger at COMMIT, and the shape of the schema (no credentials, no plaintext secret, one canonical email column from 0010, no addresses or country-specific columns).
 // Service behaviour is covered in packages/accounts (accounts.itest.ts).
 let iso: IsolatedDatabase;
 let pool: pg.Pool;
@@ -211,10 +211,16 @@ const SEEDED_COPY: [key: string, body: string][] = [
   ['account.error.suspended', 'This account is suspended.'],
   ['account.error.closed', 'This account is closed.'],
 ];
-const TABLES = ['account_audit_events', 'account_profiles', 'account_roles', 'account_status_history', 'accounts', 'external_identities', 'roles'].sort();
+// The seven tables of migration 0009 and the two of 0010 (email_contacts, email_verification_challenges). The email model is tested in email-model.itest.ts;
+// the schema-wide scans below only account for its tables and columns by name.
+const TABLES_0009 = ['account_audit_events', 'account_profiles', 'account_roles', 'account_status_history', 'accounts', 'external_identities', 'roles'].sort();
+const EMAIL_TABLES_0010 = ['email_contacts', 'email_verification_challenges'];
+const TABLES = [...TABLES_0009, ...EMAIL_TABLES_0010].sort();
+// The constraints 0010 adds to a 0009 table (the audit trail): covered by email-model.itest.ts, not here.
+const EMAIL_AUDIT_CONSTRAINTS_0010 = ['ck_account_audit_events__email_contact', 'fk_account_audit_events__account_email_contact'];
 
 describe('migration 0009 from zero', () => {
-  it('creates exactly the seven identity tables and nothing else that stores data', async () => {
+  it('creates exactly the nine identity tables (seven from 0009, two from 0010) and nothing else that stores data', async () => {
     const tables = await q<{ table_name: string; table_type: string }>(
       "SELECT table_name, table_type FROM information_schema.tables WHERE table_schema = 'identity'",
     );
@@ -566,12 +572,17 @@ describe('table constraints reject bad data, by constraint name', () => {
     expect(await constraintOf(attempt())).toBe(constraint);
   });
 
-  it('covers every primary key, unique, foreign key and check constraint of the identity schema (and names no constraint that does not exist)', async () => {
-    const catalog = await q<{ conname: string }>(
-      `SELECT c.conname FROM pg_constraint c JOIN pg_namespace n ON n.oid = c.connamespace WHERE n.nspname = 'identity' AND c.contype IN ('p', 'u', 'f', 'c')`,
+  it('covers every primary key, unique, foreign key and check constraint of the 0009 identity tables (and names no constraint that does not exist)', async () => {
+    const all = await q<{ conname: string; relname: string }>(
+      `SELECT c.conname, t.relname FROM pg_constraint c JOIN pg_namespace n ON n.oid = c.connamespace JOIN pg_class t ON t.oid = c.conrelid
+        WHERE n.nspname = 'identity' AND c.contype IN ('p', 'u', 'f', 'c')`,
     );
+    // the email model (0010) has its own constraint tests: its two tables and the two audit constraints it added are accounted for by name
+    const catalog = all.filter((r) => !EMAIL_TABLES_0010.includes(r.relname) && !EMAIL_AUDIT_CONSTRAINTS_0010.includes(r.conname));
     expect(catalog.length).toBe(44);
     expect([...new Set(CONSTRAINT_CASES.map((c) => c.constraint))].sort()).toEqual(catalog.map((r) => r.conname).sort());
+    expect(all.length - catalog.length).toBe(26);
+    expect(all.filter((r) => EMAIL_AUDIT_CONSTRAINTS_0010.includes(r.conname)).map((r) => r.relname)).toEqual(['account_audit_events', 'account_audit_events']);
   });
 
   it('accepts the boundary values the checks allow (names of 1 and 50 characters, 50 emoji, locale and time zone by reference, 200-character actors)', async () => {
@@ -1435,18 +1446,59 @@ describe('guards under concurrency (two real transactions)', () => {
 
 // ====================================================================== shape of the schema
 const EXPECTED_COLUMNS: Record<string, string[]> = {
-  account_audit_events: ['audit_event_id', 'occurred_at', 'actor', 'action', 'account_id', 'role_id', 'changes', 'reason', 'correlation_id'],
+  account_audit_events: [
+    'audit_event_id',
+    'occurred_at',
+    'actor',
+    'action',
+    'account_id',
+    'role_id',
+    'changes',
+    'reason',
+    'correlation_id',
+    'email_contact_id',
+  ],
   account_profiles: ['account_id', 'first_name', 'last_name', 'preferred_locale', 'time_zone_id', 'created_at', 'updated_at'],
   account_roles: ['account_id', 'role_id', 'status', 'granted_at', 'activated_at', 'deactivated_at', 'granted_by', 'grant_source', 'updated_at'],
   account_status_history: ['status_history_id', 'history_seq', 'account_id', 'from_status', 'to_status', 'reason', 'actor', 'occurred_at', 'correlation_id'],
   accounts: ['account_id', 'status', 'primary_role_id', 'created_at', 'updated_at', 'closed_at'],
+  email_contacts: [
+    'email_contact_id',
+    'account_id',
+    'email_normalized',
+    'status',
+    'is_primary',
+    'source',
+    'verified_at',
+    'disabled_at',
+    'disabled_reason',
+    'created_at',
+    'updated_at',
+  ],
+  email_verification_challenges: [
+    'challenge_id',
+    'email_contact_id',
+    'purpose',
+    'code_hash',
+    'magic_token_hash',
+    'expires_at',
+    'used_at',
+    'consumed_via',
+    'attempt_count',
+    'invalidated_at',
+    'invalidation_reason',
+    'delivery_status',
+    'last_sent_at',
+    'created_at',
+    'correlation_id',
+  ],
   external_identities: ['external_identity_id', 'account_id', 'provider_type', 'issuer', 'provider_subject', 'created_at', 'last_seen_at'],
   roles: ['role_id', 'code', 'name_content_key', 'status', 'created_at', 'updated_at'],
 };
 const schemaColumns = async (): Promise<{ table_name: string; column_name: string; data_type: string }[]> =>
   q("SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = 'identity' ORDER BY table_name, ordinal_position");
 
-describe('schema shape: Keycloak owns credentials, contacts and addresses are later checkpoints, nothing is country-specific', () => {
+describe('schema shape: Keycloak owns credentials, the email model (0010) stores only HMAC hashes and one canonical address, nothing is country-specific', () => {
   it('has exactly the documented columns on every table', async () => {
     const byTable: Record<string, string[]> = {};
     for (const c of await schemaColumns()) (byTable[c.table_name] ??= []).push(c.column_name);
@@ -1457,12 +1509,24 @@ describe('schema shape: Keycloak owns credentials, contacts and addresses are la
     const forbidden =
       /(credential|passw|secret|token|mfa|otp|totp|session|cookie|jwt|api_?key|private_?key|hash|salt|email|phone|mobile|address|street|city|postal|zip)/i;
     const offenders = (await schemaColumns()).filter((c) => forbidden.test(c.column_name)).map((c) => `${c.table_name}.${c.column_name}`);
-    expect(offenders).toEqual([]);
+    // The ONLY exceptions, all introduced by migration 0010 and tested in email-model.itest.ts: the two HMAC hash columns of a verification challenge (never a
+    // plaintext code or token), the one canonical address column, and the email_contact_id keys and references (identifiers, not addresses). Nothing else may match.
+    const EMAIL_MODEL_EXCEPTIONS = [
+      'account_audit_events.email_contact_id',
+      'email_contacts.email_contact_id',
+      'email_contacts.email_normalized',
+      'email_verification_challenges.code_hash',
+      'email_verification_challenges.email_contact_id',
+      'email_verification_challenges.magic_token_hash',
+    ];
+    expect(offenders.sort()).toEqual(EMAIL_MODEL_EXCEPTIONS);
   });
 
-  it('has no column typed like a stored secret or contact (only uuid, text, timestamptz, bigint and jsonb)', async () => {
-    const types = [...new Set((await schemaColumns()).map((c) => c.data_type))].sort();
-    expect(types).toEqual(['bigint', 'jsonb', 'text', 'timestamp with time zone', 'uuid']);
+  it('has no column typed like a stored secret or contact (only uuid, text, timestamptz, bigint and jsonb on the 0009 tables; the email tables add boolean and integer and nothing binary or JSON)', async () => {
+    const columns = await schemaColumns();
+    const typesOf = (tables: string[]) => [...new Set(columns.filter((c) => tables.includes(c.table_name)).map((c) => c.data_type))].sort();
+    expect(typesOf(TABLES_0009)).toEqual(['bigint', 'jsonb', 'text', 'timestamp with time zone', 'uuid']);
+    expect(typesOf(EMAIL_TABLES_0010)).toEqual(['boolean', 'integer', 'text', 'timestamp with time zone', 'uuid']);
   });
 
   it('has no country-, currency- or US-specific column (and no column holds a state, ZIP, SSN or dialing code)', async () => {
@@ -1476,7 +1540,7 @@ describe('schema shape: Keycloak owns credentials, contacts and addresses are la
     expect(holders).toEqual(['external_identities.provider_subject']);
   });
 
-  it('documents the personal-data tables in the catalog (table comments exist for all seven tables)', async () => {
+  it('documents the personal-data tables in the catalog (table comments exist for all nine tables)', async () => {
     const rows = await q<{ relname: string; comment: string | null }>(
       "SELECT c.relname, obj_description(c.oid, 'pg_class') AS comment FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'identity' AND c.relkind = 'r'",
     );

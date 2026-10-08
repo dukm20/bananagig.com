@@ -195,7 +195,7 @@ Description: Email verification, phone verification and account recovery are dis
 Why deferred: They are business flows with their own contracts and need a delivery provider; INF-004 is infrastructure only.
 Exit criteria: Verified-email and recovery flows implemented with configured SMTP (Mailpit locally), recovery codes and tests. ID-001 persists no email or phone: contact channels and their verification state belong to ID-002 and ID-003.
 Target checkpoint: ID-001 and following identity checkpoints
-
+ID-002 note: email verification (the BananaGig email contact, code and magic link, Mailpit) is implemented without Keycloak SMTP; the realm still has `verifyEmail` and `resetPasswordAllowed` off. Recovery through email (password reset link, recovery codes), SMS and phone verification remain open (ID-003 for phone).
 
 ## DEBT-0018 — WebAuthn and web step-up authentication deferred
 
@@ -343,6 +343,7 @@ Description: The API has no rate limiting, request-cost budgets or abuse control
 Why deferred: Rate limiting belongs at the edge or in a shared plugin and needs a policy (limits per client, per route class, behind which proxy headers); that is a platform decision, not content logic.
 Exit criteria: A documented rate-limit policy enforced at Caddy or by an API plugin (with trusted client IP handling), tests, and per-route classes (public read, authenticated read, admin write).
 Target checkpoint: before the first public customer screen goes live
+ID-002 note: the reusable facility now exists (`RateLimiter`, `ValkeyRateLimiter`, ADR-0029, `docs/engineering/RATE_LIMITING.md`) and protects the email verification endpoints, but it is NOT applied to the public address or content endpoints, so this item stays OPEN. `docs/engineering/RATE_LIMITING.md` lists the steps to close it; the client address must be trustworthy first (DEBT-0055).
 
 ## DEBT-0031 — Only the US reference dataset exists; no management API or bulk import for currencies, time zones and locale activation
 
@@ -489,6 +490,7 @@ Why deferred: Outside the GEO-002A scope (path and query identifiers); adding `s
 Exit criteria: `strictBody(<schema>)` after the authorization hook on every configuration and content route with a body (or a body validator with coercion off), with tests that `"1e3"`, `"0x10"` and `"true"` are rejected with the standard envelope, and a start-up guard like `enforceStrictIntegerParams` for body schemas.
 Target checkpoint: next change to the configuration or content API, or before a public (non-admin) write endpoint is added
 ID-001 decision (option B): the new account bodies (`POST /account/active-role`, `PUT /account/profile`) validate the RAW body with `strictBody` before Ajv, `GET /account/me` rejects unknown query parameters, and regression tests prove `{"role":1}`, `{"role":true}`, extra properties and a body or query `accountId` are rejected. The configuration and content routes are unchanged, so this debt stays OPEN.
+ID-002 decision (option B again): the five email routes validate the RAW body with `strictBody` before Ajv (no coercion of the code, the token or the address), with regression tests; the older configuration and content routes are unchanged, so this item stays OPEN.
 
 ## DEBT-0044 — Initial application roles are seeded from the Keycloak realm roles of the first token
 
@@ -545,3 +547,112 @@ Why deferred: The account area (SV-11) and provider sign-up (PR-01) are later ch
 Exit criteria: The account area with a roles section and switcher, an endpoint or screen for the preferred role if the product wants one, and provider sign-up adding PROVIDER to an existing account.
 Target checkpoint: the account area checkpoints (CU-09, PR-09) and PR-01
 
+## DEBT-0049 — No production email provider; the delivery adapter is SMTP only
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: ID-002
+Owner/domain: platform / identity
+Description: `EmailSender` is a provider-neutral port with one adapter, `SmtpEmailSender`, used with Mailpit locally and in CI (or any SMTP relay with STARTTLS). No production provider (SES, Postmark, SendGrid, ...) is selected; there is no SPF, DKIM or DMARC setup, no bounce or complaint handling, no delivery webhooks and no per-provider rate budget (SV-03.03 asks to re-verify after a bounce).
+Why deferred: the vendor is a commercial decision; the port keeps the identity domain free of it.
+Exit criteria: a selected provider behind `EmailSender` (or SMTP credentials for a relay) with SPF, DKIM and DMARC, bounce and complaint events that mark a contact for re-verification, and an environment-specific sender address.
+Target checkpoint: before the first production sign-up
+
+## DEBT-0050 — Email change has no step-up, no old-address notice and no account screens
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: ID-002
+Owner/domain: identity / web
+Description: The data model and lifecycle of a change are complete (the verified primary stays active until the replacement verifies), but CU-09.14 and CU-09.15 also require fresh two-factor authentication before the change and a notice to the old address, and there is no account or profile screen to start a change (the `/verify-email` page only verifies; it offers the change form while an address is pending). The magic link needs JavaScript in the browser and a signed-out visitor must sign in and open the link again (the token is deliberately never stored).
+Why deferred: step-up needs the 2FA checkpoints; the notice needs a notification template and trigger; the account area is CU-09.
+Exit criteria: a step-up check before `POST /account/email` for a verified account, an old-address notice email on `EmailVerified` with a replacement, and the account email screens.
+Target checkpoint: the account security checkpoints (CU-09.13 to CU-09.15)
+
+## DEBT-0051 — No recovery for an address that is verified on another account
+
+Status: OPEN
+Severity: LOW
+Introduced by: ID-002
+Owner/domain: identity / support
+Description: A verified address belongs to exactly one account and there is no takeover or transfer (ADR-0027). A person who lost access to the account that holds their address, or whose address was verified by someone else after the mailbox changed hands, gets `ACCOUNT_EMAIL_UNAVAILABLE` with no self-service way out. There is no release flow and no admin tool.
+Why deferred: it needs an identity-proofing process and admin tooling (support identity checks, SV-03 recovery).
+Exit criteria: a documented support procedure and an admin action that releases a verified address with a reason, audit and notice.
+Target checkpoint: the admin account tooling (AD-07) and the recovery checkpoint
+
+## DEBT-0052 — The verification email is plain managed copy without a branded layout
+
+Status: OPEN
+Severity: LOW
+Introduced by: ID-002
+Owner/domain: content / platform
+Description: The email body is managed Markdown-subset content rendered to sanitized HTML, with a plain-text alternative derived from it. There is no branded layout (logo, header, footer, legal address), no per-locale templates beyond `en-US`, and no email preview or test-send tooling for content editors.
+Why deferred: branding and the layout system are design work; the registry already supports editing the wording.
+Exit criteria: a shared email layout, a locale set, and a preview in the content tooling.
+Target checkpoint: the notification checkpoints
+
+## DEBT-0053 — Brokered social login is not configured; the trusted-provider email rule is not wired
+
+Status: OPEN
+Severity: LOW
+Introduced by: ID-002
+Owner/domain: identity
+Description: `decideIdpEmail` and `EmailVerificationService.bootstrapIdpEmail` implement and test the rule that an address a TRUSTED provider reports verified becomes a VERIFIED contact (PRD: Apple and Google emails, including Apple private relay addresses). Nothing calls it: no social identity provider is brokered in Keycloak, access tokens carry no email claim, and the set of trusted provider aliases is not configured anywhere.
+Why deferred: social sign-in is a sign-up checkpoint (CU-03); claim minimization keeps the email out of tokens.
+Exit criteria: Keycloak brokering for Google and Apple, a way to obtain the provider's `email` and `email_verified` for the first login without adding them to API tokens, the trusted alias list as deployment configuration, and the call in the sign-up flow with tests.
+Target checkpoint: the customer sign-up checkpoint (CU-03)
+
+## DEBT-0054 — Bot protection, device dimension and re-verification are not implemented
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: ID-002
+Owner/domain: identity / security
+Description: SV-03.04 asks for bot protection on code requests, rate limits by device, and SV-03.03 for re-verification after a period, a risk signal or a bounce. ID-002 limits by account, source address and target address; the limiter accepts a device dimension but no device identifier exists; there is no CAPTCHA or proof-of-work; there is no `verification.reverify_after_days` behaviour.
+Why deferred: the device identifier, the risk signals (SV-09.03) and the bot-protection vendor do not exist yet.
+Exit criteria: a device or session identifier passed to the service, bot protection on the send operation, and re-verification with the configured period.
+Target checkpoint: the sign-up hardening and risk checkpoints
+
+## DEBT-0055 — The API trusts a client-supplied X-Forwarded-For
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: INF-002 (surfaced by ID-002)
+Owner/domain: api / infrastructure
+Description: Fastify runs with `trustProxy: true`, so `request.ip` is the first address of `X-Forwarded-For`, which a client can set. The email verification limits count `request.ip` (hashed) as one dimension; an attacker who sets the header gets a new bucket per request. The account and address dimensions and the PostgreSQL limits are not affected.
+Why deferred: the number of proxy hops depends on the deployment topology (Caddy only locally).
+Exit criteria: `trustProxy` set to the exact hop count (or a CIDR list) per environment, the web server forwarding the real client address, and a test that a spoofed header does not create a new bucket. Required before DEBT-0030 relies on the IP dimension.
+Target checkpoint: with DEBT-0030, before the first public customer screen goes live
+
+## DEBT-0056 — No admin view of the verification timeline and attempts
+
+Status: OPEN
+Severity: LOW
+Introduced by: ID-002
+Owner/domain: admin / identity
+Description: CU-09.04 expects admins to see verification status, timestamps and attempts in the console, with addresses masked except for roles with explicit permission (SV-03.05). The data exists (contacts, challenges, audit rows) but no admin API or screen reads it.
+Why deferred: the admin console and application RBAC are later checkpoints (DEBT-0046, DEBT-0021).
+Exit criteria: an admin read model of the contact timeline with masked addresses and a permission to reveal.
+Target checkpoint: AD-07
+
+## DEBT-0057 — Verification challenges and disabled contacts are never purged
+
+Status: OPEN
+Severity: LOW
+Introduced by: ID-002
+Owner/domain: identity / privacy
+Description: Challenge rows (one per send) and DISABLED contact rows are never deleted or anonymized; expired challenges stay. They hold personal data (the canonical address on contacts) and hashes. There is no retention period or purge job.
+Why deferred: retention and erasure are decided with DEBT-0036 and DEBT-0045.
+Exit criteria: a retention period per table, a purge or anonymization job that keeps what the audit needs, and the erasure procedure for the contact data.
+Target checkpoint: the account closure and privacy checkpoints
+
+## DEBT-0058 — Two verification abuse limits are engineering assumptions awaiting owner confirmation
+
+Status: OPEN
+Severity: LOW
+Introduced by: ID-002
+Owner/domain: identity / security
+Description: The six PRD values (6 digits, 10 minutes, 30 seconds, 5 per hour, 10 per day, 5 attempts) are seeded as written. `verification.email.requests.max_per_hour` (30 requests per account and per source address per hour) and `verification.email.address.max_per_hour` (5 verification emails to one address per hour across all accounts) are NOT in the PRD; they are ID-002's engineering assumption for the abuse limits. The PRD keys are shared by channel (`verification.code.*`); ID-002 uses channel-specific keys (`verification.email.*`) so phone can differ. A shared office address can reach the source-address limit.
+Why deferred: the security owner has not reviewed the values.
+Exit criteria: the owner confirms or changes the values through a configuration change request (second approver), and decides whether the PRD keys should be shared across channels.
+Target checkpoint: before launch

@@ -11,6 +11,8 @@ Prerequisites: Docker with Compose v2, Node 24, pnpm 12.9.1 (`corepack enable` o
 
 We chose host apps plus container dependencies over bind-mounted dev containers: it is simpler, faster, and avoids file-watcher and permission problems on macOS.
 
+Email verification (ID-002) sends real SMTP to Mailpit (`SMTP_HOST`, `SMTP_PORT`; on the host stack `127.0.0.1:11025`, inbox at http://mail.localhost:8080 or the host API on `127.0.0.1:18025`) and hashes codes with `VERIFICATION_HASH_SECRET` (a development placeholder is in `.env.example`; production sets its own). The integration tests read the delivered message through `packages/testing/src/mailpit.ts` (`MAILPIT_API_URL`, default `http://127.0.0.1:18025`).
+
 `pnpm dev` ports: web http://localhost:3210, api http://localhost:3211, worker health http://localhost:3212. Dependency ports are published on 127.0.0.1 by `compose.dev.yaml` with offsets (Postgres 5433, Valkey 16379, NATS 14222, S3 18333, flagd 18013, SMTP 11025). Settings live in `.env.host` (created from `.env.host.example`).
 
 ```bash

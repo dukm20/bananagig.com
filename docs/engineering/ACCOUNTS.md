@@ -22,7 +22,8 @@ Not in scope (no table, column or route exists for any of them):
 | Not here | Where it belongs |
 |---|---|
 | Onboarding screens, sign-up and sign-in forms, carousels, the role switcher UI | web checkpoints (CU-03 and later); the account area (CU-09, PR-09) |
-| Email and phone storage, verification, change flows | ID-002 (email) and ID-003 (phone); CU-03.04 to CU-03.06, SV-03 |
+| Phone storage and verification | ID-003 (phone); CU-03.04 to CU-03.06, SV-03 |
+| Email recovery of access, the account email screens and the step-up before an email change | DEBT-0017, DEBT-0050 (the email contact and its verification are IMPLEMENTED in ID-002: `docs/engineering/EMAIL_VERIFICATION.md`) |
 | Password recovery and reset, notifications | DEBT-0017 |
 | Consent and legal acceptance records | ID-005 |
 | Billing, payment methods, balances, subscriptions | finance checkpoints |
@@ -47,7 +48,8 @@ Not in scope (no table, column or route exists for any of them):
 | Application roles, memberships, preferred (primary) role | BananaGig | `identity.roles`, `identity.account_roles`, `identity.accounts.primary_role_id` |
 | The active role of a request | BananaGig (web server session plus API validation) | NOT persisted anywhere in PostgreSQL |
 | Core profile (names, locale, time zone) | BananaGig | `identity.account_profiles` |
-| Contact data (email, phone) and verification | not yet (ID-002, ID-003) | nothing stored |
+| Email contact and its verification | BananaGig (ID-002) | `identity.email_contacts`, `identity.email_verification_challenges`; the Keycloak email claim is never trusted or copied (ADR-0027) |
+| Phone contact and verification | not yet (ID-003) | nothing stored |
 | Realm roles `customer`, `provider` | Keycloak (identity claims); used ONCE as a bootstrap hint | the token; never copied |
 | Admin identity and `admin-console-access` | Keycloak admin client; no BananaGig account | the `keycloak` database |
 | Fine-grained permissions | later (the admin client roles are temporary, DEBT-0021) | not modelled |
@@ -341,7 +343,7 @@ Test files (counts change with every test; run them rather than quoting numbers)
 | Debt | Subject |
 |---|---|
 | DEBT-0013 | idempotency records: evaluated for ID-001 and not built (natural uniqueness suffices); stays OPEN |
-| DEBT-0017 | email and SMS notifications and recovery flows not built |
+| DEBT-0017 | SMS notifications and recovery flows not built (email verification is built, ID-002) |
 | DEBT-0021 | temporary admin permissions as Keycloak client roles |
 | DEBT-0036 | address retention, erasure and exact-location access policy (also applies to saved addresses later) |
 | DEBT-0038 | phone numbering rules not modelled |
@@ -351,6 +353,11 @@ Test files (counts change with every test; run them rather than quoting numbers)
 | DEBT-0046 | admin identities have no application identity (AD-07) |
 | DEBT-0047 | no cache for the account lookup on the authenticated path |
 | DEBT-0048 | no endpoint or screen for the preferred role; account screens are infrastructure only |
+| DEBT-0049 to DEBT-0058 | email verification debts: production provider, change-email step-up and screens, contested addresses, branded layout, brokered social login, bot protection and re-verification, trusted proxy address, admin timeline, retention, unconfirmed abuse limits |
+
+## Email contact (ID-002)
+
+The account's email address, its verification by one-time code or magic link, the replacement of a verified address and the rules for a trusted identity provider's verified email are specified in `docs/engineering/EMAIL_VERIFICATION.md` (ADR-0027, ADR-0028, ADR-0029). `AccountContext` and `GET /account/me` carry `email: { emailVerificationStatus, primary, pending }` (status `NONE`, `PENDING`, `VERIFIED`; addresses MASKED); nothing gates on it yet (booking gating is CU-03/CU-04). Five operations live under `/api/v1/account/email` (`getAccountEmail`, `setAccountEmail`, `sendAccountEmailVerification`, `confirmAccountEmailCode`, `confirmAccountEmailLink`) with the same guard, strict bodies and `no-store` as the three above. Seven audit actions and five outbox events are added; the error codes are `ACCOUNT_EMAIL_*` (400, 409, 429 with `Retry-After`, 503). Rate limiting uses the reusable limiter (`docs/engineering/RATE_LIMITING.md`).
 
 ## Operations and troubleshooting
 

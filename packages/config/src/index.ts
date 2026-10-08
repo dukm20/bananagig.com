@@ -59,6 +59,11 @@ const raw = z.object({
   CONFIG_CACHE_TTL_SECONDS: z.coerce.number().int().min(1).max(3600).default(30),
   /** An external identity's last_seen_at is touched at most once per this interval (authenticated reads must not write on every request). */
   IDENTITY_LAST_SEEN_TOUCH_SECONDS: z.coerce.number().int().min(0).max(86400).default(300),
+  /**
+   * Key of the HMAC that hashes verification codes, magic-link tokens and abuse-limit dimensions (ID-002). A deployment secret, NOT a product value: it is
+   * never in the database or in git (the checked-in value is a development placeholder). Rotating it invalidates every open verification (they expire in minutes).
+   */
+  VERIFICATION_HASH_SECRET: z.string().min(32).max(256).optional(),
   CONFIG_LKG_MAX_AGE_SECONDS: z.coerce.number().int().min(60).default(86400),
 });
 
@@ -78,6 +83,7 @@ const DEV_DEFAULTS = {
   KEYCLOAK_PUBLIC_URL: 'http://auth.localhost:8080',
   WEB_PUBLIC_URL: 'http://app.localhost:8080',
   API_INTERNAL_URL: 'http://localhost:3211',
+  VERIFICATION_HASH_SECRET: 'bananagig-dev-only-verification-hash-key-0001',
 } as const;
 
 export interface AppConfig {
@@ -110,6 +116,10 @@ export interface AppConfig {
     /** Minimum seconds between two updates of external_identities.last_seen_at (0 = every request). */
     lastSeenTouchSeconds: number;
   };
+  verification: {
+    /** HMAC key for verification codes, magic tokens and abuse-limit dimensions. Never logged, never stored. */
+    hashSecret: string;
+  };
   apiInternalUrl: string;
   worker: { id: string; concurrency: number };
   db: { poolMax?: number; idleTimeoutMs?: number; connectionTimeoutMs?: number; statementTimeoutMs?: number; slowQueryMs: number; logSql: boolean };
@@ -130,7 +140,7 @@ type DevKey = keyof typeof DEV_DEFAULTS;
 /** Settings that must be explicit in production for each process role. Others are optional there. */
 const ROLE_REQUIRED: Record<Role, DevKey[]> = {
   web: ['API_INTERNAL_URL', 'OTEL_EXPORTER_OTLP_ENDPOINT', 'KEYCLOAK_URL', 'KEYCLOAK_PUBLIC_URL', 'WEB_PUBLIC_URL', 'VALKEY_URL'],
-  api: ['DATABASE_URL', 'OTEL_EXPORTER_OTLP_ENDPOINT', 'KEYCLOAK_URL', 'KEYCLOAK_PUBLIC_URL'],
+  api: ['DATABASE_URL', 'OTEL_EXPORTER_OTLP_ENDPOINT', 'KEYCLOAK_URL', 'KEYCLOAK_PUBLIC_URL', 'WEB_PUBLIC_URL', 'VERIFICATION_HASH_SECRET'],
   worker: ['DATABASE_URL', 'NATS_URL', 'OTEL_EXPORTER_OTLP_ENDPOINT'],
   tool: [],
 };
@@ -195,6 +205,7 @@ export function loadConfig(opts: LoadOptions): Readonly<AppConfig> {
         lastSeenTouchSeconds: e.IDENTITY_LAST_SEEN_TOUCH_SECONDS,
       };
     })(),
+    verification: { hashSecret: need('VERIFICATION_HASH_SECRET') },
     apiInternalUrl: need('API_INTERNAL_URL'),
     worker: { id: e.WORKER_ID ?? `${opts.service}-${process.pid}`, concurrency: e.WORKER_CONCURRENCY },
     db: {

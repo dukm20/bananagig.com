@@ -291,7 +291,7 @@ describe('account API: account creation and identity mapping', () => {
       activeRole: 'CUSTOMER',
       profile: null,
     });
-    expect(Object.keys(data).sort()).toEqual(['accountId', 'activeRole', 'createdAt', 'primaryRole', 'profile', 'roles', 'status']);
+    expect(Object.keys(data).sort()).toEqual(['accountId', 'activeRole', 'createdAt', 'email', 'primaryRole', 'profile', 'roles', 'status']);
     expect(Object.keys(data.roles[0]).sort()).toEqual(['code', 'nameContentKey']);
     expect(new Date(data.createdAt).toISOString()).toBe(data.createdAt);
     expect(await accountIdOf(sub)).toBe(data.accountId);
@@ -1087,7 +1087,7 @@ describe('account API: no token, subject or personal value leaks', () => {
       expect(r.headers['cache-control'], `${r.method} ${r.url} ${r.status}`).toBe('no-store');
     // successful bodies hold exactly the documented keys
     for (const r of accountResponses.filter((x) => x.status === 200 && x.body?.data?.accountId)) {
-      expect(Object.keys(r.body.data).sort()).toEqual(['accountId', 'activeRole', 'createdAt', 'primaryRole', 'profile', 'roles', 'status']);
+      expect(Object.keys(r.body.data).sort()).toEqual(['accountId', 'activeRole', 'createdAt', 'email', 'primaryRole', 'profile', 'roles', 'status']);
       expect(Object.keys(r.body).sort()).toEqual(['data', 'meta']);
     }
   });

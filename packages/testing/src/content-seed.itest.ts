@@ -61,7 +61,17 @@ describe('migration 0006 seeded shell copy', () => {
         created_by: 'system:migration',
       });
     }
-    expect(Number((await iso.database.query<{ n: string }>('SELECT count(*) AS n FROM content.entry_variables'))[0]!.n)).toBe(0);
+    // the eight 0006 entries define no variables (later migrations seed typed variables for their own entries: 0010 for the verification email)
+    expect(
+      Number(
+        (
+          await iso.database.query<{ n: string }>(
+            'SELECT count(*) AS n FROM content.entry_variables v JOIN content.entries e ON e.entry_id = v.entry_id WHERE e.key = ANY($1)',
+            [KEYS],
+          )
+        )[0]!.n,
+      ),
+    ).toBe(0);
     expect(
       Number(
         (
@@ -234,6 +244,9 @@ describe('migration 0006 seeded shell copy', () => {
     );
     expect(rows.every((r) => r.content_type !== 'LEGAL' && r.owner_role === 'CONTENT')).toBe(true);
     expect(rows.some((r) => /price|fee|legal|terms|privacy|commission|marketplace/i.test(r.key))).toBe(false);
-    expect(Number((await iso.database.query<{ n: string }>('SELECT count(*) AS n FROM configuration.parameters'))[0]!.n)).toBe(0);
+    // migration 0006 seeds no product configuration (migration 0010 seeds the verification.email.* parameters, which are tested in email-model.itest.ts)
+    expect(
+      Number((await iso.database.query<{ n: string }>("SELECT count(*) AS n FROM configuration.parameters WHERE key NOT LIKE 'verification.email.%'"))[0]!.n),
+    ).toBe(0);
   });
 });

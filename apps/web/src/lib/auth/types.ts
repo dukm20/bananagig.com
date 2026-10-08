@@ -55,8 +55,10 @@ export interface AuthDeps {
   cfg: AuthConfig;
   store: SessionStore;
   verifier: TokenVerifier;
-  /** API client factory for calls made with the session's access token (the role switch). Always provided by runtime.ts. */
-  api?: (accessToken: string) => Pick<ApiClient, 'setActiveRole'>;
+  /** API client factory for calls made with the session's access token (the role switch, the email verification actions). Always provided by runtime.ts. */
+  api?: (
+    accessToken: string,
+  ) => Pick<ApiClient, 'setActiveRole'> & Partial<Pick<ApiClient, 'setAccountEmail' | 'sendEmailVerification' | 'confirmEmailCode' | 'confirmEmailLink'>>;
   fetch?: typeof fetch;
   /** Epoch seconds (injectable for tests). */
   now?: () => number;

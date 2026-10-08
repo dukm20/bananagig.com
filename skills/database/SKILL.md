@@ -87,6 +87,7 @@ This skill is the data-model process: see the review gate above, `DATABASE_CONVE
 - A "preferred" pointer to a child row is a composite foreign key to the OWN membership, `(account_id, primary_role_id)` to `account_roles (account_id, role_id)`, MATCH SIMPLE so NULL means none, plus a trigger for what a key cannot say (the membership is ACTIVE) and one that refuses leaving ACTIVE while it is the pointer (it locks the owner row first; lock order: owner row, then the reference row `FOR SHARE`, then the child rows). Create the owner without the pointer so the two tables reference each other with no deferred key; clear or move the pointer before deactivating the child. Prefer it to an `is_primary` flag plus a partial unique index (two rows to move, no foreign-key guarantee).
 - Race-free get-or-create (identity, ADR-0025): never SELECT-then-INSERT alone. Insert the parent, the history row and the unique-keyed link in ONE transaction; the unique key admits one winner, the loser's 23505 rolls back its half-created parent, and it re-reads the winner's row (bounded attempts). Idempotent operations compare first and write nothing when nothing changes.
 - PL/pgSQL does not short-circuit boolean operators: `OLD` does not exist for an INSERT, so never put `OLD.x` and `TG_OP` in one `OR` or `AND`; branch on `TG_OP` in separate statements (`identity.guard_accounts`). Guard errors use `DETAIL = 'identity_rule:<KEY>'`, the same machine-readable pattern as geography.
+- Uniqueness policy as partial unique indexes (ID-002): "a verified address belongs to one account" is `UNIQUE (email_normalized) WHERE status = 'VERIFIED'`, while pending duplicates stay legal; "one open challenge per contact" is `UNIQUE (email_contact_id) WHERE used_at IS NULL AND invalidated_at IS NULL`. A multi-step replacement (disable the old primary, promote the new one) passes through states the immediate guards must allow and the whole-account invariant must forbid at COMMIT: use a `DEFERRABLE INITIALLY DEFERRED` constraint trigger that re-reads the account's rows. Count sends as rows (one challenge per send) instead of a counter column that can drift; a hash column is `CHECK (col ~ '^[0-9a-f]{64}$')` and a keyed HMAC, never a plain hash of a low-entropy secret.
 
 ## Do not
 
@@ -103,4 +104,4 @@ ADR-0001, ADR-0004, ADR-0008, ADR-0009, ADR-0010, ADR-0011, ADR-0012, ADR-0021, 
 
 ## Last reviewed
 
-2026-10-07 (ID-001)
+2026-10-07 (ID-002)

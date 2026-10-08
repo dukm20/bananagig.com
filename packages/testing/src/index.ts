@@ -62,7 +62,16 @@ export async function createIsolatedDatabase(opts: { migrate?: boolean; database
   return { name, url, database, drop };
 }
 
-/** Removes databases left behind by crashed test runs (no active sessions only). Called from the integration global setup. */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/** Removes databases left behind by crashed test runs (no active sessions, and not created by a process that is still running). Called from the integration global setup. */
 export async function dropStaleTestDatabases(): Promise<string[]> {
   const admin = new pg.Client({ connectionString: adminUrl() });
   await admin.connect();
@@ -73,6 +82,9 @@ export async function dropStaleTestDatabases(): Promise<string[]> {
       [`${TEST_DB_PREFIX}%`],
     );
     for (const r of rows) {
+      // a database created by a process that is still running belongs to a concurrent test run (it may not have connected yet): leave it alone
+      const pid = Number(/^bananagig_t_(\d+)_/.exec(r.datname)?.[1]);
+      if (Number.isInteger(pid) && pid !== process.pid && isProcessAlive(pid)) continue;
       await admin.query(`DROP DATABASE IF EXISTS ${r.datname} WITH (FORCE)`);
       dropped.push(r.datname);
     }
@@ -83,4 +95,5 @@ export async function dropStaleTestDatabases(): Promise<string[]> {
 }
 
 export * from './helpers';
+export * from './mailpit';
 export const migrationsDir = (): string => MIGRATIONS_DIR;

@@ -643,3 +643,49 @@ None required.
 
 ### Known follow-up
 Push and confirm the next CI run is green end to end (the Accounts smoke scenario and the Trivy scan have never run in CI). DEBT-0035 stays OPEN.
+
+
+## ID-002 — 2026-10-07
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(ID-002)"`.
+Summary: The BananaGig-owned email contact and its verification. A person adds an address, receives ONE email with a one-time code and a single-use magic link, and verifies by either; the address is canonical, masked everywhere, never trusted from Keycloak, and a change keeps the old verified address active until the new one verifies. Introduces the reusable Valkey rate-limit foundation, the provider-neutral `EmailSender` port with the SMTP/Mailpit adapter, and the account-level `emailVerificationStatus`. Booking gating, phone verification, recovery, onboarding and account screens are NOT part of it.
+
+### Housekeeping at the start (requested)
+`PROJECT_STATE` records the verified ID-001 CI result (run 37718747872 failed at the content template test timeout; CI-004 `cfd85de` fixed it; run 37719387103 green, `verify` and `compose-smoke` including the Accounts smoke scenario and Trivy). `la-oc` stays PLANNED and DEBT-0030 stays OPEN.
+
+### Delivered
+- Migration `0010_email_verification.sql`: `identity.email_contacts` and `identity.email_verification_challenges` (one challenge per send), guard triggers with `identity_rule:<KEY>` details, two deferred constraint triggers (whole-account email invariants, challenge consumption), the audit extension (seven EMAIL_* actions, composite foreign key to the contact), the eight `verification.email.*` parameters seeded through the real change workflow (six PRD values, two flagged assumptions) and 34 managed content entries with typed variables through the real lifecycle.
+- Contracts `email.ts`: vocabularies, the single `canonicalizeEmail`, `maskEmail`, strict request bodies, read models, five events, twelve error codes.
+- `packages/accounts`: `EmailVerificationService` (add/change address, send, confirm by code, confirm by link, trusted-identity-provider bootstrap), keyed-hash crypto (CSPRNG code and token, HMAC-SHA-256 with length-prefixed parts, constant-time compare), policy parsing and the `decideIdpEmail` trust rule, the masked email summary on `AccountContext`.
+- `packages/platform`: `EmailSender` and `EmailRenderer` ports, `SmtpEmailSender`, `htmlToPlainText`, `RecordingEmailSender`; `RateLimiter`, `ValkeyRateLimiter` (one atomic script: all rules or none, fixed windows, circuit breaker) and `MemoryRateLimiter`.
+- API: five operations under `/api/v1/account/email*`, strict raw bodies, error mapping with `Retry-After`, composition (configuration-backed policy, content-backed renderer, Valkey limiter); `VERIFICATION_HASH_SECRET` in config.
+- Web: `/verify-email` (code form, resend countdown, change form, magic-link landing reading the token from the URL fragment), BFF handlers `/auth/email/<action>`, api-client methods.
+- Smoke scenario "Email verification" (33 checks): real tokens, the delivered Mailpit message, wrong code counted, verification, idempotent repeat, no address, code or token in responses or Loki; run twice to cover INITIAL_EMAIL and CHANGE_EMAIL.
+- Docs: `docs/engineering/EMAIL_VERIFICATION.md`, `RATE_LIMITING.md`, ADR-0027, ADR-0028, ADR-0029, the data-model documents, skills `identity`, `testing`, `configuration`, `content`, `web`, `database`.
+- Quality process: unit, data-model, service, API and web tests written by independent workers; their findings fixed before closing: the content renderer sent a variable to the subject entry that defines none (every send would have failed), the resend cooldown raced an in-flight delivery, refused sends spent the per-address budget, a superseded code burned an attempt, four database guard gaps (disabled contacts mutable, audit naming another account's contact, closed accounts verifying, verified non-primary rows), an `Object.prototype` key on the web page, the stale-test-database cleanup dropping databases of live runs, hash inputs that were not injective.
+
+### Decisions
+- ADR-0027: BananaGig owns the contact; the Keycloak email claim is never trusted; a trusted brokered provider's verified email is the only shortcut; one canonical form; verified address unique across accounts, pending duplicates allowed, no takeover; replacement keeps the old address active.
+- ADR-0028: one challenge per send; keyed hashes; single use under a row lock; the token in the URL fragment and a POST to act; two-phase delivery.
+- ADR-0029: the reusable rate-limit foundation; the caller decides how an outage fails; limits are configuration.
+- DEBT-0043 option B again for the five new bodies; DEBT-0030 stays OPEN (the limiter is not applied to the public address endpoints; the steps are in `RATE_LIMITING.md`).
+- The PRD keys `verification.code.*` are shared by channel; ID-002 uses channel-specific `verification.email.*` as the checkpoint asked.
+
+### Schema
+Two new tables, one extended table (`identity.account_audit_events`), 70 constraints in the `identity` schema; see `docs/data/DATA_MODEL_CHANGELOG.md` and `NORMALIZATION_LOG.md` (ID-002). Intentional denormalization: the challenge `purpose` snapshot of the contact status at issuance; `is_primary` coincides with `status = 'VERIFIED'` by guard.
+
+### Contracts
+OpenAPI: five email operations. AsyncAPI: `bananagig.identity.email-contact-added`, `email-verification-sent`, `email-verified`, `email-verification-failed` and `email-change-requested` (v1).
+
+### Tests
+Unit 4322, root script tests 71, integration 1624 in 28 files, smoke 33 checks (run twice).
+
+### Skills updated
+`skills/identity`, `skills/testing`, `skills/configuration`, `skills/content`, `skills/web`, `skills/database`.
+
+### ADRs
+ADR-0027, ADR-0028, ADR-0029.
+
+### Known follow-up
+DEBT-0049 to DEBT-0058 (production provider, change-email step-up and screens, contested addresses, branded layout, brokered social login, bot protection and re-verification, trusted proxy address, admin timeline, retention, unconfirmed abuse limits). Confirm or change the two assumed limits and the channel-specific key decision with the security owner. Push and confirm CI is green end to end (the Email verification smoke scenario has not run in CI).

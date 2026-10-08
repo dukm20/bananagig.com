@@ -36,6 +36,7 @@ import {
   type AccountStatus as AccountStatusType,
 } from './account';
 import { ContentKey } from './content';
+import { EMAIL_ERROR_CODES } from './email';
 import { EVENT_TYPE_PATTERN, EventEnvelope } from './index';
 import { containsForbiddenText } from './text';
 
@@ -430,7 +431,18 @@ const validAccount = {
   primaryRole: 'CUSTOMER',
   activeRole: 'CUSTOMER',
   profile: { firstName: 'Ana', lastName: 'Martinez', preferredLocale: 'en-US', timeZone: 'America/Los_Angeles' },
+  email: { emailVerificationStatus: 'NONE', primary: null, pending: null },
   createdAt: '2026-01-01T00:00:00.000Z',
+};
+const verifiedEmailSummary = {
+  emailVerificationStatus: 'VERIFIED',
+  primary: { maskedEmail: 'a***@e***.test', verifiedAt: '2026-01-02T00:00:00.000Z', source: 'USER_ENTERED' },
+  pending: null,
+};
+const pendingEmailSummary = {
+  emailVerificationStatus: 'PENDING',
+  primary: null,
+  pending: { maskedEmail: 'a***@e***.test', purpose: 'INITIAL_EMAIL', status: 'PENDING', lastSentAt: null, expiresAt: null },
 };
 
 describe('AccountDto', () => {
@@ -450,19 +462,68 @@ describe('AccountDto', () => {
     ['a missing profile', { profile: undefined }],
     ['a numeric primary role', { primaryRole: 1 }],
     ['a missing createdAt', { createdAt: undefined }],
+    ['a missing email summary', { email: undefined }],
+    ['a null email summary', { email: null }],
+    ['a plain address string instead of the email summary', { email: 'ana@example.test' }],
+    ['an email summary with an unknown verification status', { email: { emailVerificationStatus: 'CONFIRMED', primary: null, pending: null } }],
+    ['an email summary without the pending field', { email: { emailVerificationStatus: 'NONE', primary: null } }],
   ])('rejects an account with %s', (_label, over) => {
     expect(AccountDto.safeParse({ ...validAccount, ...over }).success).toBe(false);
   });
   it('carries exactly the documented fields and none that identify the Keycloak identity', () => {
-    expect(Object.keys(AccountDto.shape).sort()).toEqual(['accountId', 'activeRole', 'createdAt', 'primaryRole', 'profile', 'roles', 'status']);
+    expect(Object.keys(AccountDto.shape).sort()).toEqual(['accountId', 'activeRole', 'createdAt', 'email', 'primaryRole', 'profile', 'roles', 'status']);
     expect(Object.keys(AccountDto.shape.roles.element.shape).sort()).toEqual(['code', 'nameContentKey']);
     expect(Object.keys(AccountDto.shape.profile.unwrap().shape).sort()).toEqual(['firstName', 'lastName', 'preferredLocale', 'timeZone']);
     const json = JSON.stringify(Object.keys(AccountDto.shape));
-    for (const word of ['subject', 'issuer', 'token', 'sub', 'email', 'password']) expect(json).not.toContain(`"${word}"`);
+    for (const word of ['subject', 'issuer', 'token', 'sub', 'password']) expect(json).not.toContain(`"${word}"`);
+  });
+  it('carries the email as a summary object (status, primary, pending), never as an address field', () => {
+    expect(Object.keys(AccountDto.shape.email.shape).sort()).toEqual(['emailVerificationStatus', 'pending', 'primary']);
+    expect(Object.keys(AccountDto.shape.email.shape.primary.unwrap().shape).sort()).toEqual(['maskedEmail', 'source', 'verifiedAt']);
+    expect(Object.keys(AccountDto.shape.email.shape.pending.unwrap().shape).sort()).toEqual(['expiresAt', 'lastSentAt', 'maskedEmail', 'purpose', 'status']);
+    const emailKeys = JSON.stringify([
+      ...Object.keys(AccountDto.shape.email.shape),
+      ...Object.keys(AccountDto.shape.email.shape.primary.unwrap().shape),
+      ...Object.keys(AccountDto.shape.email.shape.pending.unwrap().shape),
+    ]);
+    for (const word of ['email', 'address', 'code', 'token', 'hash', 'normalized']) expect(emailKeys.toLowerCase()).not.toContain(`"${word}"`);
+  });
+  it.each([
+    ['no address', validAccount.email],
+    ['a verified primary address', verifiedEmailSummary],
+    ['a pending address', pendingEmailSummary],
+  ])('parses an account whose email is %s and returns it unchanged', (_label, email) => {
+    const account = { ...validAccount, email };
+    expect(AccountDto.parse(account)).toEqual(account);
+    expect(AccountDto.parse(account).email).toEqual(email);
+  });
+  it('requires the email field: an account without it does not parse', () => {
+    const { email: _email, ...withoutEmail } = validAccount;
+    expect(AccountDto.safeParse(withoutEmail).success).toBe(false);
+  });
+  it('strips an unknown field smuggled into the email summary, so a full address cannot ride along', () => {
+    const smuggled = {
+      ...validAccount,
+      email: {
+        ...verifiedEmailSummary,
+        address: 'ana.martinez@example.test',
+        primary: { ...verifiedEmailSummary.primary, email: 'ana.martinez@example.test', emailNormalized: 'ana.martinez@example.test' },
+      },
+    };
+    const parsed = AccountDto.parse(smuggled);
+    expect(parsed.email).toEqual(verifiedEmailSummary);
+    expect(JSON.stringify(parsed)).not.toContain('ana.martinez');
+    expect(Object.keys(parsed.email).sort()).toEqual(['emailVerificationStatus', 'pending', 'primary']);
   });
   it('wraps the account in the standard data and meta envelope', () => {
     expect(AccountResponse.parse({ data: validAccount, meta: { correlationId: 'c-1' } })).toEqual({ data: validAccount, meta: { correlationId: 'c-1' } });
     expect(AccountResponse.safeParse({ data: validAccount }).success).toBe(false);
+  });
+  it('carries the masked email summary through the envelope and refuses a response without it', () => {
+    const data = { ...validAccount, email: verifiedEmailSummary };
+    expect(AccountResponse.parse({ data, meta: { correlationId: 'c-1' } }).data.email).toEqual(verifiedEmailSummary);
+    const { email: _email, ...withoutEmail } = validAccount;
+    expect(AccountResponse.safeParse({ data: withoutEmail, meta: { correlationId: 'c-1' } }).success).toBe(false);
   });
 });
 
@@ -649,7 +710,35 @@ describe('ACCOUNT_ERROR_CODES', () => {
       'CONFLICT',
       'INVALID_STATE',
       'UNAVAILABLE',
+      'EMAIL_INVALID',
+      'EMAIL_NOT_PENDING',
+      'EMAIL_CODE_INVALID',
+      'EMAIL_LINK_INVALID',
+      'EMAIL_CODE_EXPIRED',
+      'EMAIL_CODE_USED',
+      'EMAIL_VERIFICATION_LOCKED',
+      'EMAIL_RESEND_TOO_SOON',
+      'EMAIL_SEND_LIMIT',
+      'EMAIL_UNAVAILABLE',
+      'EMAIL_DELIVERY_FAILED',
+      'EMAIL_RATE_LIMITED',
     ]);
+  });
+  it('lists every email error code after the ten account codes, in the email vocabulary order', () => {
+    expect(ACCOUNT_ERROR_CODES.slice(0, 10)).toEqual([
+      'NOT_FOUND',
+      'SUSPENDED',
+      'CLOSED',
+      'ROLE_NOT_FOUND',
+      'ROLE_NOT_HELD',
+      'ROLE_NOT_ACTIVE',
+      'VALIDATION_FAILED',
+      'CONFLICT',
+      'INVALID_STATE',
+      'UNAVAILABLE',
+    ]);
+    expect(ACCOUNT_ERROR_CODES.slice(10)).toEqual([...EMAIL_ERROR_CODES]);
+    expect(ACCOUNT_ERROR_CODES).toHaveLength(22);
   });
   it('has unique upper-case codes, usable as the ACCOUNT_<code> API error code suffix', () => {
     expect(new Set(ACCOUNT_ERROR_CODES).size).toBe(ACCOUNT_ERROR_CODES.length);

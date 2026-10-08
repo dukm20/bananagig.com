@@ -2,7 +2,19 @@
 // round-trips, not just container status. Exits non-zero if any check fails.
 import http from 'node:http';
 import { AccountService } from '@bananagig/accounts';
-import { ACTIVE_ROLE_HEADER, AccountResponse, CORRELATION_HEADER, ErrorResponse, SystemInfoResponse, WhoAmIResponse } from '@bananagig/contracts';
+import {
+  ACTIVE_ROLE_HEADER,
+  AccountEmailResponse,
+  AccountResponse,
+  CORRELATION_HEADER,
+  EmailVerifiedResponse,
+  ErrorResponse,
+  SetEmailResponse,
+  SystemInfoResponse,
+  WhoAmIResponse,
+  canonicalizeEmail,
+  maskEmail,
+} from '@bananagig/contracts';
 import { createDatabase } from '@bananagig/database';
 import { createTokenVerifier, exchangeAuthorizationCode, oidcEndpoints } from '@bananagig/identity';
 import {
@@ -1083,6 +1095,176 @@ await check('Accounts', async () => {
   return `customer.dev -> account ${first.accountId.slice(0, 8)}... ACTIVE, roles CUSTOMER+PROVIDER (PROVIDER granted server-side), switch to PROVIDER validated and not persisted, ${ACTIVE_ROLE_HEADER} honored or refused with 403, admin context 403 ACCOUNT_CONTEXT_NOT_SUPPORTED, anonymous 401, no token or subject in any response`;
 });
 
+await check('Email verification', async () => {
+  // Email contact + verification (ID-002) end to end with REAL Keycloak tokens, the real SMTP adapter and Mailpit: set an address, send the verification,
+  // read the message from Mailpit through the approved test helper (the code and the link are extracted from the delivered message), verify, and prove the
+  // retry is safe. It is idempotent across runs: a customer.dev that is already verified exercises the CHANGE_EMAIL path (the old address stays primary
+  // until the new one verifies), otherwise INITIAL_EMAIL; every run uses a fresh address and ends VERIFIED.
+  const assert = (ok: boolean, what: string): void => {
+    if (!ok) throw new Error(what);
+  };
+  const seen: string[] = []; // every response body and header block: searched for the full address, the code and the token at the end
+  const cid = `smoke-email-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const flowStart = Date.now() * 1e6;
+  const call = async (method: 'GET' | 'POST', path: string, token: string, body?: unknown) => {
+    const r = await get(`${api}/api/v1${path}`, {
+      method,
+      headers: { authorization: `Bearer ${token}`, [CORRELATION_HEADER]: cid, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    const text = await r.text();
+    seen.push(text, JSON.stringify([...r.headers]));
+    let json: any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = undefined;
+    }
+    return { status: r.status, text, json, headers: r.headers };
+  };
+  const mailpit = env('MAILPIT_URL', 'http://mailpit-email:8025');
+
+  // (1) authenticate customer.dev and read the account state
+  const l = await authorizationCodeLogin(kc, { clientId: 'bananagig-web', redirectUri: WEB_REDIRECT_URI, ...DEV_USERS.customer });
+  const customer = (
+    await exchangeAuthorizationCode({
+      tokenEndpoint: ep.token,
+      clientId: 'bananagig-web',
+      redirectUri: WEB_REDIRECT_URI,
+      code: l.code,
+      codeVerifier: l.verifier,
+    })
+  ).accessToken;
+  const me = await call('GET', '/account/me', customer);
+  assert(me.status === 200, `GET /account/me -> ${me.status}`);
+  const before = AccountResponse.parse(me.json).data.email;
+  assert(['NONE', 'PENDING', 'VERIFIED'].includes(before.emailVerificationStatus), `unexpected email state ${before.emailVerificationStatus}`);
+  assert(!/@[a-z0-9.-]+\.[a-z]+/i.test(JSON.stringify(before)) || /\*\*\*@/.test(JSON.stringify(before)), 'the account state must carry masked addresses only');
+  const startedVerified = before.emailVerificationStatus === 'VERIFIED';
+
+  // (2) set the address to verify (mixed case on purpose: the canonical form is lower case)
+  const address = `smoke-${Math.random().toString(36).slice(2, 10)}@bananagig.localhost`;
+  const canonical = canonicalizeEmail(address.toUpperCase());
+  assert(canonical.ok && canonical.value === address, 'canonicalization must fold the case');
+  const set = await call('POST', '/account/email', customer, { email: address.toUpperCase() });
+  assert(set.status === 200, `POST /account/email -> ${set.status} ${set.text.slice(0, 200)}`);
+  const afterSet = SetEmailResponse.parse(set.json).data;
+  const pendingAfterSet = afterSet.email.pending;
+  assert(afterSet.changed && pendingAfterSet?.maskedEmail === maskEmail(address), 'the pending address must be set and masked');
+  assert(pendingAfterSet?.purpose === (startedVerified ? 'CHANGE_EMAIL' : 'INITIAL_EMAIL'), `purpose ${pendingAfterSet?.purpose}`);
+  if (startedVerified)
+    assert(
+      afterSet.email.emailVerificationStatus === 'VERIFIED' && afterSet.email.primary?.maskedEmail === before.primary?.maskedEmail,
+      'a pending change must leave the verified primary address active',
+    );
+
+  // (3) send the verification (one message: code + magic link)
+  const send = await call('POST', '/account/email/verification/send', customer, {});
+  assert(send.status === 200, `send -> ${send.status} ${send.text.slice(0, 200)}`);
+  assert(
+    send.json.data.codeLength === 6 && send.json.data.validityMinutes === 10,
+    'the code policy must come from the configuration registry (6 digits, 10 minutes)',
+  );
+
+  // (4) a resend inside the cooldown is refused (429 + Retry-After) and sends nothing
+  const tooSoon = await call('POST', '/account/email/verification/send', customer, {});
+  assert(
+    tooSoon.status === 429 && tooSoon.json?.error?.code === 'ACCOUNT_EMAIL_RESEND_TOO_SOON',
+    `resend inside the cooldown -> ${tooSoon.status} ${tooSoon.json?.error?.code}`,
+  );
+  assert(Number(tooSoon.headers.get('retry-after')) >= 1, 'the cooldown refusal must carry Retry-After');
+
+  // (5) the message arrives in Mailpit through the production SMTP adapter; extract the code and the link from the DELIVERED message
+  const message = await retry(
+    async () => {
+      const found = (await (await expectOk(`${mailpit}/api/v1/search?query=${encodeURIComponent(`to:"${address}"`)}`)).json()) as {
+        messages: { ID: string }[] | null;
+      };
+      if (!found.messages?.length) throw new Error('the verification email has not arrived');
+      return (await (await expectOk(`${mailpit}/api/v1/message/${found.messages[0]!.ID}`)).json()) as {
+        Subject: string;
+        Text: string;
+        HTML: string;
+        To: { Address: string }[];
+      };
+    },
+    10,
+    1000,
+  );
+  assert(message.To.length === 1 && message.To[0]!.Address === address, 'the message must be addressed to the canonical address only');
+  const code = /code is\s+([0-9]{6})\b/i.exec(message.Text)?.[1];
+  const webOrigin = webPublic.replace(/\/$/, '');
+  const linkPrefix = `${webOrigin}/verify-email#token=`;
+  const linkAt = message.Text.indexOf(linkPrefix);
+  const candidate = linkAt >= 0 ? message.Text.slice(linkAt + linkPrefix.length, linkAt + linkPrefix.length + 43) : undefined;
+  const token = candidate && /^[A-Za-z0-9_-]{43}$/.test(candidate) ? candidate : undefined;
+  assert(!!code, 'the verification code is missing from the delivered message');
+  assert(!!token, 'the magic link (token in the URL fragment) is missing from the delivered message');
+  assert(!message.Subject.includes(code!), 'the subject must not carry the code');
+  assert(message.HTML.includes('<a ') && message.HTML.includes(`verify-email#token=`), 'the HTML part must carry the link');
+
+  // (6) a wrong code is counted, the right one verifies
+  const wrong = await call('POST', '/account/email/verification/confirm-code', customer, { code: code === '000000' ? '111111' : '000000' });
+  assert(
+    wrong.status === 400 && wrong.json?.error?.code === 'ACCOUNT_EMAIL_CODE_INVALID' && wrong.json.error.details?.attemptsRemaining === 4,
+    `a wrong code must be 400 with 4 attempts left (got ${wrong.status} ${wrong.json?.error?.code} ${wrong.json?.error?.details?.attemptsRemaining})`,
+  );
+  const verified = await call('POST', '/account/email/verification/confirm-code', customer, { code });
+  assert(verified.status === 200, `confirm-code -> ${verified.status} ${verified.text.slice(0, 200)}`);
+  assert(EmailVerifiedResponse.parse(verified.json).data.changed === true, 'the first confirmation must change the state');
+
+  // (7) /account/me now reports VERIFIED with the new address (masked) as the primary
+  const after = AccountResponse.parse((await call('GET', '/account/me', customer)).json).data.email;
+  assert(after.emailVerificationStatus === 'VERIFIED' && after.pending === null, `state after verification: ${after.emailVerificationStatus}`);
+  assert(after.primary?.maskedEmail === maskEmail(address) && after.primary.source === 'USER_ENTERED', 'the verified address must be the new primary');
+  const detail = AccountEmailResponse.parse((await call('GET', '/account/email', customer)).json).data;
+  assert(detail.codeLength === 6 && detail.validityMinutes === 10, 'the email detail must expose the configured code policy');
+
+  // (8) retrying the same verification is safe: idempotent success with no second side effect, by code and by link
+  const again = await call('POST', '/account/email/verification/confirm-code', customer, { code });
+  assert(
+    again.status === 200 && EmailVerifiedResponse.parse(again.json).data.changed === false,
+    `repeating the code must be an idempotent success (got ${again.status})`,
+  );
+  const viaLink = await call('POST', '/account/email/verification/confirm-link', customer, { token });
+  assert(
+    viaLink.status === 200 && EmailVerifiedResponse.parse(viaLink.json).data.changed === false,
+    `the consumed link must be an idempotent success (got ${viaLink.status})`,
+  );
+  const stranger = await call('POST', '/account/email/verification/confirm-link', customer, { token: 'A'.repeat(43) });
+  assert(stranger.status === 400 && stranger.json?.error?.code === 'ACCOUNT_EMAIL_LINK_INVALID', 'an unknown token must be 400 ACCOUNT_EMAIL_LINK_INVALID');
+
+  // (9) no response holds the full address, the code, the token or an access token
+  const everything = seen.join('\n');
+  assert(!everything.includes(address), 'a response contains the full email address');
+  assert(!everything.includes(token!) && !everything.includes(`"code":"${code}"`) && !everything.includes(customer), 'a response contains a secret');
+
+  // (10) no plaintext code or token in the logs: once this flow's own log lines are searchable in Loki, the secrets must not be
+  const loki = env('LOKI_URL', 'http://loki-logs:3100');
+  const query = async (q: string) =>
+    (await (
+      await expectOk(`${loki}/loki/api/v1/query_range?query=${encodeURIComponent(q)}&start=${flowStart}&end=${Date.now() * 1e6 + 60e9}&limit=5`)
+    ).json()) as {
+      data: { result: unknown[] };
+    };
+  await retry(
+    async () => {
+      if ((await query(`{service_name="bananagig-api"} | correlationId = \`${cid}\``)).data.result.length < 1) throw new Error('this flow is not in Loki yet');
+    },
+    12,
+    2000,
+  );
+  await sleep(6000); // the log exporter batches (5 s): give the last lines of the flow time to arrive before asserting an absence
+  for (const [what, q] of [
+    ['token', `{service_name=~"bananagig-.+"} |= \`${token}\``],
+    ['code', `{service_name=~"bananagig-.+"} |~ \`\\b${code}\\b\``],
+    ['address', `{service_name=~"bananagig-.+"} |= \`${address}\``],
+  ] as const)
+    assert((await query(q)).data.result.length === 0, `the ${what} appears in the logs`);
+
+  return `customer.dev ${startedVerified ? 'CHANGE_EMAIL (old primary kept until the new one verified)' : 'INITIAL_EMAIL'}: set (canonical, masked) -> send -> cooldown 429 -> Mailpit message (code + #token link, none in the subject) -> wrong code counted (4 left) -> verified -> /account/me VERIFIED -> repeat by code and link idempotent -> no address, code or token in responses or logs`;
+});
+
 // Caddy routes are exercised exactly as a browser would reach them (Host header), from inside the network.
 const proxy = (host: string, path: string, method = 'GET'): Promise<{ status: number; body: string }> =>
   new Promise((resolve, reject) => {
@@ -1148,6 +1330,7 @@ const order = [
   'Geography',
   'Addresses',
   'Accounts',
+  'Email verification',
   'NATS Events',
   'JetStream',
   'SeaweedFS Storage',

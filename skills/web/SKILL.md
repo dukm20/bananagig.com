@@ -67,6 +67,8 @@ The web app has no database access and no data-model impact. Needing data means 
 - PWA is manifest-only so far (DEBT-0003).
 - Account tests use the contract-validating `apps/web/src/testing/account-stub.ts` (the `x-active-role` header must be an ACTIVE role of the account, the switch persists nothing), next to the content stub.
 - User-visible copy comes from the content registry through the API only, via `getContent`, `getContentMany` and `renderContent` in `apps/web/src/lib/content.ts` (ADR-0020). When the registry cannot serve a key the helper returns `undefined` and the page omits the element; never write `?? 'literal'` for managed copy. The only static copy is `BOOTSTRAP_COPY` (wordmark, `Sign in`, `Sign out`) plus the error, not-found and loading shells. Tests use the contract-validating stub `apps/web/src/testing/content-stub.ts`, and `apps/web/src/boundaries.test.ts` scans for forbidden imports.
+- One-time tokens in links travel in the URL FRAGMENT (`/verify-email#token=...`): a fragment is never sent to a server, so it is in no access log, trace or Referer. A client component reads it, removes it with `history.replaceState`, and the page offers a button that POSTs it in a form body to a same-origin BFF handler; opening the link must never change state (mail scanners prefetch). The token is never stored (not in the login transaction, storage or a cookie): a signed-out visitor signs in and opens the link again.
+- BFF handlers that act for the signed-in user (`/auth/email/<action>`): POST only, `Origin` must equal the web origin, session required, forward the browser's address as `x-forwarded-for` (the API's IP rate limit must count real clients, not the web server), answer a 303 back to the page with `?ok=` or `?error=<API code>` and never put a submitted value in the redirect, a cookie or a log line.
 
 ## Do not
 
@@ -75,6 +77,7 @@ The web app has no database access and no data-model impact. Needing data means 
 - Do not read `process.env` directly in components; go through `@bananagig/config`.
 - Do not render tokens, put them in URLs, or build GET endpoints that change state (logout and the role switch are POST with an Origin check).
 - Do not store the active role in a cookie, URL or browser storage, trust it without the API validating it, import `@bananagig/accounts`, or treat the Keycloak realm roles of the session as application roles.
+- Do not put a one-time code or token in a query string, a redirect URL, a cookie or a log line, and do not let a GET request change state.
 
 ## Related ADRs
 
@@ -82,4 +85,4 @@ ADR-0006, ADR-0007, ADR-0014, ADR-0026
 
 ## Last reviewed
 
-2026-10-07 (ID-001)
+2026-10-07 (ID-002)

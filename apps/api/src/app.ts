@@ -4,7 +4,7 @@ import type { AppConfig } from '@bananagig/config';
 import { API_PREFIX } from '@bananagig/contracts';
 import type { ConfigurationService } from '@bananagig/configuration';
 import type { ContentService } from '@bananagig/content';
-import type { AccountService } from '@bananagig/accounts';
+import type { AccountService, EmailVerificationService } from '@bananagig/accounts';
 import type { AddressService, GeographyService } from '@bananagig/geography';
 import type { TokenVerifier } from '@bananagig/identity';
 import { metrics } from '@bananagig/observability';
@@ -47,6 +47,8 @@ export interface AppDeps {
   address?: AddressService;
   /** The application account (ID-001): the account routes and the requireAccount guard; routes are registered only when provided. */
   accounts?: AccountService;
+  /** The email contact and its verification (ID-002); the email routes are registered only when provided together with `accounts`. */
+  emailVerification?: EmailVerificationService;
 }
 
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
@@ -118,8 +120,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   if (deps.geography) await app.register(geographyRoutes, { prefix: `${API_PREFIX}/geography`, geography: deps.geography });
   if (deps.address) await app.register(addressRoutes, { prefix: `${API_PREFIX}/geography`, address: deps.address });
   if (deps.accounts) {
-    await app.register(accountPlugin, { accounts: deps.accounts });
-    await app.register(accountRoutes, { prefix: API_PREFIX });
+    await app.register(accountPlugin, { accounts: deps.accounts, emailVerification: deps.emailVerification });
+    await app.register(accountRoutes, { prefix: API_PREFIX, emailRoutes: deps.emailVerification !== undefined });
   }
 
   app.get('/metrics', { schema: { hide: true } }, async (_req, reply) => reply.type(metrics.contentType).send(await metrics.metrics()));

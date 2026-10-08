@@ -4,7 +4,16 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { loadConfig } from '@bananagig/config';
-import { ACCOUNT_ERROR_CODES, AccountDto, AccountResponse, CORRELATION_HEADER, ErrorResponse, type AccountErrorCode } from '@bananagig/contracts';
+import {
+  ACCOUNT_ERROR_CODES,
+  AccountDto,
+  AccountResponse,
+  CORRELATION_HEADER,
+  ErrorResponse,
+  emailErrorMessageKey,
+  type AccountErrorCode,
+  type EmailErrorCode,
+} from '@bananagig/contracts';
 import { AccountError, AccountService, type AccountContext } from '@bananagig/accounts';
 import type { Database } from '@bananagig/database';
 import { createTokenVerifier } from '@bananagig/identity';
@@ -47,6 +56,7 @@ const makeContext = (over: Partial<AccountContext> = {}): AccountContext => ({
   primaryRole: 'CUSTOMER',
   activeRole: 'CUSTOMER',
   profile: null,
+  email: { emailVerificationStatus: 'NONE', primary: null, pending: null },
   createdAt: T0,
   created: false,
   ...over,
@@ -74,7 +84,7 @@ const call = async (method: Method, url: string, token?: string, payload?: unkno
 const errorOf = (r: { json: () => unknown }) => ErrorResponse.parse(r.json()).error;
 const dataOf = (r: { json: () => unknown }) => AccountResponse.parse(r.json()).data;
 const keysOf = (o: object) => Object.keys(o).sort();
-const ACCOUNT_KEYS = ['accountId', 'activeRole', 'createdAt', 'primaryRole', 'profile', 'roles', 'status'];
+const ACCOUNT_KEYS = ['accountId', 'activeRole', 'createdAt', 'email', 'primaryRole', 'profile', 'roles', 'status'];
 const raw = (v: unknown): string => JSON.stringify(v);
 
 /** The identity every service call must carry: the verified token's, never anything the client wrote. */
@@ -229,7 +239,7 @@ describe('GET /account/me', () => {
     await call('GET', '/me', await webToken({ realm_access: undefined }));
     expect(svc.ensureAccountForIdentity.mock.calls.map((c) => c[0].identityRoles)).toEqual([['provider'], [], []]);
   });
-  it('answers with the AccountDto envelope: exactly accountId, status, roles, primaryRole, activeRole, profile and createdAt', async () => {
+  it('answers with the AccountDto envelope: exactly accountId, status, roles, primaryRole, activeRole, profile, email and createdAt', async () => {
     const res = await call('GET', '/me', await webToken());
     expect(res.statusCode).toBe(200);
     const body = res.json() as { data: Record<string, unknown>; meta: { correlationId: string } };
@@ -243,6 +253,7 @@ describe('GET /account/me', () => {
       primaryRole: 'CUSTOMER',
       activeRole: 'CUSTOMER',
       profile: PROFILE,
+      email: { emailVerificationStatus: 'NONE', primary: null, pending: null },
       createdAt: '2026-01-01T00:00:00.000Z',
     });
     expect(keysOf(body.meta)).toEqual(['correlationId']);
@@ -781,6 +792,18 @@ describe('account API error mapping', () => {
     CONFLICT: [409, 'CONFLICT'],
     INVALID_STATE: [409, 'CONFLICT'],
     UNAVAILABLE: [503, 'DEPENDENCY'],
+    EMAIL_INVALID: [400, 'VALIDATION'],
+    EMAIL_NOT_PENDING: [409, 'CONFLICT'],
+    EMAIL_CODE_INVALID: [400, 'VALIDATION'],
+    EMAIL_LINK_INVALID: [400, 'VALIDATION'],
+    EMAIL_CODE_EXPIRED: [400, 'VALIDATION'],
+    EMAIL_CODE_USED: [400, 'VALIDATION'],
+    EMAIL_VERIFICATION_LOCKED: [429, 'RATE_LIMIT'],
+    EMAIL_RESEND_TOO_SOON: [429, 'RATE_LIMIT'],
+    EMAIL_SEND_LIMIT: [429, 'RATE_LIMIT'],
+    EMAIL_UNAVAILABLE: [409, 'CONFLICT'],
+    EMAIL_DELIVERY_FAILED: [503, 'DEPENDENCY'],
+    EMAIL_RATE_LIMITED: [429, 'RATE_LIMIT'],
   };
   it('covers every AccountError code', () => {
     expect(Object.keys(expected).sort()).toEqual([...ACCOUNT_ERROR_CODES].sort());
@@ -817,9 +840,16 @@ describe('account API error mapping', () => {
       if (code === 'UNAVAILABLE') {
         expect(errorOf(r).message, where).toBe('The account service is temporarily unavailable');
         expect(errorOf(r).details, where).toBeUndefined();
+      } else if (code === 'EMAIL_DELIVERY_FAILED') {
+        // a delivery failure never echoes the service text or details: a fixed message, the retryable flag and the managed message key
+        expect(errorOf(r).message, where).toBe('The verification email could not be sent');
+        expect(errorOf(r).details, where).toEqual({ retryable: false, messageKey: 'account.email.error.delivery_failed' });
       } else {
         expect(errorOf(r).message, where).toBe(`${code} happened`);
-        expect(errorOf(r).details, where).toEqual({ reason: 'SOME_REASON', status: 'SUSPENDED' });
+        // the email codes (except the issue-based EMAIL_INVALID) also carry the key of their managed message
+        const key =
+          code.startsWith('EMAIL_') && code !== 'EMAIL_INVALID' ? { messageKey: emailErrorMessageKey(code as Exclude<EmailErrorCode, 'EMAIL_INVALID'>) } : {};
+        expect(errorOf(r).details, where).toEqual({ reason: 'SOME_REASON', status: 'SUSPENDED', ...key });
       }
     };
     const token = await webToken();

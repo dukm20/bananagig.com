@@ -159,8 +159,13 @@ The account routes (ID-001) build on these guards: `requireAccount({ includeProf
 | GET `/api/v1/account/me` | the caller's own account: id, status, ACTIVE application roles, preferred role, active role, profile | optional `x-active-role` header validated against the ACTIVE roles on every request (403 `ACCOUNT_ROLE_NOT_HELD` or `ACCOUNT_ROLE_NOT_ACTIVE`; an empty header is refused as `ACCOUNT_ROLE_NOT_HELD`, the web server omits the header instead of sending it empty); no query parameters |
 | POST `/api/v1/account/active-role` | validate a role switch `{ role }` and return the account with that active role | persists nothing and does not touch Keycloak |
 | PUT `/api/v1/account/profile` | replace the caller's own profile (first and last name, optional locale and time zone) | strict body, idempotent |
+| GET `/api/v1/account/email` | the caller's own email verification state (ID-002): status, masked primary and pending address, resend countdown, attempts left, code length | masked only; `no-store` |
+| POST `/api/v1/account/email` | set the address to verify `{ email }` (first address or a pending replacement) | strict body; sends nothing |
+| POST `/api/v1/account/email/verification/send` | send or resend the verification email (code and magic link) | cooldown and hour/day caps from configuration; 429 with `Retry-After` |
+| POST `/api/v1/account/email/verification/confirm-code` | confirm with `{ code }` | wrong codes are counted and lock the verification |
+| POST `/api/v1/account/email/verification/confirm-link` | confirm with `{ token }` | the token is in the body, never in a URL |
 
-Errors use the standard model with `ACCOUNT_<code>` codes (`ACCOUNT_SUSPENDED`, `ACCOUNT_CLOSED`, `ACCOUNT_ROLE_NOT_HELD`, `ACCOUNT_ROLE_NOT_ACTIVE`, `ACCOUNT_VALIDATION_FAILED`, `ACCOUNT_CONFLICT`, `ACCOUNT_INVALID_STATE`, `ACCOUNT_UNAVAILABLE`); every response of a matched account route, errors included, carries `Cache-Control: no-store` (the caller's own personal data); the full reference is in `docs/engineering/ACCOUNTS.md`. Readiness of the API still depends on PostgreSQL only: a Keycloak outage fails authenticated routes, not public ones.
+The email in Keycloak is a login identifier only: access tokens carry no email claim and BananaGig never trusts or copies it (ADR-0027). Errors use the standard model with `ACCOUNT_<code>` codes (`ACCOUNT_SUSPENDED`, `ACCOUNT_CLOSED`, `ACCOUNT_ROLE_NOT_HELD`, `ACCOUNT_ROLE_NOT_ACTIVE`, `ACCOUNT_VALIDATION_FAILED`, `ACCOUNT_CONFLICT`, `ACCOUNT_INVALID_STATE`, `ACCOUNT_UNAVAILABLE`); every response of a matched account route, errors included, carries `Cache-Control: no-store` (the caller's own personal data); the full reference is in `docs/engineering/ACCOUNTS.md`. Readiness of the API still depends on PostgreSQL only: a Keycloak outage fails authenticated routes, not public ones.
 
 ## Telemetry and logging
 

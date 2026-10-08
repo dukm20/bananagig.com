@@ -1,10 +1,10 @@
 import { loadConfig, redactConfig } from '@bananagig/config';
 import { createDatabase } from '@bananagig/database';
 import { createDbTelemetry, getCorrelationId, registerPoolMetrics, initObservability, log, shutdownObservability } from '@bananagig/observability';
-import { NatsClient, closeValkey, createS3, createValkey, runDiagnostics } from '@bananagig/platform';
+import { NatsClient, SmtpEmailSender, ValkeyRateLimiter, closeValkey, createS3, createValkey, runDiagnostics } from '@bananagig/platform';
 import { ConfigurationService, ValkeyConfigCache } from '@bananagig/configuration';
 import { ContentService } from '@bananagig/content';
-import { AccountService } from '@bananagig/accounts';
+import { AccountService, EmailVerificationService } from '@bananagig/accounts';
 import {
   AddressService,
   GeographyService,
@@ -15,6 +15,7 @@ import {
 } from '@bananagig/geography';
 import { createTokenVerifier } from '@bananagig/identity';
 import { buildApp } from './app';
+import { createContentEmailRenderer, createVerificationLinkBuilder, createVerificationPolicyProvider } from './modules/account/email-wiring';
 
 const cfg = loadConfig({ service: 'bananagig-api', role: 'api' });
 initObservability(cfg);
@@ -88,6 +89,21 @@ registerReadinessCheck(createAddressFormatReadinessCheck(address));
 // The application account (ID-001): maps the verified Keycloak identity (issuer + subject) to the BananaGig account and its application roles.
 const accounts = new AccountService({ database, lastSeenTouchSeconds: cfg.identity.lastSeenTouchSeconds });
 
+// Email verification (ID-002): BananaGig-owned email contact state. Limits come from the configuration registry (CFG-001), the message from the content registry
+// (CFG-002) and the delivery from the EmailSender port (SMTP to Mailpit locally and in CI; a production provider implements the same port, DEBT in TECH_DEBT).
+// The abuse limiter is the reusable Valkey rate-limit foundation; it fails closed for operations that send mail.
+const emailVerification = new EmailVerificationService({
+  database,
+  policy: createVerificationPolicyProvider(configuration),
+  sender: new SmtpEmailSender(
+    { host: cfg.smtp.host, port: cfg.smtp.port, from: cfg.mailFrom, insecureLocal: cfg.env !== 'production' },
+    createContentEmailRenderer(content),
+  ),
+  linkFor: createVerificationLinkBuilder(cfg.identity.webPublicUrl),
+  hashSecret: cfg.verification.hashSecret,
+  rateLimiter: new ValkeyRateLimiter(valkey),
+});
+
 const app = await buildApp({
   cfg,
   verifier,
@@ -96,6 +112,7 @@ const app = await buildApp({
   geography,
   address,
   accounts,
+  emailVerification,
   // Critical for serving requests: Postgres only. Valkey/NATS/OpenSearch/flagd outages must not take the API down.
   readiness: async () => ({ postgres: (await database.health()).ok ? 'up' : 'down' }),
   diagnostics: () => runDiagnostics(adapters),

@@ -19,6 +19,7 @@ import {
   profileIssueMessageKey,
   validateProfileName,
   type AccountCreatedPayload,
+  type AccountEmailSummaryDto,
   type AccountProfileDto,
   type AccountRolePayload,
   type AccountStatus,
@@ -30,6 +31,7 @@ import { sql, type Database, type Kysely, type DatabaseSchema, type Trx } from '
 import { getCorrelationId, log } from '@bananagig/observability';
 import { insertOutboxEvent } from '@bananagig/platform';
 import { AccountError, isDatabaseOutage } from './errors';
+import { loadEmailSummary } from './email-state';
 import { bootstrapRoleCodes, parseVerifiedIdentity, resolveActiveRole, type MembershipView, type VerifiedIdentity } from './identity';
 
 type Row = Record<string, unknown>;
@@ -56,6 +58,8 @@ export interface AccountContext {
   /** The role this request acts as (see resolveActiveRole), or null. */
   activeRole: string | null;
   profile: AccountProfileDto | null;
+  /** The email contact state (ID-002): the verification status application services read, with the address MASKED. */
+  email: AccountEmailSummaryDto;
   createdAt: Date;
   /** True only for the call that created the account. */
   created: boolean;
@@ -100,6 +104,19 @@ function guardError(rule: string | undefined): AccountError {
         reason: 'CONCURRENT_UPDATE',
         retryable: true,
       });
+    case 'EMAIL_INITIAL_WITH_PRIMARY':
+    case 'EMAIL_REPLACEMENT_WITHOUT_PRIMARY':
+    case 'EMAIL_PRIMARY_NOT_REPLACEABLE':
+    case 'EMAIL_PRIMARY_CHANGE':
+    case 'EMAIL_STATUS_TRANSITION':
+    case 'EMAIL_INVARIANT':
+    case 'CHALLENGE_NOT_OPEN':
+    case 'CHALLENGE_PURPOSE':
+    case 'CHALLENGE_STATE':
+    case 'CHALLENGE_CLOSED':
+    case 'CHALLENGE_ATTEMPTS':
+    case 'CHALLENGE_DELIVERY':
+    case 'CHALLENGE_CONSUMPTION':
     case 'ACCOUNT_STATUS_TRANSITION':
     case 'ACCOUNT_HAS_ACTIVE_ROLES':
     case 'ROLE_IN_USE':
@@ -124,6 +141,18 @@ export function mapDbError(err: unknown): never {
   if (err instanceof AccountError) throw err;
   const e = (err ?? {}) as { code?: string; detail?: string; constraint?: string };
   if (e.code === '40P01' || e.code === '40001' || e.code === '55P03')
+    throw new AccountError('CONFLICT', 'the change conflicted with a concurrent update; repeat the request', { reason: 'CONCURRENT_UPDATE', retryable: true });
+  // the address is VERIFIED on another account: whoever reaches this point proved control of the mailbox, so the typed answer is allowed (see EMAIL_VERIFICATION.md)
+  if (e.code === '23505' && e.constraint === 'uq_email_contacts__verified_address')
+    throw new AccountError('EMAIL_UNAVAILABLE', 'this email address cannot be verified for this account', { reason: 'ADDRESS_UNAVAILABLE' });
+  // a concurrent change of the same account's email rows: the account lock normally serializes these, the unique indexes are the net underneath
+  if (
+    e.code === '23505' &&
+    (e.constraint === 'uq_email_contacts__primary_per_account' ||
+      e.constraint === 'uq_email_contacts__open_per_account' ||
+      e.constraint === 'uq_email_contacts__live_address_per_account' ||
+      e.constraint === 'uq_email_verification_challenges__open_per_contact')
+  )
     throw new AccountError('CONFLICT', 'the change conflicted with a concurrent update; repeat the request', { reason: 'CONCURRENT_UPDATE', retryable: true });
   if (e.code === '23505') throw new AccountError('CONFLICT', 'a record with this identity already exists', { reason: 'DUPLICATE', constraint: e.constraint });
   if (e.code === '23000') throw guardError(ruleOf(e.detail));
@@ -206,6 +235,7 @@ export class AccountService {
           timeZone: (p.iana_name as string | null) ?? null,
         };
     }
+    const email = await loadEmailSummary(ex, accountId);
     return {
       accountId,
       status,
@@ -214,6 +244,7 @@ export class AccountService {
       primaryRole,
       activeRole,
       profile,
+      email,
       createdAt: a.created_at as Date,
       created: opts.created === true,
     };

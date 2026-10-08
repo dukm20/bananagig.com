@@ -15,6 +15,7 @@ Choose and write the right test level, and run the same gates CI runs.
 - `apps/api/src/api.test.ts`, `apps/web/src/web.test.tsx`, `apps/worker/src/worker.test.ts`, `apps/worker/src/worker.itest.ts`, `apps/worker/src/outbox.itest.ts`, `packages/testing/src/locks.itest.ts`, `packages/testing/src/migrations.itest.ts`, `packages/testing/src/postgis.itest.ts`
 - `packages/testing/src/index.ts`, `packages/testing/src/database.itest.ts`
 - `apps/smoke/src/index.ts`, `.github/workflows/ci.yml`
+- `packages/testing/src/mailpit.ts` (read a delivered email from Mailpit and extract the code and link), `packages/accounts/src/email-verification.itest.ts` and `apps/api/src/account-email.itest.ts` (patterns for races, crafted rows and secret scans)
 
 ## Architecture rules
 
@@ -79,12 +80,17 @@ Schema changes also need constraint-violation and rollback tests, and the data-m
 - Get-or-create races (the first request of a person, ID-001, `apps/api/src/account.itest.ts`): fire N parallel callers at one new identity (20 in the API test) and assert the invariants, not the interleaving: exactly one account, one identity link and one creation history row, every caller got the same account id, one `account-created` event; repeat the file several times because a single green run proves little; also run parallel first requests of several distinct subjects and assert one account each. The database file `packages/testing/src/identity-model.itest.ts` proves the guard keys by their `identity_rule:<KEY>` DETAIL and the two deferred status-history checks at COMMIT (a missing row, a stray row, a `from_status` gap and a newest row against the status fail; a transaction through a transient status passes).
 - Privacy is asserted by log capture, not by reading code: run the account routes with a capturing logger and assert that no token segment, Keycloak subject of the account's login or typed name appears anywhere in the output, in any response body, audit `changes`, event payload or error (compare against the fixed message, not a short needle), and that the schema holds no login subject outside the link table (an actor string `admin:<subject>` names who acted and is a different value; the outage log line carries the SQLSTATE or error class only).
 - A coerced-body regression table (DEBT-0043 for new bodies): for every new body, list the values Ajv coercion would have accepted (`1`, `true`, `null`, `"1e3"`, extra keys, an `accountId`, non-object bodies, wrong-case enums) and assert each is a 400 with the standard envelope and that nothing was written (the integration test compares the whole state before and after; a unit test with a fake service asserts the service was never called; `apps/api/src/strict-body.test.ts` covers the shared helpers).
+- Email tests read the REAL delivered message: `waitForMailpitMessages(to)` and `extractVerification(message)` from `@bananagig/testing` (Mailpit API `MAILPIT_API_URL`, default `http://127.0.0.1:18025`; SMTP `SMTP_HOST`/`SMTP_PORT` from `.env.host`). Use a unique address per test (`name-${randomUUID()}@example.test`) so reruns never collide.
+- Time-dependent rules (expiry, cooldown) are tested without sleeping: insert a row with explicit past `created_at`/`expires_at` and hashes computed with the production hash function, or lower the policy through a fake provider. The database clock decides, so never rely on the application clock.
+- Prove "exactly once" with real concurrency: `Promise.all` of the competing calls on separate pool connections, repeated in a loop with fresh accounts, asserting one `changed: true`, ONE audit row and ONE outbox event. Prove "never exceeds the maximum" the same way (N concurrent wrong codes, `attempt_count` ends at the maximum).
+- Secret scans: dump the challenge/contact/audit/outbox rows as JSON and capture every `log` call (`vi.mock('@bananagig/observability')`) and assert the plaintext code, the token, both hashes and the full address are absent; only the masked form and ids may appear.
 
 ## Do not
 
 - Do not point tests at the dev database or leave scratch tables behind.
 - Do not skip failing tests to make a gate pass.
 - Do not call real external services from tests.
+- Do not read verification secrets from the database in a test (they are hashes): take them from the delivered message or the `EmailSender` double.
 
 ## Related ADRs
 
@@ -92,4 +98,4 @@ ADR-0004, ADR-0006, ADR-0025
 
 ## Last reviewed
 
-2026-10-07 (ID-001)
+2026-10-07 (ID-002)

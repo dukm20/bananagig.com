@@ -7,7 +7,7 @@
 import type { FastifyInstance, preHandlerAsyncHookHandler } from 'fastify';
 import fp from 'fastify-plugin';
 import { ACTIVE_ROLE_HEADER } from '@bananagig/contracts';
-import type { AccountContext, AccountService } from '@bananagig/accounts';
+import type { AccountContext, AccountService, EmailVerificationService } from '@bananagig/accounts';
 import { AppError } from '../errors';
 import { toAppError } from '../modules/account/dto';
 import { requireAuthenticated } from './auth';
@@ -19,13 +19,18 @@ declare module 'fastify' {
   }
   interface FastifyInstance {
     accounts: AccountService;
+    /** The email contact and its verification (ID-002); present when the email routes are registered. */
+    emailVerification: EmailVerificationService;
   }
 }
 
-export const accountPlugin = fp(async (app: FastifyInstance, opts: { accounts: AccountService }): Promise<void> => {
-  app.decorate('accounts', opts.accounts);
-  app.decorateRequest('account', undefined);
-});
+export const accountPlugin = fp(
+  async (app: FastifyInstance, opts: { accounts: AccountService; emailVerification?: EmailVerificationService }): Promise<void> => {
+    app.decorate('accounts', opts.accounts);
+    if (opts.emailVerification) app.decorate('emailVerification', opts.emailVerification);
+    app.decorateRequest('account', undefined);
+  },
+);
 
 export interface RequireAccountOptions {
   /** Load the caller's own core profile too. */

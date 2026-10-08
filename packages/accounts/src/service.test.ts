@@ -757,6 +757,7 @@ describe('AccountService.ensureAccountForIdentity against a scripted connection:
       primaryRole: 'CUSTOMER',
       activeRole: 'CUSTOMER',
       profile: null,
+      email: { emailVerificationStatus: 'NONE', primary: null, pending: null },
       createdAt: CREATED_AT,
       created: false,
     });

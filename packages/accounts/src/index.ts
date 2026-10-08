@@ -3,3 +3,7 @@
 export * from './errors';
 export * from './identity';
 export * from './service';
+export * from './email-crypto';
+export * from './email-policy';
+export * from './email-state';
+export * from './email-verification';

@@ -2,7 +2,7 @@
 // integration tests and `pnpm smoke`). It behaves like the API where the web app depends on it: the bearer token is required, the role named in
 // x-active-role must be an ACTIVE role of the account (403 ACCOUNT_ROLE_NOT_HELD otherwise), the role switch validates and persists nothing.
 import type http from 'node:http';
-import { CORRELATION_HEADER, UpdateProfileRequest, type AccountDto } from '@bananagig/contracts';
+import { CORRELATION_HEADER, UpdateProfileRequest, type AccountDto, type AccountEmailDetailDto } from '@bananagig/contracts';
 import type { ContentStub, StubCatalog } from './content-stub';
 import { REGISTRY_COPY } from './content-stub';
 
@@ -18,7 +18,20 @@ export const accountDto = (roles: AccountDto['roles'] = [CUSTOMER_ROLE], over: P
   primaryRole: roles[0]?.code ?? null,
   activeRole: roles[0]?.code ?? null,
   profile: null,
+  email: { emailVerificationStatus: 'NONE', primary: null, pending: null },
   createdAt: '2026-01-02T03:04:05.000Z',
+  ...over,
+});
+
+/** The email verification state the API reports for an account without any address (NONE, codes of 6 digits, 30 minutes of validity). */
+export const emailDetail = (over: Partial<AccountEmailDetailDto> = {}): AccountEmailDetailDto => ({
+  emailVerificationStatus: 'NONE',
+  primary: null,
+  pending: null,
+  resendAvailableAt: null,
+  attemptsRemaining: null,
+  codeLength: 6,
+  validityMinutes: 30,
   ...over,
 });
 
@@ -38,6 +51,47 @@ export const ACCOUNT_COPY: StubCatalog = {
   },
 };
 
+/**
+ * Registry copy of the email verification screen (ID-002): every content key the /verify-email page requests, worded unlike the seeded copy so a test
+ * proves the text came from the registry. The stub does not render variables, so the intro and countdown copy is plain text here.
+ */
+export const EMAIL_TEXT: Readonly<Record<string, string>> = {
+  'account.email.verify.title': 'Registry email title',
+  'account.email.verify.intro': 'Registry email intro',
+  'account.email.verify.code_label': 'Registry email code label',
+  'account.email.verify.submit': 'Registry email submit',
+  'account.email.verify.resend': 'Registry email resend',
+  'account.email.verify.resend_wait': 'Registry email countdown',
+  'account.email.verify.change': 'Registry email change',
+  'account.email.verify.sent': 'Registry email sent',
+  'account.email.verify.success': 'Registry email success',
+  'account.email.link.title': 'Registry link title',
+  'account.email.link.body': 'Registry link body',
+  'account.email.link.confirm': 'Registry link confirm',
+  'account.email.link.sign_in_required': 'Registry link sign-in required',
+  'account.email.status.none': 'Registry email status none',
+  'account.email.status.pending': 'Registry email status pending',
+  'account.email.status.verified': 'Registry email status verified',
+  'account.email.error.invalid_format': 'Registry error invalid format',
+  'account.email.error.not_pending': 'Registry error not pending',
+  'account.email.error.code_invalid': 'Registry error code invalid',
+  'account.email.error.link_invalid': 'Registry error link invalid',
+  'account.email.error.code_expired': 'Registry error code expired',
+  'account.email.error.code_used': 'Registry error code used',
+  'account.email.error.verification_locked': 'Registry error verification locked',
+  'account.email.error.resend_too_soon': 'Registry error resend too soon',
+  'account.email.error.send_limit': 'Registry error send limit',
+  'account.email.error.unavailable': 'Registry error unavailable',
+  'account.email.error.delivery_failed': 'Registry error delivery failed',
+  'account.email.error.rate_limited': 'Registry error rate limited',
+};
+export const EMAIL_COPY: StubCatalog = {
+  'en-US': {
+    ...ACCOUNT_COPY['en-US'],
+    ...Object.fromEntries(Object.entries(EMAIL_TEXT).map(([key, value]) => [key, { value, contentType: 'PLAIN_TEXT' as const }])),
+  },
+};
+
 export interface AccountCall {
   method: string;
   path: string;
@@ -51,6 +105,8 @@ export interface AccountApiStub {
   calls: AccountCall[];
   /** The account the API holds; its `activeRole` is recomputed per request like the API does. */
   account: AccountDto;
+  /** The email verification state GET /api/v1/account/email reports (ID-002). */
+  email: AccountEmailDetailDto;
   /** up: serves; down: 503; suspended: 403 ACCOUNT_SUSPENDED. */
   mode: 'up' | 'down' | 'suspended';
   /** Whether /system/whoami is served (otherwise 404, which is what the content-only stub does). */
@@ -62,11 +118,13 @@ export function attachAccountApi(stub: ContentStub): AccountApiStub {
   const api: AccountApiStub = {
     calls: [],
     account: accountDto(),
+    email: emailDetail(),
     mode: 'up',
     whoami: true,
     reset() {
       api.calls.length = 0;
       api.account = accountDto();
+      api.email = emailDetail();
       api.mode = 'up';
       api.whoami = true;
     },
@@ -98,6 +156,8 @@ export function attachAccountApi(stub: ContentStub): AccountApiStub {
     const acting = (role: string | undefined): AccountDto => ({ ...api.account, activeRole: role ?? api.account.primaryRole });
     if (req.method === 'GET' && path === '/api/v1/account/me')
       return held(activeRole) ? ok(acting(activeRole)) : fail(403, 'ACCOUNT_ROLE_NOT_HELD', 'AUTHORIZATION', { role: activeRole });
+    if (req.method === 'GET' && path === '/api/v1/account/email')
+      return held(activeRole) ? ok(api.email) : fail(403, 'ACCOUNT_ROLE_NOT_HELD', 'AUTHORIZATION', { role: activeRole });
     if (req.method === 'POST' && path === '/api/v1/account/active-role') {
       const role = (body as { role?: string } | undefined)?.role;
       if (typeof role !== 'string') return fail(400, 'VALIDATION_FAILED', 'VALIDATION');

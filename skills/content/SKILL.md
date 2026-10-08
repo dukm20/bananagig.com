@@ -96,6 +96,7 @@ Any change to `content.*` goes through the Data Model Review Gate (normalization
 - Variable values and copy never go into events, logs, audit rows or error details.
 - Audit rows carry `locale` only for `LOCALE_*` actions (`ck_audit_events__subject`); version actions reach the locale through the version. Seeded versions (migration 0006) emit no outbox events and have five audit rows each.
 - Web locale negotiation uses the public active-locale list (`GET /api/v1/content/locales`, memoized 30 s per process); `<html lang>` is still static (DEBT-0026).
+- Email copy (ID-002): an email is two entries, `<key>.subject` (EMAIL_SUBJECT, single line, no secret in it) and `<key>.body` (EMAIL_BODY, rendered to sanitized HTML); a plain-text alternative is derived from that HTML (`htmlToPlainText` in `@bananagig/platform`). Credentials in variables (a code, a link) are typed (`STRING`, `URL`) and marked `SENSITIVE_PERSONAL`. A link destination built from a variable (`[text]({verification_url})`) is validated at render time; the fragment form `#token=` passes. Seed entries WITH variables by inserting `content.entry_variables` before the version in the lifecycle `DO` block (a required variable cannot be added once the entry has versions); every seeded body must render with its example values (test it with `ContentService.render`, the SQL seed bypasses the authoring validation).
 
 ## Do not
 
@@ -114,4 +115,4 @@ ADR-0018, ADR-0019, ADR-0020, ADR-0021, ADR-0022 (builds on ADR-0001, ADR-0003, 
 
 ## Last reviewed
 
-2026-10-07 (GEO-001)
+2026-10-07 (ID-002)

@@ -10,6 +10,12 @@ import {
   AccountRolePayload,
   AccountStatusChangedPayload,
   ExternalIdentityLinkedPayload,
+  EMAIL_EVENTS,
+  EmailChangeRequestedPayload,
+  EmailContactAddedPayload,
+  EmailVerificationFailedPayload,
+  EmailVerificationSentPayload,
+  EmailVerifiedPayload,
   AddressFormatPublishedPayload,
   AdministrativeAreasUpdatedPayload,
   CONFIGURATION_EVENTS,
@@ -39,7 +45,17 @@ const verifier = createTokenVerifier({
     throw new Error('not used');
   },
 });
-const app = await buildApp({ cfg, verifier, configuration: {}, content: {}, geography: {}, address: {}, accounts: {}, readiness: async () => ({}) });
+const app = await buildApp({
+  cfg,
+  verifier,
+  configuration: {},
+  content: {},
+  geography: {},
+  address: {},
+  accounts: {},
+  emailVerification: {},
+  readiness: async () => ({}),
+});
 await app.ready();
 const openapi = app.swagger();
 await app.close();
@@ -138,6 +154,38 @@ const IDENTITY_MESSAGES = {
     'identity_account',
   ],
 };
+const EMAIL_MESSAGES = {
+  contactAdded: [
+    'IdentityEmailContactAdded',
+    'An email address was added to an account as a pending first address, as a pending replacement of the verified primary, or created verified by a trusted identity provider.',
+    EmailContactAddedPayload,
+    'identity_account',
+  ],
+  verificationSent: [
+    'IdentityEmailVerificationSent',
+    'A verification email (one-time code and magic link) was accepted by the delivery provider for a pending address.',
+    EmailVerificationSentPayload,
+    'identity_account',
+  ],
+  verified: [
+    'IdentityEmailVerified',
+    'An email address became the verified primary address of an account, by code, by magic link or because a trusted identity provider reported it verified; replacedEmailContactId names the primary it replaced.',
+    EmailVerifiedPayload,
+    'identity_account',
+  ],
+  verificationFailed: [
+    'IdentityEmailVerificationFailed',
+    'A wrong verification code was submitted; locked is true when that attempt used the last allowed one.',
+    EmailVerificationFailedPayload,
+    'identity_account',
+  ],
+  changeRequested: [
+    'IdentityEmailChangeRequested',
+    'A replacement for the verified primary address was requested; the old address stays active until the new one verifies.',
+    EmailChangeRequestedPayload,
+    'identity_account',
+  ],
+};
 const channels = {
   infraPing: {
     address: INFRA_PING_EVENT_TYPE,
@@ -219,13 +267,29 @@ for (const [k, [name, summary, payload, aggregate]] of Object.entries(IDENTITY_M
   };
   schemas[name] = typedEnvelope(type, payload);
 }
+for (const [k, [name, summary, payload, aggregate]] of Object.entries(EMAIL_MESSAGES)) {
+  const type = EMAIL_EVENTS[k];
+  channels[`identity_email_${k}`] = {
+    address: type,
+    description: `${summary} Published through the transactional outbox (aggregate ${aggregate}); the payload carries identifiers only, never an email address, a verification code, a token or a hash.`,
+    messages: { [name]: { $ref: `#/components/messages/${name}` } },
+  };
+  operations[`send${name}`] = { action: 'send', channel: { $ref: `#/channels/identity_email_${k}` }, summary };
+  messages[name] = {
+    name,
+    title: summary,
+    headers: { type: 'object', properties: { 'x-correlation-id': { type: 'string' } } },
+    payload: { $ref: `#/components/schemas/${name}` },
+  };
+  schemas[name] = typedEnvelope(type, payload);
+}
 const asyncapi = {
   asyncapi: '3.0.0',
   info: {
     title: 'BananaGig Events',
     version: '1.0.0',
     description:
-      'Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events and the identity account events exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.',
+      'Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events, the identity account events and the email verification events exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.',
   },
   defaultContentType: 'application/json',
   channels,

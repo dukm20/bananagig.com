@@ -79,6 +79,7 @@ Any change to `configuration.*` goes through the Data Model Review Gate (normali
 - Fastify must not strip unknown fields (`removeAdditional: false`), or typos silently succeed.
 - The content registry (ADR-0018) reuses `configuration.scope_levels`, `ConfigCache`, `ValkeyConfigCache`, `MemoryConfigCache`, `contextHash` and the `CONFIG_CACHE_TTL_SECONDS` and `CONFIG_LKG_MAX_AGE_SECONDS` settings. Changing any of them affects both registries, so run both package test suites. Words shown to people belong in content (skill `skills/content/SKILL.md`), not in a STRING parameter.
 - `ValkeyConfigCache` is bounded: `new ValkeyConfigCache(client, { commandTimeoutMs, breakerCooldownMs, now })` (defaults 100 ms per command and a 5 s circuit breaker). Any failure or timeout degrades to a miss or no-op; the breaker is per instance, and the API and worker create one instance per registry (configuration and content) over the same client, so each has its own breaker state. Generation counters have no TTL and can be evicted under `allkeys-lru` pressure and reset to 0; staleness is then bounded by the 30 s cache TTL.
+- Seeding a parameter from a migration (ID-002, `0010_email_verification.sql`): replay the REAL workflow rows in one `DO` block per parameter (parameter, `PLATFORM` scope, `PARAMETER_CREATED`; change request `DRAFT` -> `PENDING_APPROVAL` -> `APPROVED` with a different approver row for `SECOND_APPROVER`; holder and version 1; request `ACTIVE`; audit `CHANGE_PUBLISHED`/`CHANGE_ACTIVATED`), so later changes go through the normal workflow and the audit trail looks like a real one. Seeds emit no outbox events. Security parameters are CRITICAL (never cached, never last-known-good): the consumer must fail closed when they cannot be read and parse them again with its own bounds.
 
 ## Do not
 
@@ -94,4 +95,4 @@ ADR-0016, ADR-0017 (builds on ADR-0001, ADR-0003, ADR-0012)
 
 ## Last reviewed
 
-2026-10-07 (GEO-001)
+2026-10-07 (ID-002)

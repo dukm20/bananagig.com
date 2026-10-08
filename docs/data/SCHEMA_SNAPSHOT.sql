@@ -606,12 +606,15 @@ CREATE TABLE identity.account_audit_events (
   changes jsonb,
   reason text,
   correlation_id text NOT NULL,
+  email_contact_id uuid,
   CONSTRAINT pk_account_audit_events PRIMARY KEY (audit_event_id),
+  CONSTRAINT fk_account_audit_events__account_email_contact FOREIGN KEY (account_id, email_contact_id) REFERENCES identity.email_contacts(account_id, email_contact_id) ON DELETE RESTRICT,
   CONSTRAINT fk_account_audit_events__account_id FOREIGN KEY (account_id) REFERENCES identity.accounts(account_id) ON DELETE RESTRICT,
   CONSTRAINT fk_account_audit_events__role_id FOREIGN KEY (role_id) REFERENCES identity.roles(role_id) ON DELETE RESTRICT,
-  CONSTRAINT ck_account_audit_events__action CHECK ((action = ANY (ARRAY['ACCOUNT_CREATED'::text, 'EXTERNAL_IDENTITY_LINKED'::text, 'ROLE_GRANTED'::text, 'ROLE_ACTIVATED'::text, 'ROLE_DEACTIVATED'::text, 'PRIMARY_ROLE_CHANGED'::text, 'PROFILE_UPDATED'::text]))),
+  CONSTRAINT ck_account_audit_events__action CHECK ((action = ANY (ARRAY['ACCOUNT_CREATED'::text, 'EXTERNAL_IDENTITY_LINKED'::text, 'ROLE_GRANTED'::text, 'ROLE_ACTIVATED'::text, 'ROLE_DEACTIVATED'::text, 'PRIMARY_ROLE_CHANGED'::text, 'PROFILE_UPDATED'::text, 'EMAIL_ADDED'::text, 'EMAIL_CHANGE_REQUESTED'::text, 'EMAIL_VERIFICATION_REQUESTED'::text, 'EMAIL_VERIFICATION_FAILED'::text, 'EMAIL_VERIFICATION_LOCKED'::text, 'EMAIL_VERIFIED'::text, 'EMAIL_PRIMARY_CHANGED'::text]))),
   CONSTRAINT ck_account_audit_events__actor CHECK (((length(btrim(actor)) > 0) AND (length(actor) <= 200))),
   CONSTRAINT ck_account_audit_events__changes_object CHECK (((changes IS NULL) OR (jsonb_typeof(changes) = 'object'::text))),
+  CONSTRAINT ck_account_audit_events__email_contact CHECK (((action ~~ 'EMAIL\_%'::text) = (email_contact_id IS NOT NULL))),
   CONSTRAINT ck_account_audit_events__role CHECK (((action ~~ 'ROLE\_%'::text) = (role_id IS NOT NULL)))
 );
 CREATE INDEX idx_account_audit_events__account ON identity.account_audit_events USING btree (account_id, occurred_at DESC);
@@ -684,6 +687,68 @@ CREATE TABLE identity.accounts (
   CONSTRAINT ck_accounts__closed_at CHECK (((status = 'CLOSED'::text) = (closed_at IS NOT NULL))),
   CONSTRAINT ck_accounts__status CHECK ((status = ANY (ARRAY['PENDING'::text, 'ACTIVE'::text, 'SUSPENDED'::text, 'CLOSURE_REQUESTED'::text, 'CLOSED'::text])))
 );
+
+CREATE TABLE identity.email_contacts (
+  email_contact_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  account_id uuid NOT NULL,
+  email_normalized text NOT NULL,
+  status text NOT NULL,
+  is_primary boolean NOT NULL DEFAULT false,
+  source text NOT NULL,
+  verified_at timestamp with time zone,
+  disabled_at timestamp with time zone,
+  disabled_reason text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_email_contacts PRIMARY KEY (email_contact_id),
+  CONSTRAINT uq_email_contacts__account_contact UNIQUE (account_id, email_contact_id),
+  CONSTRAINT fk_email_contacts__account_id FOREIGN KEY (account_id) REFERENCES identity.accounts(account_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_email_contacts__disabled CHECK ((((status = 'DISABLED'::text) = (disabled_at IS NOT NULL)) AND ((status = 'DISABLED'::text) = (disabled_reason IS NOT NULL)))),
+  CONSTRAINT ck_email_contacts__disabled_reason CHECK (((disabled_reason IS NULL) OR (disabled_reason = ANY (ARRAY['REPLACED'::text, 'SUPERSEDED'::text])))),
+  CONSTRAINT ck_email_contacts__email_normalized CHECK (((length(email_normalized) <= 254) AND (email_normalized ~ '^[a-z0-9!#$%&''*+/=?^_`{|}~.-]{1,64}@[a-z0-9.-]{3,253}$'::text))),
+  CONSTRAINT ck_email_contacts__idp_born_verified CHECK (((source <> 'IDP_VERIFIED'::text) OR (verified_at IS NOT NULL))),
+  CONSTRAINT ck_email_contacts__primary_is_verified CHECK (((NOT is_primary) OR (status = 'VERIFIED'::text))),
+  CONSTRAINT ck_email_contacts__source CHECK ((source = ANY (ARRAY['USER_ENTERED'::text, 'IDP_VERIFIED'::text]))),
+  CONSTRAINT ck_email_contacts__status CHECK ((status = ANY (ARRAY['PENDING'::text, 'VERIFIED'::text, 'REPLACEMENT_PENDING'::text, 'DISABLED'::text]))),
+  CONSTRAINT ck_email_contacts__verified_at CHECK ((((status <> 'VERIFIED'::text) OR (verified_at IS NOT NULL)) AND ((status <> ALL (ARRAY['PENDING'::text, 'REPLACEMENT_PENDING'::text])) OR (verified_at IS NULL))))
+);
+CREATE UNIQUE INDEX uq_email_contacts__live_address_per_account ON identity.email_contacts USING btree (account_id, email_normalized) WHERE (status <> 'DISABLED'::text);
+CREATE UNIQUE INDEX uq_email_contacts__open_per_account ON identity.email_contacts USING btree (account_id) WHERE (status = ANY (ARRAY['PENDING'::text, 'REPLACEMENT_PENDING'::text]));
+CREATE UNIQUE INDEX uq_email_contacts__primary_per_account ON identity.email_contacts USING btree (account_id) WHERE is_primary;
+CREATE UNIQUE INDEX uq_email_contacts__verified_address ON identity.email_contacts USING btree (email_normalized) WHERE (status = 'VERIFIED'::text);
+
+CREATE TABLE identity.email_verification_challenges (
+  challenge_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  email_contact_id uuid NOT NULL,
+  purpose text NOT NULL,
+  code_hash text NOT NULL,
+  magic_token_hash text NOT NULL,
+  expires_at timestamp with time zone NOT NULL,
+  used_at timestamp with time zone,
+  consumed_via text,
+  attempt_count integer NOT NULL DEFAULT 0,
+  invalidated_at timestamp with time zone,
+  invalidation_reason text,
+  delivery_status text NOT NULL DEFAULT 'PENDING'::text,
+  last_sent_at timestamp with time zone,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  correlation_id text NOT NULL,
+  CONSTRAINT pk_email_verification_challenges PRIMARY KEY (challenge_id),
+  CONSTRAINT uq_email_verification_challenges__magic_token_hash UNIQUE (magic_token_hash),
+  CONSTRAINT fk_email_verification_challenges__email_contact_id FOREIGN KEY (email_contact_id) REFERENCES identity.email_contacts(email_contact_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_email_verification_challenges__attempts CHECK ((attempt_count >= 0)),
+  CONSTRAINT ck_email_verification_challenges__closed_once CHECK (((used_at IS NULL) OR (invalidated_at IS NULL))),
+  CONSTRAINT ck_email_verification_challenges__code_hash CHECK ((code_hash ~ '^[0-9a-f]{64}$'::text)),
+  CONSTRAINT ck_email_verification_challenges__consumed CHECK ((((used_at IS NULL) = (consumed_via IS NULL)) AND ((consumed_via IS NULL) OR (consumed_via = ANY (ARRAY['CODE'::text, 'LINK'::text]))))),
+  CONSTRAINT ck_email_verification_challenges__correlation CHECK (((length(btrim(correlation_id)) > 0) AND (length(correlation_id) <= 200))),
+  CONSTRAINT ck_email_verification_challenges__delivery CHECK (((delivery_status = ANY (ARRAY['PENDING'::text, 'SENT'::text, 'FAILED'::text])) AND ((delivery_status = 'SENT'::text) = (last_sent_at IS NOT NULL)))),
+  CONSTRAINT ck_email_verification_challenges__expiry CHECK ((expires_at > created_at)),
+  CONSTRAINT ck_email_verification_challenges__invalidated CHECK ((((invalidated_at IS NULL) = (invalidation_reason IS NULL)) AND ((invalidation_reason IS NULL) OR (invalidation_reason = ANY (ARRAY['SUPERSEDED'::text, 'LOCKED'::text, 'CONTACT_DISABLED'::text, 'DELIVERY_FAILED'::text]))))),
+  CONSTRAINT ck_email_verification_challenges__magic_token_hash CHECK ((magic_token_hash ~ '^[0-9a-f]{64}$'::text)),
+  CONSTRAINT ck_email_verification_challenges__purpose CHECK ((purpose = ANY (ARRAY['INITIAL_EMAIL'::text, 'CHANGE_EMAIL'::text])))
+);
+CREATE INDEX idx_email_verification_challenges__contact_created ON identity.email_verification_challenges USING btree (email_contact_id, created_at DESC);
+CREATE UNIQUE INDEX uq_email_verification_challenges__open_per_contact ON identity.email_verification_challenges USING btree (email_contact_id) WHERE ((used_at IS NULL) AND (invalidated_at IS NULL));
 
 CREATE TABLE identity.external_identities (
   external_identity_id uuid NOT NULL DEFAULT gen_random_uuid(),

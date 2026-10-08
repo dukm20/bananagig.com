@@ -4,3 +4,5 @@ export * from './clients';
 export * from './checks';
 export * from './health-server';
 export * from './outbox';
+export * from './email';
+export * from './rate-limit';

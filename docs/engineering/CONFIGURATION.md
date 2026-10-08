@@ -117,6 +117,23 @@ Every mutation writes an `audit_events` row in the same transaction (actor, acti
 
 Admin context only; default deny; self-approval blocked twice; sensitive values redacted in API, logs and events; `devtest.*` keys only when `allowTestKeys` (non-production); all inputs validated by schema and by the definition's rules.
 
+## Seeded product parameters
+
+Parameters seeded by migrations (through the real change workflow, so they look like any other change in the audit trail):
+
+| Key | Type | Value | Policy | Owner | Seeded by |
+|---|---|---|---|---|---|
+| `verification.email.code.length` | INTEGER (4 to 10) | 6 | `SECOND_APPROVER`, CRITICAL, PLATFORM only | security | ID-002 (PRD SV-03.01) |
+| `verification.email.validity_minutes` | INTEGER (1 to 120) | 10 | same | security | ID-002 (PRD SV-03.01) |
+| `verification.email.resend_seconds` | INTEGER (0 to 3600) | 30 | same | security | ID-002 (PRD SV-03.01) |
+| `verification.email.max_per_hour` | INTEGER (1 to 100) | 5 | same | security | ID-002 (PRD SV-03.01) |
+| `verification.email.max_per_day` | INTEGER (1 to 1000) | 10 | same | security | ID-002 (PRD CU-03.06 table) |
+| `verification.email.max_attempts` | INTEGER (1 to 20) | 5 | same | security | ID-002 (PRD SV-03.01) |
+| `verification.email.requests.max_per_hour` | INTEGER (1 to 1000) | 30 | same | security | ID-002 (engineering assumption, DEBT-0058) |
+| `verification.email.address.max_per_hour` | INTEGER (1 to 100) | 5 | same | security | ID-002 (engineering assumption, DEBT-0058) |
+
+CRITICAL parameters are never cached and never served from last-known-good; their consumers fail closed when the registry cannot answer. The consumer (`createVerificationPolicyProvider`) validates every value again with its own bounds.
+
 ## Using it from a domain
 
 ```ts
