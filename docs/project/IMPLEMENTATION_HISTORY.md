@@ -614,3 +614,32 @@ ADR-0025, ADR-0026.
 
 ### Known follow-up
 DEBT-0044 to DEBT-0048 (bootstrap hint, closure and erasure, admin identity, account lookup cache, preferred-role endpoint and account screens); DEBT-0013, DEBT-0017, DEBT-0021, DEBT-0043 updated; LRN-0034 to LRN-0036. Owner decision still open: confirm or remove the seeded PLANNED market `la-oc`.
+
+
+## CI-004 — 2026-10-07
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(CI-004)"`.
+Summary: Repaired the CI failure of the ID-001 push. GitHub Actions run 37718747872 (`2e2ce4f`) failed in the `verify` job at `pnpm test`: `packages/content/src/template.test.ts:391` ("renders a body with 198 six-category plural constructs in at most 6 full renders") exceeded Vitest's default 5 s test timeout. The test is CPU heavy (a 200,000-character body validated for two markup types) and takes 0.6 s locally; on the 2-CPU runner, with Turborepo running the packages' tests in parallel, it took more than 5 s. The content package is unchanged by ID-001. The failure skipped the remaining `verify` steps and the whole `compose-smoke` job, so the ID-001 work has not been through the full CI yet.
+
+### Delivered
+- `packages/content/vitest.config.ts`: `testTimeout: 30_000` for the content package (the harness ceiling only; what the tests assert stays deterministic: render counts and rejection reasons, never elapsed time). Proved that the config is picked up with a throwaway test that sleeps 5.6 s and passes.
+- DEBT-0035 notes the second failure mode (default test timeout) and that other packages still use the 5 s default; `skills/testing` gained the lesson.
+
+### Schema
+None. Data model: NOT_REQUIRED.
+
+### Contracts
+None.
+
+### Tests
+Unchanged: unit 2564, root script tests 71, integration 890 in 24 files, smoke 32 checks.
+
+### Skills updated
+`skills/testing`.
+
+### ADRs
+None required.
+
+### Known follow-up
+Push and confirm the next CI run is green end to end (the Accounts smoke scenario and the Trivy scan have never run in CI). DEBT-0035 stays OPEN.

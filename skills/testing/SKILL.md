@@ -61,6 +61,7 @@ Schema changes also need constraint-violation and rollback tests, and the data-m
 
 ## Known BananaGig-specific lessons
 
+- A test's default 5 s timeout is a wall-clock ceiling too: a CPU-heavy test (maximum-size templates, many parallel callers) that takes 0.6 s on a developer machine took more than 5 s on the loaded CI runner. Give such a package an explicit `testTimeout` in its own `vitest.config.ts` (`packages/content`, CI-004) and keep the assertions deterministic. Read the failing test from the public check-run annotations (LRN-0028).
 - Vitest 5 is required; vitest 3 pulled critical `tinypool` advisories (`docs/security/SCAN_RESULTS.md`).
 - Governance scripts are tested against scratch git repositories in `scripts/governance.test.mjs`.
 - Conditional rendering (a display template with optional parts) is tested over EVERY subset of present fields with invariants (balanced brackets, nothing dangling, each value once and in order), plus a differential test of the new renderer against the old one on inputs the change must not affect; a hand-picked full-address case hides the bug (GEO-002A). To prove an error message does not echo the input, compare it with the fixed message text; a short needle such as `1` or `-` is also in the static text and fails for the wrong reason.

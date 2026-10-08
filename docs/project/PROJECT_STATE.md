@@ -2,8 +2,8 @@
 
 Current truth only. History lives in `IMPLEMENTATION_HISTORY.md`; decisions in `docs/architecture/`.
 
-Current checkpoint: ID-001
-Last completed checkpoint: ID-001
+Current checkpoint: CI-004
+Last completed checkpoint: CI-004
 Next approved checkpoint: ID-002 — Email Verification
 Latest migration: 0009_identity_accounts.sql
 Latest ADR: ADR-0026
@@ -84,7 +84,7 @@ None to external services. Local-only stand-ins: Mailpit (SMTP sink), Keycloak r
 - Geography: US-only dataset and no management API or bulk import for currencies, time zones or locale activation (DEBT-0031), only the four built-in readiness checks (DEBT-0032), cache generation coupled to content's locale generation key (DEBT-0033), no automatic time zone lookup (DEBT-0034); scope references of CATEGORY, PLAN, PROVIDER, GIG and DROP still unvalidated (DEBT-0024 in progress)
 - Idempotency records table designed, not built (DEBT-0013)
 - Least-privilege runtime database roles designed, not built (DEBT-0012)
-- CI: GitHub Actions run 37587370637 for `566b28c` (pushed together with `e4234e9`, so it covers both `GEO-002` and `GEO-002A`) passed: status Success in 10m 3s; `verify` (4m 12s: format, lint, typecheck, deps, unit tests, specs, OpenAPI and AsyncAPI validation, build, identity check, integration tests, `pnpm audit --prod`, governance) and `compose-smoke` (4m 9s: Compose build, install and migrate, `pnpm smoke`, Trivy HIGH/CRITICAL image scan with `--exit-code 1`) both passed, every step individually. Earlier green runs: `CI-003` (`f3f326f`, run 37578136291). Branch protection requiring CI is not configured (DEBT-0001)
+- CI: GitHub Actions run 37587370637 for `566b28c` (pushed with `e4234e9`: GEO-002 and GEO-002A) passed, `verify` and `compose-smoke`, every step including `pnpm smoke` and the Trivy image scan. Run 37718747872 for `2e2ce4f` (ID-001) FAILED in `verify` at `pnpm test`: `packages/content/src/template.test.ts:391` timed out at Vitest's 5 s default on the loaded runner (0.6 s locally; the content package is unchanged by ID-001); the rest of `verify` and `compose-smoke` were skipped, so the identity work (specs, build, integration tests, the Accounts smoke scenario, Trivy) has not been through CI yet. CI-004 gives the content package a 30 s test timeout; its CI result is not recorded here until the next push. Branch protection requiring CI is not configured (DEBT-0001)
 - Web telemetry: SDK registered; page-level traces and logs not verified in Tempo/Loki (DEBT-0011)
 
 ## Known blockers
