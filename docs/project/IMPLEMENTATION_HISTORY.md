@@ -780,3 +780,46 @@ ADR-0034, ADR-0035, ADR-0036.
 
 ### Known follow-up
 DEBT-0066 to DEBT-0075 (trusted browser effect, email/SMS second factor and phone-confirmed recovery, Keycloak events, multi-instance refresh, assumed parameters, service account scope, propagation retries and admin-call throttling, reset abuse residuals, session residuals, security metrics). Push and confirm CI is green (the Sessions and security smoke scenario and the live Keycloak integration test have not run in CI). Confirm the three assumed security values with the security owner. Apply the step-up guard to the email and phone change when those flows are built.
+
+## ID-005 — 2026-10-16
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(ID-005)"`.
+Summary: The application-owned consent system. An account's relationship to a legal document is one append-only event log (`identity.consent_events`: ACCEPTED or WITHDRAWN with a per-account-and-purpose sequence) in which every row binds to the exact immutable CFG-002 version through a composite foreign key on `(version_id, locale, body_sha256)`, so the database proves the stored locale and hash. An insert trigger proves the version is published, in platform scope, a version of the purpose's own document and in force at that instant (taking `FOR SHARE` on the version row so an accept racing a publication serializes) and sets the time itself. Current consent is derived, never stored. Policy (who needs which purpose, what a newer version does) is configuration. No legal text is copied anywhere.
+
+### Housekeeping at the start (requested)
+`PROJECT_STATE` records the verified ID-004 CI result (run 38966938846 for `301b009`, green end to end: `verify` 6m 11s and `compose-smoke` 4m 31s, including the live Keycloak security test and the `Sessions and security` smoke scenario). `la-oc` stays PLANNED; DEBT-0030, DEBT-0064, DEBT-0065 and DEBT-0070 stay OPEN.
+
+### Delivered
+- Migration `0013_consent.sql`: an additive UNIQUE on `content.versions (version_id, locale, body_sha256)`; the SQL function `identity.consent_version_state` (the single "in force" definition, equal to the content resolver and parity-tested); two EMPTY LEGAL entry shells (`legal.terms_of_service`, `legal.privacy_policy`: no legal text is seeded); `identity.consent_purposes` (document, withdrawal policy, status) with TERMS_OF_SERVICE and PRIVACY_POLICY; `identity.consent_events` with guard and append-only triggers (UPDATE, DELETE, TRUNCATE refused); the audit extension (`consent_event_id`, CONSENT_ACCEPTED and CONSENT_WITHDRAWN); four configuration parameters; 40 managed copy entries.
+- Contracts `consent.ts`; `ConsentService` in `packages/accounts` (accept with a defined check order and idempotent repeats, withdraw, consistent-snapshot reads, the pure requirement evaluator with three re-acceptance modes, the strict policy parser) and the signup-ready `listOutstandingConsents`, `hasRequiredConsents`, `requireConsents`.
+- API: `GET /account/consents`, `GET /account/consents/requirements`, `POST /account/consents/:purpose/accept` and `/withdraw`; the configuration-backed policy provider; the default-locale resolver; two events (`consent-accepted`, `consent-withdrawn`).
+- Web: the `/consents` page (accept offered only when the public resolver returns exactly the requirement's version, hash, entry and locale; nothing pre-ticked), the same-origin handlers, the api-client, and, found by the security review, framing protection (`Content-Security-Policy: frame-ancestors 'none'`, `X-Frame-Options: DENY`) on every web response.
+- Smoke scenario "Consent": publishes dev-only legal versions through the real two-approver workflow on every run, accepts with the exact displayed values, checks the database binding, the refusals, a new Terms version forcing re-acceptance, the web page through Caddy, and that no legal text or secret reaches logs, outbox or audit.
+- Docs: `docs/engineering/CONSENT.md`, ADR-0037 and ADR-0038, the data-model documents, engineering documents, seven skills, DEBT-0076 to DEBT-0081, LRN-0046 to LRN-0050.
+- Quality process: independent authors for the migration and service, API and web; two independent read-only reviews (security and privacy, concurrency and database); independent test authors for the database model, the service, the API and the contracts. Findings fixed: the `accept` check order leaked the locale and hash-guessing of an unpublished-but-approved version; `requireConsents` with an empty list was vacuously satisfied; people who had already accepted flipped to DOCUMENT_UNAVAILABLE platform-wide during a gap in Legal's timeline under the lenient modes; `getConsents` and `getRequirements` read from separate snapshots; an index the planner never used; the in-force function returned IN_FORCE for a NULL entry id; no framing protection on any web page (a predating gap); smoke bugs (a raw object posted as the body, a status-copy count that collided with identical copy).
+
+### Decisions
+- ADR-0037: one append-only event log bound to the exact version, locale and hash; alternatives rejected: acceptance plus current-state tables, a boolean per purpose, storing the legal text, trusting the latest version, a service-only eligibility check.
+- ADR-0038: policy as configuration and derived current state; rejected: policy columns on the purpose, hardcoded per-document behaviour, a stored current flag, a locale fallback.
+- Legal never falls back: a person whose locale has no LEGAL version stays DOCUMENT_UNAVAILABLE under the strict mode, and a gating flow must pass the locale it shows (rejected: falling back to the platform default locale, which contradicts "do not silently accept en-US").
+- `/account/me` carries no consent summary (it would add configuration reads to a hot read; `GET /account/consents/requirements` carries `satisfied`).
+- The evidence of an acceptance is the immutable SOURCE version (id, locale, hash); the page shows its rendered, sanitized output; a pinned rendering test fails on purpose when the renderer changes (a rendered hash compared at accept time is future work, DEBT-0078).
+
+### Schema
+Two new tables, one new column on `account_audit_events`, one additive unique constraint on `content.versions`, 141 constraints in the `identity` schema; see `docs/data/DATA_MODEL_CHANGELOG.md` and `NORMALIZATION_LOG.md` (ID-005). The only denormalization accepted besides the audit prefix pair is the FK-verified `locale` and `body_sha256` on each event (derivable from the version, kept so the accepted bytes are provable).
+
+### Contracts
+OpenAPI: four consent operations. AsyncAPI: `bananagig.identity.consent-accepted` and `consent-withdrawn` (v1).
+
+### Tests
+Unit 8354, root script tests 163, integration 4269 in 38 files (consent data model 356, consent service 100, API consent 66), smoke 36 checks (the Consent scenario passed three consecutive runs; two later runs failed only in the Email and Phone scenarios on the per-account hourly send cap, which is counted in PostgreSQL by design).
+
+### Skills updated
+`skills/identity`, `skills/content`, `skills/api`, `skills/web`, `skills/testing`, `skills/database`, `skills/configuration`.
+
+### ADRs
+ADR-0037, ADR-0038.
+
+### Known follow-up
+DEBT-0076 to DEBT-0081 (no flow requires consent yet, unconfirmed policy defaults, no re-acceptance notification or console or export, no regional engine or cross-language equivalence, other purposes not seeded, residuals including the DORMANT rate limit that must exist before the first withdrawable purpose). Push and confirm CI is green (the Consent smoke scenario has not run in CI). Legal must publish the first versions of the Terms of Service and Privacy Policy before any flow can require consent; until then required purposes are DOCUMENT_UNAVAILABLE.

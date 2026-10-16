@@ -22,6 +22,7 @@ Read, define and change managed product copy (UI text, messages, email and push 
 - `apps/web/src/lib/content.ts`, `apps/web/src/lib/locale.ts`
 - `docs/engineering/CONTENT.md`, `docs/content/CONTENT_OWNERSHIP.md` (inventory of existing strings and migration rules)
 - ID-004: `db/migrations/0012_application_sessions.sql` (86 entries), `apps/web/src/app/security/page.tsx`, `apps/web/src/app/forgot-password/page.tsx`, `packages/contracts/src/security.ts` (label key helpers)
+- ID-005: `db/migrations/0013_consent.sql` (40 `account.consent.*` entries, the two LEGAL shells `legal.terms_of_service` and `legal.privacy_policy`, the constraint `uq_versions__version_locale_hash`, the function `identity.consent_version_state`), `apps/web/src/app/consents/page.tsx`, `packages/contracts/src/consent.ts` (label key helpers), `docs/engineering/CONSENT.md`
 
 ## Architecture rules
 
@@ -39,6 +40,9 @@ Read, define and change managed product copy (UI text, messages, email and push 
 - Visibility: callers without `content-read` resolve PUBLIC entries only, never the template, never `at`; INTERNAL entries behave as not found for them (`ENTRY_NOT_FOUND`, also when they have no effective content) and `effectiveTo` is null. `resolve-many` has a 500000-character total template budget for all callers (400 `CONTENT_RESPONSE_TOO_LARGE`).
 - COUNTRY and MARKET scope references are validated at `createVersion` and `publish` through the `ScopeReferenceValidator` port (canonical `US` or `la-oc`, exists, PLANNED or ACTIVE, so a PLANNED market validates before it is public; fail-closed with `SCOPE_REFERENCE_INVALID`, one generic reason for unknown, INACTIVE and non-canonical, or `UNAVAILABLE`). Resolution never validates existence, but PUBLIC resolution (`includeInternal === false`) consults the provider's optional `isVisible` and DROPS a `country` or `market` that is not ACTIVE and in effect, unknown, or whose check throws (fail closed), before hashing, caching or resolving: PLANNED, INACTIVE and unknown markets are indistinguishable from no market. `content-read` callers and snapshots are unfiltered. The provider memoizes for 60 s (negative answers too), so visibility changes reach public content in about a minute; a provider without `isVisible` keeps the old behaviour (ADR-0022). Public routes carry `Vary: Authorization`.
 - Permissions are the temporary client-role model (`content-read`, `content-write`, `content-approve`, `content-legal`; DEBT-0028). Do not build on it as the long-term design.
+- What a legal CONSUMER must do (ID-005, ADR-0037): store the `version_id`, the locale and the `body_sha256` (never the text) and reference `content.versions (version_id, locale, body_sha256)` through the unique constraint `uq_versions__version_locale_hash` so the database proves them (LRN-0046); resolve in the person's EXACT locale and compare `versionId`; read a historical text by version id; treat a newer `versionId` as the trigger for re-acceptance under the consumer's own policy (the registry decides nothing about who must accept). Never copy legal text, never serve it from a cache, never fall back to another locale.
+- The definition of "in force" is SHARED: `identity.consent_version_state(version_id, entry_id, at)` mirrors the resolver (published statuses SCHEDULED, PUBLISHED, SUPERSEDED decided by the timestamps, active entry and locale, `effective_from <= at < effective_to`, PLATFORM scope for consent; a SCHEDULED version whose start has passed counts) and is used by the consent guard trigger and service. A change to the resolver's definition of "effective" or to the published statuses MUST change that function in a new migration and keep the parity test green (LRN-0047). The constraint `uq_versions__version_locale_hash` is a referenced key: never drop or change the columns it covers, and a version referenced by a consent event can never be deleted.
+- Consent copy and shells (ID-005): 40 `account.consent.*` entries (en-US, PUBLISHED through the lifecycle, no legal text; typed variables `version` COUNT, `locale` STRING, `date` STRING) and two LEGAL entry SHELLS with NO versions, max scope PLATFORM; Legal publishes the first versions through the workflow (second approver, `content-legal`) and until then consent reports DOCUMENT_UNAVAILABLE. A consent document in a country or market scope is impossible until the entry's `max_scope_type` is widened by a reviewed migration (DEBT-0079).
 
 ## Implementation pattern
 
@@ -111,9 +115,10 @@ Any change to `content.*` goes through the Data Model Review Gate (normalization
 - Do not edit a published version or an applied migration; publish a new version.
 - Do not inject a registry value as HTML unless its format is `html`.
 - Do not use the temporary client-role permissions as the long-term model (DEBT-0028).
+- Do not change the resolver's definition of an effective version without a new migration for `identity.consent_version_state`, and do not store legal text (or a copy of it) in another domain's table: reference the version and hash.
 
 ## Related ADRs
-ADR-0018, ADR-0019, ADR-0020, ADR-0021, ADR-0022 (builds on ADR-0001, ADR-0003, ADR-0012, ADR-0016, ADR-0017), ADR-0036
+ADR-0018, ADR-0019, ADR-0020, ADR-0021, ADR-0022 (builds on ADR-0001, ADR-0003, ADR-0012, ADR-0016, ADR-0017), ADR-0036, ADR-0037
 
 ## Last reviewed
-2026-10-16 (ID-004)
+2026-10-16 (ID-005)

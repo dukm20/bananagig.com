@@ -40,6 +40,7 @@ describe('the spec generator covers every route module of the app', () => {
     ['email', '/api/v1/account/email'],
     ['phone', '/api/v1/account/phone'],
     ['security', '/api/v1/account/security'],
+    ['consent', '/api/v1/account/consents'],
     ['password reset', '/api/v1/auth/password-reset'],
     ['geography', '/api/v1/geography/countries'],
     ['content', '/api/v1/content/resolve'],

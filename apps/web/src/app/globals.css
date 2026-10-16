@@ -12,3 +12,4 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--fg); outline-of
 .muted { color: var(--muted); }
 dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; }
 dt { font-weight: 600; }
+.legal-text { white-space: pre-wrap; }

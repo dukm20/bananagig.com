@@ -10,6 +10,7 @@ import { ACTIVE_ROLE_HEADER } from '@bananagig/contracts';
 import type {
   AccountContext,
   AccountService,
+  ConsentOperations,
   EmailVerificationService,
   ObservedSession,
   PhoneVerificationService,
@@ -34,6 +35,8 @@ declare module 'fastify' {
     phoneVerification: PhoneVerificationService;
     /** The application sessions, devices, MFA status and password reset (ID-004); present when the security routes are registered. */
     security: SecurityOperations;
+    /** Consent and legal-version history (ID-005); present when the consent routes are registered. */
+    consent: ConsentOperations;
   }
 }
 
@@ -45,12 +48,14 @@ export const accountPlugin = fp(
       emailVerification?: EmailVerificationService;
       phoneVerification?: PhoneVerificationService;
       security?: SecurityOperations;
+      consent?: ConsentOperations;
     },
   ): Promise<void> => {
     app.decorate('accounts', opts.accounts);
     if (opts.emailVerification) app.decorate('emailVerification', opts.emailVerification);
     if (opts.phoneVerification) app.decorate('phoneVerification', opts.phoneVerification);
     if (opts.security) app.decorate('security', opts.security);
+    if (opts.consent) app.decorate('consent', opts.consent);
     app.decorateRequest('account', undefined);
     app.decorateRequest('securitySession', undefined);
   },

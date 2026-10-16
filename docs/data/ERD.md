@@ -367,7 +367,7 @@ erDiagram
 
 `geography` has no foreign key to `integration.outbox_events`: geography events (aggregate types `geography_country`, `geography_market` and `geography_address_format`) point at their aggregate by value, as for every outbox producer. `configuration` and `content` `scope_ref` values for COUNTRY (ISO alpha-2, upper case) and MARKET (market code, lower-case kebab) scopes stay opaque text with no foreign key (DEBT-0024 remains open); they are validated against `geography` by the service layer through a port, not by the database.
 
-## identity schema (ID-001, ID-002, ID-003, ID-004)
+## identity schema (ID-001, ID-002, ID-003, ID-004, ID-005)
 
 The `identity` schema is a fourth cluster and the first application (not registry) schema. It depends on `content` (role display names, the preferred locale) and `geography` (the time zone override) and nothing depends on it yet: foreign keys go identity -> content and identity -> geography, never the other way, and `integration.outbox_events` points at it by value. Entity names are prefixed `ID_` (the referenced tables are the same tables as `GEO_CONTENT_ENTRIES`, `GEO_CONTENT_LOCALES` and `GEO_TIME_ZONES` above).
 
@@ -376,6 +376,7 @@ erDiagram
   ID_CONTENT_ENTRIES {
     uuid entry_id PK
     text key UK
+    text content_type "LEGAL for the document of a consent purpose, ID-005"
   }
   ID_CONTENT_LOCALES {
     text locale PK
@@ -454,6 +455,7 @@ erDiagram
     uuid phone_contact_id FK "composite FK with account_id, set exactly for PHONE_* actions, ID-003"
     uuid application_session_id FK "composite FK with account_id, set exactly for SESSION_CREATED, SESSION_ENDED, SESSION_REVOKED, ID-004"
     uuid account_device_id FK "composite FK with account_id, set exactly for DEVICE_* actions, ID-004"
+    uuid consent_event_id FK "composite FK with account_id, set exactly for CONSENT_* actions, ID-005"
     jsonb changes
     text reason
     text correlation_id
@@ -545,6 +547,35 @@ erDiagram
     timestamptz revoked_at "terminal, NULL together with revocation_reason"
     text revocation_reason "SIGN_OUT, REVOKED_BY_USER, SIGN_OUT_EVERYWHERE, KEYCLOAK_ENDED, DEVICE_REMOVED, PASSWORD_CHANGED"
   }
+  ID_CONTENT_VERSIONS {
+    uuid version_id PK "content.versions, immutable, never deleted"
+    uuid entry_id FK
+    text locale "unique with version_id and body_sha256, the target of the consent composite FK"
+    text body_sha256 "SHA-256 of the immutable body, unique with version_id and locale (uq_versions__version_locale_hash, ID-005)"
+    text status "published markers decide with the window"
+  }
+  ID_CONSENT_PURPOSES {
+    text purpose_code PK "TERMS_OF_SERVICE, PRIVACY_POLICY, immutable"
+    uuid document_entry_id FK "content.entries, a LEGAL entry, UNIQUE: one purpose per document, immutable"
+    text withdrawal_policy "NOT_WITHDRAWABLE, WITHDRAWABLE, structural and immutable"
+    text status "ACTIVE, INACTIVE, the only mutable column"
+    timestamptz created_at
+    timestamptz updated_at
+  }
+  ID_CONSENT_EVENTS {
+    uuid consent_event_id PK
+    uuid account_id FK "unique with consent_event_id (target of the audit composite FK) and with purpose_code and event_seq"
+    text purpose_code FK "unique with account_id and event_seq"
+    integer event_seq UK "1, 2, 3 per account and purpose, the order of the history; unique with account_id and purpose_code"
+    text event_type "ACCEPTED, WITHDRAWN"
+    uuid version_id FK "composite FK (version_id, locale, body_sha256) to content.versions, no legal text copied"
+    text locale "FK-verified copy of the version locale"
+    text body_sha256 "FK-verified copy of the version hash"
+    timestamptz occurred_at "database clock, set by the guard trigger"
+    text source "ACCOUNT_API"
+    uuid application_session_id FK "composite FK with account_id, nullable"
+    text correlation_id
+  }
   ID_CONTENT_ENTRIES ||--o{ ID_ROLES : "display name (name_content_key -> key)"
   ID_ACCOUNTS ||--o{ ID_ACCOUNT_ROLES : "holds (account_id)"
   ID_ROLES ||--o{ ID_ACCOUNT_ROLES : "granted as (role_id)"
@@ -568,6 +599,13 @@ erDiagram
   ID_ACCOUNT_DEVICES |o--o{ ID_APPLICATION_SESSIONS : "browser of a session (account_id, account_device_id), optional, set once"
   ID_APPLICATION_SESSIONS |o--o{ ID_ACCOUNT_AUDIT_EVENTS : "SESSION_* actions only (account_id, application_session_id)"
   ID_ACCOUNT_DEVICES |o--o{ ID_ACCOUNT_AUDIT_EVENTS : "DEVICE_* actions only (account_id, account_device_id)"
+  ID_CONTENT_ENTRIES ||--o| ID_CONSENT_PURPOSES : "LEGAL document of a purpose (document_entry_id -> entry_id), one purpose per document"
+  ID_CONTENT_ENTRIES ||--o{ ID_CONTENT_VERSIONS : "has versions (a LEGAL entry has none until Legal publishes)"
+  ID_CONSENT_PURPOSES ||--o{ ID_CONSENT_EVENTS : "what was consented to (purpose_code)"
+  ID_ACCOUNTS ||--o{ ID_CONSENT_EVENTS : "acceptances and withdrawals (account_id)"
+  ID_CONTENT_VERSIONS ||--o{ ID_CONSENT_EVENTS : "exact text bound (version_id, locale, body_sha256)"
+  ID_APPLICATION_SESSIONS |o--o{ ID_CONSENT_EVENTS : "session the person acted in (account_id, application_session_id), optional"
+  ID_CONSENT_EVENTS |o--o{ ID_ACCOUNT_AUDIT_EVENTS : "CONSENT_* actions only (account_id, consent_event_id)"
 ```
 
 **Account versus external identity.** `ID_ACCOUNTS` carries no Keycloak subject. `ID_EXTERNAL_IDENTITIES` maps `(provider_type, issuer, provider_subject)`, one unique key marked `UK` on the three columns in the diagram, to an account: one login links at most one account, an account may have several links (no unique key on `account_id`). No Keycloak table is referenced, and nothing of credentials, MFA or sessions is mirrored.
@@ -583,3 +621,5 @@ erDiagram
 **Phone contacts and verification (ID-003).** The phone model is a parallel chain, not a shared one: `ID_ACCOUNTS` to `ID_PHONE_CONTACTS` to `ID_PHONE_VERIFICATION_CHALLENGES`, with the audit rows pointing at the contact, exactly as for email, and with ONE extra relationship: `ID_PHONE_CONTACTS.country_code` is a foreign key to `geography.countries (iso_alpha2)` (shown as `ID_GEO_COUNTRIES`, the same table as in the geography diagram; identity -> geography only). The email and phone tables are deliberately separate entities and no `contacts` supertable exists (different canonical form, uniqueness policy, attributes and lifecycle guards; ADR-0030 and the normalization log): a phone number can never be confused with an email address by a foreign key, and the audit table has one precise composite key per channel. The audit relationship is a COMPOSITE foreign key `(account_id, phone_contact_id)` to `phone_contacts (account_id, phone_contact_id)` (target: the unique constraint `uq_phone_contacts__account_contact`; MATCH SIMPLE, so it is not checked when `phone_contact_id` is NULL), so an audit row can only name a contact of the audited account. `ID_ACCOUNT_AUDIT_EVENTS` now has three nullable subject keys (`role_id`, `email_contact_id`, `phone_contact_id`), each set exactly for its own action prefix (`ROLE_*`, `EMAIL_*`, `PHONE_*`), so a row names at most one subject. What a diagram cannot show: `ID_PHONE_CONTACTS.phone_e164` carries no `UK` because a verified number is NOT unique across accounts at the database level; how many accounts may verify one number is the configuration parameter `verification.phone.max_accounts_per_number` (default 1, scoped by country and market), enforced by the service and by the guard trigger (`PHONE_NUMBER_CAP`: advisory lock on the number, a count of the other holders on accounts that are not `CLOSED`, the transaction setting `app.phone_max_accounts`, structural ceiling 5), with only a non-unique partial index `idx_phone_contacts__verified_number` for the count. The per-account rules are partial unique indexes (one primary, one open candidate, one live row per number); pending claims may repeat across accounts. `ID_PHONE_VERIFICATION_CHALLENGES` has no magic token and no unique key on `code_hash`; `purpose` is a frozen snapshot, not a relationship. All foreign keys are `ON DELETE RESTRICT` and no row is deleted. `ID_ACCOUNTS` has no column that points at a contact and no phone or verification column (the verified state is derived into the `contacts` summary of `GET /account/me`), no full number or hash is copied outside the two tables (the audit rows carry the masked form), nothing of the number is stored in or referenced from Keycloak, and nothing references `integration.outbox_events` (phone events, aggregate type `identity_account`, point at their aggregate by value).
 
 **Sessions, devices and the watermark (ID-004).** Two new tables hang off the account: `ID_ACCOUNT_DEVICES` (the browsers of an account) and `ID_APPLICATION_SESSIONS` (the Keycloak sessions the API has seen). A session optionally points at a device through the COMPOSITE foreign key `fk_application_sessions__account_device (account_id, account_device_id)` (target `uq_account_devices__account_device`, MATCH SIMPLE: NULL until the web server attaches the browser after login, never changed afterwards), so a session can only name a browser of its own account; a device has zero or more sessions, a session at most one device. The audit rows point at both by composite keys, exactly as for the email and phone contacts: `fk_account_audit_events__account_session (account_id, application_session_id)` (target `uq_application_sessions__account_session`) for the `SESSION_CREATED`, `SESSION_ENDED` and `SESSION_REVOKED` actions and `fk_account_audit_events__account_device (account_id, account_device_id)` for the three `DEVICE_*` actions; `ck_account_audit_events__session` and `ck_account_audit_events__device` set each column exactly for its prefix (`SESSION\_%` does not match `SESSIONS_REVOKED_ALL`, which names no session). The repeated `account_id` is the one accepted denormalization of ID-004 and the composite keys make it impossible to get wrong. `ID_ACCOUNTS.sessions_not_before` is a plain column, not a relationship: it is the revocation watermark of the account and covers the sessions that have no row yet, so no foreign key can carry it. All foreign keys are `ON DELETE RESTRICT` and no row is deleted. What is deliberately absent: no table of second factors, recovery codes or password state (Keycloak owns them; transitions are observed and written as audit rows), no `security_activity_events` table (the timeline is a read model over `ID_ACCOUNT_AUDIT_EVENTS`), no `trusted_devices` table (trust is the window `trusted_at`/`trusted_until` on `ID_ACCOUNT_DEVICES`), no column that holds a token, a credential, a raw IP address, a raw user agent or a location, and no relationship to a Keycloak table (the `sid` is stored as a value). Security events (aggregate type `identity_account`) point at their aggregate by value, with no foreign key to `integration.outbox_events`.
+
+**Consent purposes and consent events (ID-005).** Two tables and one new kind of relationship: identity now points at `content.versions` (shown as `ID_CONTENT_VERSIONS`, the same table as `CONTENT_VERSIONS` in the content diagram). `ID_CONSENT_PURPOSES` is reference data bound to exactly one `LEGAL` content entry by `document_entry_id` (UNIQUE, so the relationship entry to purpose is 1 to 0..1: a document has at most one purpose and the purpose adds only the structural withdrawal policy and the status). `ID_CONSENT_EVENTS` is the append-only history: an account has zero or more events, a purpose has zero or more events, and the events of one `(account_id, purpose_code)` pair are totally ordered by `event_seq` under the unique key `uq_consent_events__account_purpose_seq` (the ordering and optimistic-concurrency key, not a relationship). The binding to the text is the COMPOSITE foreign key `fk_consent_events__version (version_id, locale, body_sha256)` to `content.versions (version_id, locale, body_sha256)` (target `uq_versions__version_locale_hash`, an additive unique constraint on a CFG-002 table): the repeated `locale` and `body_sha256` are the one FK-verified denormalization of the table, so the database proves the stored pair equals the immutable version's, and no legal text is copied. The optional session is a COMPOSITE foreign key `fk_consent_events__account_session (account_id, application_session_id)` to `application_sessions` (target `uq_application_sessions__account_session`, MATCH SIMPLE, so it is not checked when NULL and a set session must belong to the same account). The audit rows point at the event by the COMPOSITE foreign key `fk_account_audit_events__account_consent_event (account_id, consent_event_id)` (target `uq_consent_events__account_event`, MATCH SIMPLE), set exactly for the `CONSENT_ACCEPTED` and `CONSENT_WITHDRAWN` actions (`ck_account_audit_events__consent_event`); `ID_ACCOUNT_AUDIT_EVENTS` now has six nullable subject keys (`role_id`, `email_contact_id`, `phone_contact_id`, `application_session_id`, `account_device_id` and `consent_event_id`) each set exactly for its own action prefix, so a row names at most one subject, and the repeated `account_id` is the accepted prefix-to-key denormalization of the audit table. What a diagram cannot show: the current consent of an account for a purpose is NOT a column or a relationship, it is the latest event (`ORDER BY event_seq DESC LIMIT 1`), so there is no `current_accepted` flag and no `ID_ACCOUNTS` column that points at an event; the role-dependent requirement (which role must accept which purpose) is configuration (`consent.<purpose>.required_for`), not a table; the in-force version is computed by the function `identity.consent_version_state`, not stored. All foreign keys are `ON DELETE RESTRICT` and no row is deleted. Dependency direction between schemas is unchanged (identity -> content, identity -> geography; nothing in `content` or `geography` references identity). Consent events (aggregate type `identity_account`) point at their aggregate by value, with no foreign key to `integration.outbox_events`.

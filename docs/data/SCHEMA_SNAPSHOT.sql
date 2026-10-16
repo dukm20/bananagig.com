@@ -314,6 +314,7 @@ CREATE TABLE content.versions (
   CONSTRAINT pk_versions PRIMARY KEY (version_id),
   CONSTRAINT uq_versions__holder_version UNIQUE NULLS NOT DISTINCT (entry_id, locale, scope_type, scope_ref, version),
   CONSTRAINT uq_versions__version_entry UNIQUE (version_id, entry_id),
+  CONSTRAINT uq_versions__version_locale_hash UNIQUE (version_id, locale, body_sha256),
   CONSTRAINT fk_versions__entry_id FOREIGN KEY (entry_id) REFERENCES content.entries(entry_id) ON DELETE RESTRICT,
   CONSTRAINT fk_versions__locale FOREIGN KEY (locale) REFERENCES content.locales(locale) ON DELETE RESTRICT,
   CONSTRAINT fk_versions__scope_type FOREIGN KEY (scope_type) REFERENCES configuration.scope_levels(scope_type) ON DELETE RESTRICT,
@@ -610,16 +611,19 @@ CREATE TABLE identity.account_audit_events (
   phone_contact_id uuid,
   application_session_id uuid,
   account_device_id uuid,
+  consent_event_id uuid,
   CONSTRAINT pk_account_audit_events PRIMARY KEY (audit_event_id),
+  CONSTRAINT fk_account_audit_events__account_consent_event FOREIGN KEY (account_id, consent_event_id) REFERENCES identity.consent_events(account_id, consent_event_id) ON DELETE RESTRICT,
   CONSTRAINT fk_account_audit_events__account_device FOREIGN KEY (account_id, account_device_id) REFERENCES identity.account_devices(account_id, account_device_id) ON DELETE RESTRICT,
   CONSTRAINT fk_account_audit_events__account_email_contact FOREIGN KEY (account_id, email_contact_id) REFERENCES identity.email_contacts(account_id, email_contact_id) ON DELETE RESTRICT,
   CONSTRAINT fk_account_audit_events__account_id FOREIGN KEY (account_id) REFERENCES identity.accounts(account_id) ON DELETE RESTRICT,
   CONSTRAINT fk_account_audit_events__account_phone_contact FOREIGN KEY (account_id, phone_contact_id) REFERENCES identity.phone_contacts(account_id, phone_contact_id) ON DELETE RESTRICT,
   CONSTRAINT fk_account_audit_events__account_session FOREIGN KEY (account_id, application_session_id) REFERENCES identity.application_sessions(account_id, application_session_id) ON DELETE RESTRICT,
   CONSTRAINT fk_account_audit_events__role_id FOREIGN KEY (role_id) REFERENCES identity.roles(role_id) ON DELETE RESTRICT,
-  CONSTRAINT ck_account_audit_events__action CHECK ((action = ANY (ARRAY['ACCOUNT_CREATED'::text, 'EXTERNAL_IDENTITY_LINKED'::text, 'ROLE_GRANTED'::text, 'ROLE_ACTIVATED'::text, 'ROLE_DEACTIVATED'::text, 'PRIMARY_ROLE_CHANGED'::text, 'PROFILE_UPDATED'::text, 'EMAIL_ADDED'::text, 'EMAIL_CHANGE_REQUESTED'::text, 'EMAIL_VERIFICATION_REQUESTED'::text, 'EMAIL_VERIFICATION_FAILED'::text, 'EMAIL_VERIFICATION_LOCKED'::text, 'EMAIL_VERIFIED'::text, 'EMAIL_PRIMARY_CHANGED'::text, 'PHONE_ADDED'::text, 'PHONE_CHANGE_REQUESTED'::text, 'PHONE_VERIFICATION_REQUESTED'::text, 'PHONE_VERIFICATION_FAILED'::text, 'PHONE_VERIFICATION_LOCKED'::text, 'PHONE_VERIFIED'::text, 'PHONE_PRIMARY_CHANGED'::text, 'SESSION_CREATED'::text, 'SESSION_ENDED'::text, 'SESSION_REVOKED'::text, 'SESSIONS_REVOKED_ALL'::text, 'DEVICE_TRUSTED'::text, 'DEVICE_UNTRUSTED'::text, 'DEVICE_REMOVED'::text, 'MFA_ENROLLMENT_REQUESTED'::text, 'MFA_ENABLED'::text, 'MFA_DISABLED'::text, 'RECOVERY_CODES_REQUESTED'::text, 'RECOVERY_CODES_ENABLED'::text, 'RECOVERY_CODES_DISABLED'::text, 'PASSWORD_RESET_REQUESTED'::text, 'PASSWORD_CHANGED'::text, 'PASSWORD_RESET_COMPLETED'::text]))),
+  CONSTRAINT ck_account_audit_events__action CHECK ((action = ANY (ARRAY['ACCOUNT_CREATED'::text, 'EXTERNAL_IDENTITY_LINKED'::text, 'ROLE_GRANTED'::text, 'ROLE_ACTIVATED'::text, 'ROLE_DEACTIVATED'::text, 'PRIMARY_ROLE_CHANGED'::text, 'PROFILE_UPDATED'::text, 'EMAIL_ADDED'::text, 'EMAIL_CHANGE_REQUESTED'::text, 'EMAIL_VERIFICATION_REQUESTED'::text, 'EMAIL_VERIFICATION_FAILED'::text, 'EMAIL_VERIFICATION_LOCKED'::text, 'EMAIL_VERIFIED'::text, 'EMAIL_PRIMARY_CHANGED'::text, 'PHONE_ADDED'::text, 'PHONE_CHANGE_REQUESTED'::text, 'PHONE_VERIFICATION_REQUESTED'::text, 'PHONE_VERIFICATION_FAILED'::text, 'PHONE_VERIFICATION_LOCKED'::text, 'PHONE_VERIFIED'::text, 'PHONE_PRIMARY_CHANGED'::text, 'SESSION_CREATED'::text, 'SESSION_ENDED'::text, 'SESSION_REVOKED'::text, 'SESSIONS_REVOKED_ALL'::text, 'DEVICE_TRUSTED'::text, 'DEVICE_UNTRUSTED'::text, 'DEVICE_REMOVED'::text, 'MFA_ENROLLMENT_REQUESTED'::text, 'MFA_ENABLED'::text, 'MFA_DISABLED'::text, 'RECOVERY_CODES_REQUESTED'::text, 'RECOVERY_CODES_ENABLED'::text, 'RECOVERY_CODES_DISABLED'::text, 'PASSWORD_RESET_REQUESTED'::text, 'PASSWORD_CHANGED'::text, 'PASSWORD_RESET_COMPLETED'::text, 'CONSENT_ACCEPTED'::text, 'CONSENT_WITHDRAWN'::text]))),
   CONSTRAINT ck_account_audit_events__actor CHECK (((length(btrim(actor)) > 0) AND (length(actor) <= 200))),
   CONSTRAINT ck_account_audit_events__changes_object CHECK (((changes IS NULL) OR (jsonb_typeof(changes) = 'object'::text))),
+  CONSTRAINT ck_account_audit_events__consent_event CHECK (((action ~~ 'CONSENT\_%'::text) = (consent_event_id IS NOT NULL))),
   CONSTRAINT ck_account_audit_events__device CHECK (((action ~~ 'DEVICE\_%'::text) = (account_device_id IS NOT NULL))),
   CONSTRAINT ck_account_audit_events__email_contact CHECK (((action ~~ 'EMAIL\_%'::text) = (email_contact_id IS NOT NULL))),
   CONSTRAINT ck_account_audit_events__phone_contact CHECK (((action ~~ 'PHONE\_%'::text) = (phone_contact_id IS NOT NULL))),
@@ -746,6 +750,48 @@ CREATE TABLE identity.application_sessions (
 );
 CREATE INDEX idx_application_sessions__account_live ON identity.application_sessions USING btree (account_id) WHERE (revoked_at IS NULL);
 CREATE INDEX idx_application_sessions__device ON identity.application_sessions USING btree (account_id, account_device_id) WHERE (account_device_id IS NOT NULL);
+
+CREATE TABLE identity.consent_events (
+  consent_event_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  account_id uuid NOT NULL,
+  purpose_code text NOT NULL,
+  event_seq integer NOT NULL,
+  event_type text NOT NULL,
+  version_id uuid NOT NULL,
+  locale text NOT NULL,
+  body_sha256 text NOT NULL,
+  occurred_at timestamp with time zone NOT NULL DEFAULT clock_timestamp(),
+  source text NOT NULL DEFAULT 'ACCOUNT_API'::text,
+  application_session_id uuid,
+  correlation_id text NOT NULL,
+  CONSTRAINT pk_consent_events PRIMARY KEY (consent_event_id),
+  CONSTRAINT uq_consent_events__account_event UNIQUE (account_id, consent_event_id),
+  CONSTRAINT uq_consent_events__account_purpose_seq UNIQUE (account_id, purpose_code, event_seq),
+  CONSTRAINT fk_consent_events__account_id FOREIGN KEY (account_id) REFERENCES identity.accounts(account_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_consent_events__account_session FOREIGN KEY (account_id, application_session_id) REFERENCES identity.application_sessions(account_id, application_session_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_consent_events__purpose_code FOREIGN KEY (purpose_code) REFERENCES identity.consent_purposes(purpose_code) ON DELETE RESTRICT,
+  CONSTRAINT fk_consent_events__version FOREIGN KEY (version_id, locale, body_sha256) REFERENCES content.versions(version_id, locale, body_sha256) ON DELETE RESTRICT,
+  CONSTRAINT ck_consent_events__body_sha256 CHECK ((body_sha256 ~ '^[0-9a-f]{64}$'::text)),
+  CONSTRAINT ck_consent_events__correlation_id CHECK (((length(btrim(correlation_id)) >= 1) AND (length(btrim(correlation_id)) <= 200))),
+  CONSTRAINT ck_consent_events__event_seq CHECK ((event_seq > 0)),
+  CONSTRAINT ck_consent_events__event_type CHECK ((event_type = ANY (ARRAY['ACCEPTED'::text, 'WITHDRAWN'::text]))),
+  CONSTRAINT ck_consent_events__source CHECK ((source = 'ACCOUNT_API'::text))
+);
+
+CREATE TABLE identity.consent_purposes (
+  purpose_code text NOT NULL,
+  document_entry_id uuid NOT NULL,
+  withdrawal_policy text NOT NULL,
+  status text NOT NULL DEFAULT 'ACTIVE'::text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_consent_purposes PRIMARY KEY (purpose_code),
+  CONSTRAINT uq_consent_purposes__document_entry UNIQUE (document_entry_id),
+  CONSTRAINT fk_consent_purposes__document_entry FOREIGN KEY (document_entry_id) REFERENCES content.entries(entry_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_consent_purposes__purpose_code CHECK ((purpose_code ~ '^[A-Z][A-Z0-9_]{1,63}$'::text)),
+  CONSTRAINT ck_consent_purposes__status CHECK ((status = ANY (ARRAY['ACTIVE'::text, 'INACTIVE'::text]))),
+  CONSTRAINT ck_consent_purposes__withdrawal_policy CHECK ((withdrawal_policy = ANY (ARRAY['NOT_WITHDRAWABLE'::text, 'WITHDRAWABLE'::text])))
+);
 
 CREATE TABLE identity.email_contacts (
   email_contact_id uuid NOT NULL DEFAULT gen_random_uuid(),

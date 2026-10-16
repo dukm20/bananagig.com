@@ -39,6 +39,7 @@ import { ContentKey } from './content';
 import { EMAIL_ERROR_CODES } from './email';
 import { PHONE_ERROR_CODES } from './phone';
 import { SECURITY_ERROR_CODES } from './security';
+import { CONSENT_ERROR_CODES } from './consent';
 import { EVENT_TYPE_PATTERN, EventEnvelope } from './index';
 import { containsForbiddenText } from './text';
 
@@ -836,6 +837,16 @@ describe('ACCOUNT_ERROR_CODES', () => {
       'DEVICE_REQUIRED',
       'SECURITY_UNAVAILABLE',
       'PASSWORD_RESET_RATE_LIMITED',
+      'CONSENT_PURPOSE_NOT_FOUND',
+      'CONSENT_PURPOSE_INACTIVE',
+      'CONSENT_VERSION_NOT_FOUND',
+      'CONSENT_VERSION_NOT_CURRENT',
+      'CONSENT_LOCALE_MISMATCH',
+      'CONSENT_HASH_MISMATCH',
+      'CONSENT_NOT_WITHDRAWABLE',
+      'CONSENT_NOT_ACCEPTED',
+      'CONSENT_REQUIRED_FOR_ROLE',
+      'CONSENT_REQUIRED',
       'SESSION_REVOKED',
     ]);
   });
@@ -855,10 +866,14 @@ describe('ACCOUNT_ERROR_CODES', () => {
     expect(ACCOUNT_ERROR_CODES.slice(10, 10 + EMAIL_ERROR_CODES.length)).toEqual([...EMAIL_ERROR_CODES]);
     expect(ACCOUNT_ERROR_CODES.slice(10 + EMAIL_ERROR_CODES.length, 10 + EMAIL_ERROR_CODES.length + PHONE_ERROR_CODES.length)).toEqual([...PHONE_ERROR_CODES]);
     // ID-004: the security codes follow the phone codes, then SESSION_REVOKED (an authentication failure raised by the security layer)
-    expect(ACCOUNT_ERROR_CODES.slice(10 + EMAIL_ERROR_CODES.length + PHONE_ERROR_CODES.length)).toEqual([...SECURITY_ERROR_CODES, 'SESSION_REVOKED']);
+    expect(ACCOUNT_ERROR_CODES.slice(10 + EMAIL_ERROR_CODES.length + PHONE_ERROR_CODES.length)).toEqual([
+      ...SECURITY_ERROR_CODES,
+      ...CONSENT_ERROR_CODES,
+      'SESSION_REVOKED',
+    ]);
     expect(EMAIL_ERROR_CODES).toHaveLength(12);
     expect(PHONE_ERROR_CODES).toHaveLength(13);
-    expect(ACCOUNT_ERROR_CODES).toHaveLength(41); // 10 account + 12 email + 13 phone + 5 security + SESSION_REVOKED
+    expect(ACCOUNT_ERROR_CODES).toHaveLength(51); // 10 account + 12 email + 13 phone + 5 security + 10 consent + SESSION_REVOKED
   });
   it('has unique upper-case codes, usable as the ACCOUNT_<code> API error code suffix', () => {
     expect(new Set(ACCOUNT_ERROR_CODES).size).toBe(ACCOUNT_ERROR_CODES.length);

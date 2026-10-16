@@ -830,6 +830,17 @@ describe('account API error mapping', () => {
     SECURITY_UNAVAILABLE: [503, 'DEPENDENCY'],
     PASSWORD_RESET_RATE_LIMITED: [429, 'RATE_LIMIT'],
     SESSION_REVOKED: [401, 'AUTHENTICATION'],
+    // ID-005 (the HTTP behaviour of these is covered by consent.test.ts; they are mapped here too so the table stays exhaustive)
+    CONSENT_PURPOSE_NOT_FOUND: [404, 'NOT_FOUND'],
+    CONSENT_PURPOSE_INACTIVE: [409, 'CONFLICT'],
+    CONSENT_VERSION_NOT_FOUND: [404, 'NOT_FOUND'],
+    CONSENT_VERSION_NOT_CURRENT: [409, 'CONFLICT'],
+    CONSENT_LOCALE_MISMATCH: [400, 'VALIDATION'],
+    CONSENT_HASH_MISMATCH: [400, 'VALIDATION'],
+    CONSENT_NOT_WITHDRAWABLE: [409, 'CONFLICT'],
+    CONSENT_NOT_ACCEPTED: [409, 'CONFLICT'],
+    CONSENT_REQUIRED_FOR_ROLE: [409, 'CONFLICT'],
+    CONSENT_REQUIRED: [409, 'CONFLICT'],
   };
   it('covers every AccountError code', () => {
     expect(Object.keys(expected).sort()).toEqual([...ACCOUNT_ERROR_CODES].sort());
@@ -878,9 +889,10 @@ describe('account API error mapping', () => {
         expect(errorOf(r).message, where).toBe('The verification text could not be sent');
         expect(errorOf(r).details, where).toEqual({ retryable: false, messageKey: 'account.phone.error.delivery_failed' });
       } else if (
-        ['SESSION_NOT_FOUND', 'DEVICE_NOT_FOUND', 'DEVICE_REQUIRED', 'SECURITY_UNAVAILABLE', 'PASSWORD_RESET_RATE_LIMITED', 'SESSION_REVOKED'].includes(code)
+        ['SESSION_NOT_FOUND', 'DEVICE_NOT_FOUND', 'DEVICE_REQUIRED', 'SECURITY_UNAVAILABLE', 'PASSWORD_RESET_RATE_LIMITED', 'SESSION_REVOKED'].includes(code) ||
+        code.startsWith('CONSENT_')
       ) {
-        // the security codes (ID-004) use fixed messages and carry the managed message key only: no service text, no ids, no other details
+        // the security (ID-004) and consent (ID-005) codes use fixed messages and carry the managed message key only: no service text, no ids, no other details
         expect(errorOf(r).message, where).not.toContain('happened');
         expect(Object.keys(errorOf(r).details ?? {}), where).toContain('messageKey');
         expect(JSON.stringify(errorOf(r).details), where).not.toContain('SOME_REASON');

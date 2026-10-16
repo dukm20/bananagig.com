@@ -146,6 +146,7 @@ describe('session page account (ID-001)', () => {
     expect(stub.calls).toHaveLength(1);
     expect((stub.calls[0]!.body as { keys: string[] }).keys.sort()).toEqual(
       [
+        'account.consent.title',
         'account.security.title',
         'account.status.active',
         'common.action.sign_out',

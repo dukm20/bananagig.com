@@ -6,6 +6,7 @@ import { Locale } from './content';
 import { AccountEmailSummaryDto, EMAIL_ERROR_CODES } from './email';
 import { AccountPhoneSummaryDto, ContactsVerificationDto, PHONE_ERROR_CODES } from './phone';
 import { SECURITY_ERROR_CODES } from './security';
+import { CONSENT_ERROR_CODES } from './consent';
 import { envelope } from './envelope';
 import { IanaTimeZone } from './geography';
 import { containsForbiddenText } from './text';
@@ -187,6 +188,7 @@ export const ACCOUNT_ERROR_CODES = [
   ...EMAIL_ERROR_CODES,
   ...PHONE_ERROR_CODES,
   ...SECURITY_ERROR_CODES,
+  ...CONSENT_ERROR_CODES,
   /** Raised by the security layer when the request's session was revoked; the API answers 401 SESSION_REVOKED (not ACCOUNT_-prefixed: it is an authentication failure). */
   'SESSION_REVOKED',
 ] as const;

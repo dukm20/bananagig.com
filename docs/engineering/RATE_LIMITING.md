@@ -55,6 +55,10 @@ const decision = await limiter.consume([
 if (!decision.allowed) throw rateLimited(decision.retryAfterSeconds); // 429 + Retry-After
 ```
 
+## Not rate limited: the consent routes (ID-005)
+
+The four `/account/consents` routes do not use the limiter. They send nothing and cost nothing, they are authenticated, idempotent and serialized per account (a repeated accept is `changed: false`, a new event needs a version in force), and each write is one row. That is a conscious gap, DORMANT today: both seeded purposes are `NOT_WITHDRAWABLE` and a repeated accept is an idempotent no-op, so an account appends at most one event per published version. It MUST be closed BEFORE the first `WITHDRAWABLE` purpose is seeded (DEBT-0081, DEBT-0080): then one token could cycle accept and withdraw at about 50 events per second per account, about 1.5 KB each across the event, audit and outbox rows (about 6 GB per day), and starve the connection pool. The limiter to add is `ValkeyRateLimiter` with a key per account (`consent:account`), the limit from CFG-001, and it must fail CLOSED (it protects the database, unlike confirmation limits). See `docs/engineering/CONSENT.md`.
+
 ## How DEBT-0030 (public address endpoints) can use it
 
 DEBT-0030 stays OPEN: ID-002 does not apply the limiter to the public endpoints. To close it:

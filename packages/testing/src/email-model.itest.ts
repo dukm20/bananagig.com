@@ -356,7 +356,7 @@ const commentOn = async (table: string, column?: string): Promise<string | null>
   )[0]!.c;
 
 describe('A. schema shape: only hashes, no plaintext secret, no plain address, restrictive foreign keys', () => {
-  it('adds exactly two tables to the identity schema (nine with 0010, eleven after 0011, thirteen after 0012) and no sequence', async () => {
+  it('adds exactly two tables to the identity schema (nine with 0010, eleven after 0011, thirteen after 0012, fifteen after 0013) and no sequence', async () => {
     const tables = await q<{ table_name: string }>(
       "SELECT table_name FROM information_schema.tables WHERE table_schema = 'identity' AND table_type = 'BASE TABLE'",
     );
@@ -368,6 +368,8 @@ describe('A. schema shape: only hashes, no plaintext secret, no plain address, r
       'account_status_history',
       'accounts',
       'application_sessions',
+      'consent_events',
+      'consent_purposes',
       'email_contacts',
       'email_verification_challenges',
       'external_identities',
@@ -388,7 +390,7 @@ describe('A. schema shape: only hashes, no plaintext secret, no plain address, r
     expect(await columnsOf('email_verification_challenges')).toEqual(CHALLENGE_COLUMNS);
   });
 
-  it('adds exactly one nullable uuid column (email_contact_id) to the audit trail and keeps the rest (0011 adds phone_contact_id after it, 0012 application_session_id and account_device_id)', async () => {
+  it('adds exactly one nullable uuid column (email_contact_id) to the audit trail and keeps the rest (0011 adds phone_contact_id after it, 0012 application_session_id and account_device_id, 0013 consent_event_id)', async () => {
     expect((await columnsOf('account_audit_events')).map(([n, t, nullable]) => [n, t, nullable])).toEqual([
       ['audit_event_id', 'uuid', false],
       ['occurred_at', 'timestamp with time zone', false],
@@ -403,6 +405,7 @@ describe('A. schema shape: only hashes, no plaintext secret, no plain address, r
       ['phone_contact_id', 'uuid', true],
       ['application_session_id', 'uuid', true],
       ['account_device_id', 'uuid', true],
+      ['consent_event_id', 'uuid', true],
     ]);
   });
 
@@ -502,13 +505,13 @@ describe('A. schema shape: only hashes, no plaintext secret, no plain address, r
     expect(loose).toEqual([]);
   });
 
-  it('brings the identity schema to 121 primary key, unique, foreign key and check constraints (44 from 0009, 26 from 0010, 26 from 0011, 25 from 0012)', async () => {
+  it('brings the identity schema to 141 primary key, unique, foreign key and check constraints (44 from 0009, 26 from 0010, 26 from 0011, 25 from 0012, 20 from 0013)', async () => {
     const { n } = (
       await q<{ n: number }>(
         "SELECT count(*)::int AS n FROM pg_constraint c JOIN pg_namespace s ON s.oid = c.connamespace WHERE s.nspname = 'identity' AND c.contype IN ('p', 'u', 'f', 'c')",
       )
     )[0]!;
-    expect(n).toBe(121);
+    expect(n).toBe(141);
   });
 
   it('CHECKs both hash columns to 64 lowercase hex characters (catalog)', async () => {

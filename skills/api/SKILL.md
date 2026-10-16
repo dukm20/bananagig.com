@@ -30,6 +30,8 @@ Add or change HTTP endpoints following the BananaGig API conventions.
 - Protected routes use the guards in `apps/api/src/plugins/auth.ts` (`requireAuthenticated`, `requireRealmRole`, `requireAnyRole`, `requireClientRole`, `requireAuthContext`) and declare `security: [{ bearerAuth: [] }]`; public routes declare `security: []`. 401 is AUTHENTICATION, 403 is AUTHORIZATION; no provider payloads are returned. Details: `skills/identity/SKILL.md`.
 - Session enforcement and step-up (ID-004, ADR-0034, ADR-0036): when `AppDeps.security` is wired, `requireAccount()` also resolves the token's `sid` to the application session (token without `sid` = 401 `INVALID_TOKEN`; revoked = 401 `SESSION_REVOKED` with the `invalid_token` challenge) and sets `request.securitySession`. A route that needs a fresher or stronger authentication lists `requireRecentAuthentication()` / `requireMfa()` AFTER `requireAccount()` and BEFORE `strictBody` in `preValidation` (401/403 win, then the step-up 401, then the 400); the answer is the RFC 9470 shape (`WWW-Authenticate` with `error="insufficient_user_authentication"`, `max_age`, `acr_values`; `details` = `StepUpDetails`). Guards read only the verified token's `auth_time` and `acr`. Routes that use only `requireAuthenticated()` (for example `system/whoami`) do NOT consult the session registry: use `requireAccount()` for anything that must honour "sign out everywhere".
 - `toAppError(err, realm?)` maps the security codes; pass the realm where a `SESSION_REVOKED` can occur so the 401 carries the right challenge. Security routes send `Cache-Control: no-store` (an `onRequest` hook) on errors too, take no account id/subject/Keycloak session id (path ids are application uuids of the caller's own account; a foreign id is a 404), and a public route that must always answer the same (`POST /auth/password-reset`) lives in its own plugin so the authenticated hooks never apply, does its account-dependent work detached, and relies on `drain()` (awaited with a bound in `onClose`) at shutdown.
+- Account-scoped records with a code in the path (ID-005 consent routes, `apps/api/src/modules/consent/routes.ts`): the path parameter is a stable code checked LEXICALLY against the contract before Ajv in a `preValidation` hook listed after `requireAccount()` (a bad one is `400` naming `params.<name>` and never the value; a well-formed unknown one is a uniform `404`); the query is validated strictly (`strict` zod schema: unknown keys, repeated keys and empty values are 400); a POST that takes no body accepts none or exactly `{}`; the account comes from the token only. Idempotent repeats are `200` with `changed: false`, not an error.
+- Error mapping for sensitive codes: `toAppError` answers with FIXED messages and `details.messageKey` only (plus a bounded, pattern-checked list when the contract needs one, such as `outstanding`), and a route-level wrapper (`runFor` / `sanitizeOther` in the consent routes) keeps the code and status of any OTHER typed account error but replaces the message and reduces `details` to short `reason` and `field` tokens, so no id, hash, locale or service message can leave in an error. Every response, errors and router-level failures included, is `Cache-Control: no-store`.
 
 ## Implementation pattern
 
@@ -38,6 +40,7 @@ Add or change HTTP endpoints following the BananaGig API conventions.
 3. Put logic in `service.ts`; use `database.transaction` for writes.
 4. Register the module in `apps/api/src/app.ts` with the right prefix (`API_PREFIX` for versioned routes).
 5. `pnpm specs:generate`, then commit the regenerated `docs/api/openapi.yaml`.
+- Consent routes (ID-005): add a route to `apps/api/src/modules/consent/routes.ts`, a code to `CONSENT_ERROR_CODES` + `toAppError` + the content seed (`account.consent.error.<code>`) + the mapping table test, pass `consent: {}` in `scripts/generate-specs.mjs` (already done) and keep `spec-completeness.test.ts` green; the composition root builds `ConsentService` with `createConsentPolicyProvider(configuration)` and `createDefaultLocaleResolver(content)`; the session id comes from `req.securitySession`.
 
 ## Commands
 
@@ -89,9 +92,10 @@ Services never write SQL in routes. Persistence changes go through the database 
 - Endpoints that receive personal data and persist nothing (address validate/format, `docs/engineering/ADDRESSES.md`) are stateless POSTs: `Cache-Control: no-store`, a small `bodyLimit`, `strictBody` first, errors and issues carry field names and codes only (never the rejected value), no logging of the body (the app has `logger: false`; keep it so), and no sibling route that reads a persisted record until its access policy exists.
 - Do not add an optional service to `AppDeps` without passing it in `scripts/generate-specs.mjs` and adding its module to the spec-completeness test.
 - Do not enforce a factor or a step-up from a header, body, cookie or the trusted-browser flag; read `auth_time` and `acr` of the verified token (guards in `step-up.ts`).
+- Do not return legal text, a hash the client claimed, a version id or a service message in a consent error; do not accept an account id, a time or a role on a consent route; do not rate limit by silently dropping consent writes (none is limited today, DEBT-0081).
 
 ## Related ADRs
-ADR-0006, ADR-0004, ADR-0013, ADR-0024, ADR-0025, ADR-0026, ADR-0033, ADR-0034, ADR-0036
+ADR-0006, ADR-0004, ADR-0013, ADR-0024, ADR-0025, ADR-0026, ADR-0033, ADR-0034, ADR-0036, ADR-0037, ADR-0038
 
 ## Last reviewed
-2026-10-16 (ID-004)
+2026-10-16 (ID-005)

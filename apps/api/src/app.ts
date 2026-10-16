@@ -4,7 +4,7 @@ import type { AppConfig } from '@bananagig/config';
 import { API_PREFIX } from '@bananagig/contracts';
 import type { ConfigurationService } from '@bananagig/configuration';
 import type { ContentService } from '@bananagig/content';
-import type { AccountService, EmailVerificationService, PhoneVerificationService, SecurityOperations } from '@bananagig/accounts';
+import type { AccountService, ConsentOperations, EmailVerificationService, PhoneVerificationService, SecurityOperations } from '@bananagig/accounts';
 import type { AddressService, GeographyService } from '@bananagig/geography';
 import type { TokenVerifier } from '@bananagig/identity';
 import { metrics } from '@bananagig/observability';
@@ -16,6 +16,7 @@ import { enforceStrictIntegerParams } from './plugins/strict-params';
 import { configurationRoutes } from './modules/configuration/routes';
 import { contentRoutes } from './modules/content/routes';
 import { accountRoutes } from './modules/account/routes';
+import { consentRoutes } from './modules/consent/routes';
 import { passwordResetRoutes, securityRoutes } from './modules/security/routes';
 import { drainWithTimeout } from './modules/security/wiring';
 import { addressRoutes } from './modules/geography/address-routes';
@@ -62,6 +63,11 @@ export interface AppDeps {
    * without it requireAccount behaves exactly as before.
    */
   security?: SecurityOperations;
+  /**
+   * Consent and legal-version history (ID-005): the caller's relationship to the versions of the legal documents owned by the content registry. Optional like the other
+   * account services; the consent routes are registered only when provided together with `accounts`.
+   */
+  consent?: ConsentOperations;
 }
 
 /**
@@ -123,6 +129,11 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
           description:
             "The caller's own sessions, browsers (devices) and second-factor state, the step-up protocol (RFC 9470) and the security timeline (ID-004), plus the public password-reset request. Passwords, authenticator secrets and recovery codes live in the identity provider; BananaGig stores none of them",
         },
+        {
+          name: 'consent',
+          description:
+            "The caller's own consent to the legal documents (ID-005): what each purpose needs, the version in force, and an append-only history of acceptances and withdrawals bound to the exact version, locale and text hash. The legal text itself is owned and served by the content registry; no account id is ever accepted",
+        },
       ],
       components: {
         securitySchemes: {
@@ -154,6 +165,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       emailVerification: deps.emailVerification,
       phoneVerification: deps.phoneVerification,
       security: deps.security,
+      consent: deps.consent,
     });
     await app.register(accountRoutes, {
       prefix: API_PREFIX,
@@ -167,6 +179,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       await app.register(securityRoutes, { prefix: API_PREFIX });
       await app.register(passwordResetRoutes, { prefix: API_PREFIX });
     }
+    if (deps.consent) await app.register(consentRoutes, { prefix: API_PREFIX });
   }
 
   app.get('/metrics', { schema: { hide: true } }, async (_req, reply) => reply.type(metrics.contentType).send(await metrics.metrics()));

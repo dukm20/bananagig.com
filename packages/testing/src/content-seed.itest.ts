@@ -245,12 +245,17 @@ describe('migration 0006 seeded shell copy', () => {
     expect(rows.every((r) => r.content_type !== 'LEGAL' && r.owner_role === 'CONTENT')).toBe(true);
     expect(rows.some((r) => /price|fee|legal|terms|privacy|commission|marketplace/i.test(r.key))).toBe(false);
     // migration 0006 seeds no product configuration (migrations 0010 and 0011 seed the verification.email.* and verification.phone.* parameters, tested in
-    // email-model.itest.ts and phone-model.itest.ts; migration 0012 seeds the six session, MFA and recovery parameters, tested in security-model.itest.ts):
-    // the parameters that exist besides those are EXACTLY the six named here
+    // email-model.itest.ts and phone-model.itest.ts; migration 0012 seeds the six session, MFA and recovery parameters, tested in security-model.itest.ts;
+    // migration 0013 seeds the four consent.* policy parameters, tested in consent-model.itest.ts): the parameters that exist besides those are EXACTLY the
+    // ten named here
     const others = await iso.database.query<{ key: string }>(
       "SELECT key FROM configuration.parameters WHERE key NOT LIKE 'verification.email.%' AND key NOT LIKE 'verification.phone.%' ORDER BY key COLLATE \"C\"",
     );
     expect(others.map((r) => r.key)).toEqual([
+      'consent.privacy_policy.reacceptance',
+      'consent.privacy_policy.required_for',
+      'consent.terms_of_service.reacceptance',
+      'consent.terms_of_service.required_for',
       'reset_link.max_requests_per_hour',
       'reset_link.validity_minutes',
       'security.activity_log_days',

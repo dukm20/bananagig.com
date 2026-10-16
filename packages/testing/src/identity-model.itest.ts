@@ -219,7 +219,9 @@ const EMAIL_TABLES_0010 = ['email_contacts', 'email_verification_challenges'];
 const PHONE_TABLES_0011 = ['phone_contacts', 'phone_verification_challenges'];
 // ... and the two of 0012 (application_sessions, account_devices): tested in security-model.itest.ts.
 const SECURITY_TABLES_0012 = ['account_devices', 'application_sessions'];
-const TABLES = [...TABLES_0009, ...EMAIL_TABLES_0010, ...PHONE_TABLES_0011, ...SECURITY_TABLES_0012].sort();
+// ... and the two of 0013 (consent_purposes, consent_events): tested in consent-model.itest.ts.
+const CONSENT_TABLES_0013 = ['consent_events', 'consent_purposes'];
+const TABLES = [...TABLES_0009, ...EMAIL_TABLES_0010, ...PHONE_TABLES_0011, ...SECURITY_TABLES_0012, ...CONSENT_TABLES_0013].sort();
 // The constraints 0010 adds to a 0009 table (the audit trail): covered by email-model.itest.ts, not here.
 const EMAIL_AUDIT_CONSTRAINTS_0010 = ['ck_account_audit_events__email_contact', 'fk_account_audit_events__account_email_contact'];
 // The constraints 0011 adds to the audit trail (the contact reference and its pairing with the PHONE_ actions): covered by phone-model.itest.ts.
@@ -231,9 +233,11 @@ const SECURITY_AUDIT_CONSTRAINTS_0012 = [
   'fk_account_audit_events__account_device',
   'fk_account_audit_events__account_session',
 ];
+// The constraints 0013 adds to the audit trail (the consent event reference and its pairing with the CONSENT_ actions): covered by consent-model.itest.ts.
+const CONSENT_AUDIT_CONSTRAINTS_0013 = ['ck_account_audit_events__consent_event', 'fk_account_audit_events__account_consent_event'];
 
 describe('migration 0009 from zero', () => {
-  it('creates exactly the thirteen identity tables (seven from 0009, two from 0010, two from 0011, two from 0012) and nothing else that stores data', async () => {
+  it('creates exactly the fifteen identity tables (seven from 0009, two from 0010, two from 0011, two from 0012, two from 0013) and nothing else that stores data', async () => {
     const tables = await q<{ table_name: string; table_type: string }>(
       "SELECT table_name, table_type FROM information_schema.tables WHERE table_schema = 'identity'",
     );
@@ -590,16 +594,22 @@ describe('table constraints reject bad data, by constraint name', () => {
       `SELECT c.conname, t.relname FROM pg_constraint c JOIN pg_namespace n ON n.oid = c.connamespace JOIN pg_class t ON t.oid = c.conrelid
         WHERE n.nspname = 'identity' AND c.contype IN ('p', 'u', 'f', 'c')`,
     );
-    // the email model (0010), the phone model (0011) and the session/device model (0012) have their own constraint tests: their six tables and the eight audit
-    // constraints they added are accounted for by name (26 constraints each for 0010 and 0011: 24 on the two tables plus 2 on the audit trail; 25 for 0012:
-    // 12 on account_devices, 9 on application_sessions and 4 on the audit trail)
-    const MODEL_TABLES = [...EMAIL_TABLES_0010, ...PHONE_TABLES_0011, ...SECURITY_TABLES_0012];
-    const MODEL_AUDIT_CONSTRAINTS = [...EMAIL_AUDIT_CONSTRAINTS_0010, ...PHONE_AUDIT_CONSTRAINTS_0011, ...SECURITY_AUDIT_CONSTRAINTS_0012];
+    // the email model (0010), the phone model (0011), the session/device model (0012) and the consent model (0013) have their own constraint tests: their eight
+    // tables and the ten audit constraints they added are accounted for by name (26 constraints each for 0010 and 0011: 24 on the two tables plus 2 on the audit
+    // trail; 25 for 0012: 12 on account_devices, 9 on application_sessions and 4 on the audit trail; 20 for 0013: 6 on consent_purposes, 12 on consent_events and
+    // 2 on the audit trail)
+    const MODEL_TABLES = [...EMAIL_TABLES_0010, ...PHONE_TABLES_0011, ...SECURITY_TABLES_0012, ...CONSENT_TABLES_0013];
+    const MODEL_AUDIT_CONSTRAINTS = [
+      ...EMAIL_AUDIT_CONSTRAINTS_0010,
+      ...PHONE_AUDIT_CONSTRAINTS_0011,
+      ...SECURITY_AUDIT_CONSTRAINTS_0012,
+      ...CONSENT_AUDIT_CONSTRAINTS_0013,
+    ];
     const catalog = all.filter((r) => !MODEL_TABLES.includes(r.relname) && !MODEL_AUDIT_CONSTRAINTS.includes(r.conname));
     expect(catalog.length).toBe(44);
     expect([...new Set(CONSTRAINT_CASES.map((c) => c.constraint))].sort()).toEqual(catalog.map((r) => r.conname).sort());
-    expect(all.length - catalog.length).toBe(77);
-    expect(all.filter((r) => MODEL_AUDIT_CONSTRAINTS.includes(r.conname)).map((r) => r.relname)).toEqual(Array(8).fill('account_audit_events'));
+    expect(all.length - catalog.length).toBe(97);
+    expect(all.filter((r) => MODEL_AUDIT_CONSTRAINTS.includes(r.conname)).map((r) => r.relname)).toEqual(Array(10).fill('account_audit_events'));
   });
 
   it('accepts the boundary values the checks allow (names of 1 and 50 characters, 50 emoji, locale and time zone by reference, 200-character actors)', async () => {
@@ -1477,6 +1487,7 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
     'phone_contact_id',
     'application_session_id',
     'account_device_id',
+    'consent_event_id',
   ],
   account_devices: [
     'account_device_id',
@@ -1505,6 +1516,21 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
     'revoked_at',
     'revocation_reason',
   ],
+  consent_events: [
+    'consent_event_id',
+    'account_id',
+    'purpose_code',
+    'event_seq',
+    'event_type',
+    'version_id',
+    'locale',
+    'body_sha256',
+    'occurred_at',
+    'source',
+    'application_session_id',
+    'correlation_id',
+  ],
+  consent_purposes: ['purpose_code', 'document_entry_id', 'withdrawal_policy', 'status', 'created_at', 'updated_at'],
   email_contacts: [
     'email_contact_id',
     'account_id',
@@ -1588,7 +1614,9 @@ describe('schema shape: Keycloak owns credentials, the email model (0010) stores
     // E.164 column, the email_contact_id / phone_contact_id keys and references (identifiers, not contact data) and, from 0012, the application SESSION
     // REGISTRY: application_session_id keys and references, the keyed HMAC hash of the device secret (account_devices.device_hash, hex; never the secret), the
     // identity provider session id (application_sessions.keycloak_session_id, a protocol identifier, not a token and not a credential) and the revocation
-    // watermark accounts.sessions_not_before (a timestamp). The registry holds no token, no credential, no cookie value and no raw user agent. Nothing else may match.
+    // watermark accounts.sessions_not_before (a timestamp). The registry holds no token, no credential, no cookie value and no raw user agent. From 0013 the
+    // consent event also names the application session it happened in (consent_events.application_session_id, a composite foreign key to the registry).
+    // Nothing else may match.
     const CONTACT_MODEL_EXCEPTIONS = [
       'account_audit_events.application_session_id',
       'account_audit_events.email_contact_id',
@@ -1597,6 +1625,7 @@ describe('schema shape: Keycloak owns credentials, the email model (0010) stores
       'accounts.sessions_not_before',
       'application_sessions.application_session_id',
       'application_sessions.keycloak_session_id',
+      'consent_events.application_session_id',
       'email_contacts.email_contact_id',
       'email_contacts.email_normalized',
       'email_verification_challenges.code_hash',
@@ -1634,7 +1663,7 @@ describe('schema shape: Keycloak owns credentials, the email model (0010) stores
     expect(holders).toEqual(['application_sessions.keycloak_session_id', 'external_identities.provider_subject']);
   });
 
-  it('documents the personal-data tables in the catalog (table comments exist for all thirteen tables)', async () => {
+  it('documents the personal-data tables in the catalog (table comments exist for all fifteen tables)', async () => {
     const rows = await q<{ relname: string; comment: string | null }>(
       "SELECT c.relname, obj_description(c.oid, 'pg_class') AS comment FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'identity' AND c.relkind = 'r'",
     );

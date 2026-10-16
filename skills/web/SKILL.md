@@ -32,6 +32,8 @@ Build web UI and the server-side API client without breaking the workspace bound
 - A `401 STEP_UP_REQUIRED` becomes ONE login round trip (`/auth/login?returnTo=/security&stepUp=recent|mfa`); coming back does not repeat the action. `handleLogin` accepts only closed-list `stepUp` / `kcAction`, records the step-up in the login transaction and the callback verifies the VERIFIED token reached it (no second trip; the page gets `error=step_up_required`). `kcAction` is honoured only when `takeEnrollment(sessionId)` returns the one-shot marker `mfa-enroll` stored after the API accepted the request; it forces `prompt=login`. The callback appends the whitelisted `kc_action_status` to the return URL.
 - A `401 SESSION_REVOKED` ends the session: `endRevokedSession` deletes the Valkey session, clears the cookie and goes through Keycloak's end-session endpoint to `/session?error=session_revoked` (the URI is registered in the realm); a PAGE cannot clear a cookie while rendering, so it redirects to `GET /auth/revoked`, which asks the API again with the session's own token and ends the session only if the API confirms. Logout first tells the API (best effort, 2 s). Token refresh is single-flight per session id (`getSession`), because the realm rotates refresh tokens and tolerates one reuse; it is per process (DEBT-0069).
 - The device cookie (`bg_device` / `__Host-bg_device`, HttpOnly, SameSite=Lax, 400 days, 43 base64url chars from `randomToken(32)`) is minted and renewed at login (`ensureDeviceSecret`), sent to the API ONCE in a request body (`registerSession`, best effort 2 s) and never stored in Valkey, a URL, a redirect or a log; when the API answers `deviceId: null` for a secret that was not minted in this request (a removed browser), mint a new one and register once more; removing the current browser clears the cookie. The public password-reset handler forwards the last `x-forwarded-for` entry and always shows the same registry text for an accepted request.
+- Acceptance forms (ID-005, `apps/web/src/app/consents/page.tsx`, PRD R-13): a page that asks a person to accept a legal document gets the version in force from the API (`document`: entry key, version id, locale, hash), fetches the text from the PUBLIC content resolver and offers the Accept form ONLY if the resolver's `contentType` is LEGAL, `resolvedLocale` equals the document's locale and BOTH `versionId` and `bodySha256` equal the API's (and the value is non-empty). Otherwise it shows the registry's "unavailable" note and NO form. The hidden fields (`purpose`, `versionId`, `locale`, `bodySha256`) are taken from that verified document and re-verified by the API; no checkbox, nothing pre-ticked or auto-submitted, no script, and no GET that changes state. `format: 'html'` values render as the content layer does; a `text` value is never injected unescaped.
+- Consent BFF handlers (`apps/web/src/lib/auth/consent-handlers.ts`, template `security-handlers.ts`): POST only, `Origin` must equal the web origin, signed-out is `303 /session`, `strictForm` with EXACTLY the action's fields (a missing, extra, repeated or malformed field is 400 and changes nothing), results are `303 /consents?notice=<closed word>` or `?error=ACCOUNT_CONSENT_<CODE>` from a closed list (anything else `API_ERROR`), `SESSION_REVOKED` ends the session, no step-up. A notice word in the URL is shown only when the data proves it, and an unknown error word shows the generic message.
 
 ## Implementation pattern
 
@@ -52,6 +54,7 @@ pnpm --filter @bananagig/web build
 
 - Render tests use `react-dom/server` (`apps/web/vitest.config.ts` enables the automatic JSX runtime).
 - API client tests run against an in-process HTTP server that returns contract-valid bodies; true end-to-end coverage is the smoke check "Web -> API (SSR /system)".
+- Acceptance pages and handlers (ID-005, `apps/web/src/consent-handlers.test.ts`, `consents.test.tsx`): the account and content stubs; the hidden fields equal the verified document; a resolver result with another version id, hash, locale or content type refuses Accept (the note shows, no form); nothing pre-ticked; closed notice and error lists; strict forms (extra, repeated, malformed fields); no token, secret or full hash in the output (history shows a shortened hash).
 
 ## Data-model considerations
 
@@ -86,9 +89,10 @@ The web app has no database access and no data-model impact. Needing data means 
 - Do not put a one-time code or token in a query string, a redirect URL, a cookie or a log line, and do not let a GET request change state.
 - Do not put the device secret, a session id of Keycloak, an access token or a submitted value in a URL, redirect, cookie value (other than the device cookie itself), Valkey record or log; do not claim in copy that a trusted browser skips a verification code.
 - Do not honour a `kc_action` without the enrollment marker, trust an `acr_values` the browser sent, or start a second step-up round trip from the callback.
+- Do not offer an Accept control for text you did not verify to be the version in force, build the form from anything but that verified document, or let a page or a GET record a consent.
 
 ## Related ADRs
-ADR-0006, ADR-0007, ADR-0014, ADR-0026, ADR-0033, ADR-0034, ADR-0036
+ADR-0006, ADR-0007, ADR-0014, ADR-0026, ADR-0033, ADR-0034, ADR-0036, ADR-0037
 
 ## Last reviewed
-2026-10-16 (ID-004)
+2026-10-16 (ID-005)

@@ -88,6 +88,7 @@ export default async function SessionPage({ searchParams }: { searchParams: Prom
     'session.status.signed_in',
     'common.action.sign_out',
     'account.security.title',
+    'account.consent.title',
     ...(account
       ? [
           'session.account.id',
@@ -162,6 +163,11 @@ export default async function SessionPage({ searchParams }: { searchParams: Prom
       {label('account.security.title') ? (
         <p>
           <a href="/security">{label('account.security.title')}</a>
+        </p>
+      ) : null}
+      {label('account.consent.title') ? (
+        <p>
+          <a href="/consents">{label('account.consent.title')}</a>
         </p>
       ) : null}
       {/* POST + same-origin check; there is deliberately no GET logout link (CSRF). */}

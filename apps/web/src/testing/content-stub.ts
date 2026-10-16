@@ -7,6 +7,8 @@ export interface StubEntry {
   value: string;
   format?: 'text' | 'html';
   contentType?: ResolvedContentDto['contentType'];
+  /** The version the entry resolves to (default: a fixed id, version 1, and a fixed hash); legal documents set them to the version a consent test expects. */
+  version?: { versionId: string; version: number; bodySha256: string };
 }
 export type StubCatalog = Record<string, Record<string, StubEntry>>;
 export interface StubCall {
@@ -54,13 +56,13 @@ function resolve(key: string, requested: string, catalog: StubCatalog): Resolved
     requestedLocale: requested,
     resolvedLocale: locale,
     fallback: { applied: locale !== requested, chain },
-    version: 1,
-    versionId: '00000000-0000-4000-8000-000000000001',
+    version: entry.version?.version ?? 1,
+    versionId: entry.version?.versionId ?? '00000000-0000-4000-8000-000000000001',
     sourceScope: 'PLATFORM',
     scopeRef: null,
     effectiveFrom: '2026-01-01T00:00:00.000Z',
     effectiveTo: null,
-    bodySha256: 'a'.repeat(64),
+    bodySha256: entry.version?.bodySha256 ?? 'a'.repeat(64),
     format: entry.format ?? 'text',
     value: entry.value,
   };

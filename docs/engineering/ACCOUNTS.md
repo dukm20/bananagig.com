@@ -26,7 +26,7 @@ Not in scope (no table, column or route exists for any of them):
 | Account recovery by phone (the phone confirmation after a reset), the step-up before a phone change and the phone screens (verification page, "Change number") | not built: recovery is DEBT-0017 and DEBT-0067; the step-up primitive exists but is not wired into the phone change (DEBT-0062); the production SMS provider is DEBT-0059; see `TECH_DEBT.md` for the others |
 | The account email screens and the step-up before an email change | DEBT-0050 (the email contact and its verification are IMPLEMENTED in ID-002: `docs/engineering/EMAIL_VERIFICATION.md`) |
 | Password reset by email link, application sessions, browsers, authenticator app and recovery codes, step-up guards, the security timeline | IMPLEMENTED in ID-004: `docs/engineering/SESSIONS_AND_MFA.md` (ADR-0034 to ADR-0036). Not built: email/SMS second factors, recovery by phone, support route (DEBT-0067), notifications (DEBT-0017) |
-| Consent and legal acceptance records | ID-005 |
+| Consent and legal acceptance records | IMPLEMENTED in ID-005: `docs/engineering/CONSENT.md` (ADR-0037, ADR-0038). Not built: the sign-up and onboarding screens that require it, other purposes, notifications of a new version, an admin console, an export (DEBT-0076 to DEBT-0081) |
 | Billing, payment methods, balances, subscriptions | finance checkpoints |
 | Photos, bio, public profile, provider business details | profile and provider checkpoints (SV-11.02, PR-09, PB-03) |
 | Provider sign-up and the endpoint or flow that adds the provider role | PR-01 (the service method `grantRole` exists; there is deliberately no endpoint) |
@@ -46,6 +46,8 @@ Not in scope (no table, column or route exists for any of them):
 | The application session registry, revocation and the "sign out everywhere" watermark | BananaGig (ID-004) | `identity.application_sessions`, `identity.accounts.sessions_not_before`; references the Keycloak `sid`, holds no token (ADR-0034) |
 | Browsers (devices) and the trusted-browser record | BananaGig (ID-004) | `identity.account_devices`: a keyed hash of a cookie secret and three coarse families; the trusted flag does not change when Keycloak asks for a code (DEBT-0066) |
 | The security timeline | BananaGig (ID-004) | a read model over `identity.account_audit_events`, no separate table |
+| Legal documents, their versions, translations, hashes and publication | content registry (CFG-002) | LEGAL entries and immutable `content.versions`; no legal text is copied into the identity schema |
+| An account's consent: which exact version, locale and hash it accepted or withdrew, and the history | BananaGig (ID-005) | `identity.consent_events` (append-only, composite foreign key to the version) and `identity.consent_purposes`; the current state is derived, who must accept what is configuration (ADR-0037, ADR-0038) |
 | Login identifier (username, login email) | Keycloak | the `keycloak` database; not mirrored |
 | The immutable subject (`sub`) and the issuer | Keycloak issues them; BananaGig stores the pair only as the link | `identity.external_identities` |
 | Account existence, account id, status and status history | BananaGig | `identity.accounts`, `identity.account_status_history` |
@@ -111,7 +113,7 @@ What the database guarantees, in addition to the usual keys and CHECKs (all guar
 - At commit, the status history and the account agree in both directions (two deferred constraint triggers, `STATUS_HISTORY_MISMATCH`): the newest history row equals the CURRENT `accounts.status` read at commit (so a transaction that passes through a transient status, suspend then reactivate, is fine), and every history row continues the previous one (`from_status` equals the previous `to_status`, NULL for the first row), so a stray history row is refused too.
 - No row is ever deleted; history and audit rows are immutable; identity columns are immutable.
 
-There is no `users` table, no `display_name`, no `active_role` column, no address column and no table of Keycloak data. (Since ID-002, ID-003 and ID-004 the schema also holds the email and phone contact tables and the application session and device registries; none holds a credential, a token, a TOTP secret or a recovery code.)
+There is no `users` table, no `display_name`, no `active_role` column, no address column and no table of Keycloak data. (Since ID-002, ID-003, ID-004 and ID-005 the schema also holds the email and phone contact tables, the application session and device registries and the consent purposes and events; none holds a credential, a token, a TOTP secret or a recovery code.)
 
 ## Account bootstrap policy
 
@@ -281,7 +283,7 @@ Because the link to the Keycloak login is permanent, a person whose account is `
 - `preferredLocale` (optional) must be a canonical locale that is an ACTIVE row of `content.locales` (`UNKNOWN_LOCALE`); `timeZone` (optional) must be a registered ACTIVE IANA zone of `geography.time_zones` (`UNKNOWN_TIME_ZONE`). Omitted or null clears them (follow the market defaults, which are never copied into the profile). `upsertProfile` reads the locale and the zone `FOR SHARE` inside its transaction, so a concurrent deactivation serializes with the profile write. There is no trigger on `account_profiles`: a deactivation committed AFTER the write is allowed and the profile keeps referencing the now-inactive locale or zone by design (a historical reference, as addresses keep their time zone); readers fall back to the content chain and the market default.
 - Idempotent: an unchanged profile writes nothing (no audit row). A change writes `PROFILE_UPDATED` with the NAMES of the changed fields only (`firstName`, `lastName`, `preferredLocale`, `timeZone`), never their values.
 - Public display rule (PRD SV-11.02): other people see the first name and the last initial, for example `Ana M.` (`publicDisplayName`, derived on read; there is no stored display name). The initial is ONE character (a letter whose upper-casing expands, such as the German sharp s, is kept as it is), and the display never starts with a space (without a first name only the initial and the dot show). The full name appears only in the caller's own `GET /account/me` profile. No public profile API exists.
-- Not collected here: photo, bio, phone, email, address, consent.
+- Not collected here: photo, bio, phone, email, address. Consent is not part of the profile: it is the append-only log of `identity.consent_events` (ID-005), derived per purpose, never a profile field.
 
 ## Privacy and security
 
@@ -361,6 +363,7 @@ Test files (counts change with every test; run them rather than quoting numbers)
 | DEBT-0048 | no endpoint or screen for the preferred role; account screens are infrastructure only |
 | DEBT-0049 to DEBT-0058 | email verification debts: production provider, change-email step-up and screens, contested addresses, branded layout, brokered social login, bot protection and re-verification, trusted proxy address, admin timeline, retention, unconfirmed abuse limits |
 | DEBT-0059 to DEBT-0064 | phone verification debts (ID-003): DEBT-0059 production SMS provider, DEBT-0060 telecom risk vendor, DEBT-0061 contested numbers (support process), DEBT-0063 the market scope of country and market policy waits for accounts to have a market, DEBT-0064 the two Valkey abuse limits are engineering assumptions; see `TECH_DEBT.md` for each entry and for DEBT-0062 |
+| DEBT-0076 to DEBT-0081 | consent debts (ID-005): DEBT-0076 no flow requires consent yet, DEBT-0077 the consent policy defaults are assumptions, DEBT-0078 no re-acceptance notification, console, export or full-text read of a historical version, DEBT-0079 no regional consent-law engine and no cross-language equivalence, DEBT-0080 other purposes are not seeded, DEBT-0081 consent infrastructure residuals |
 | DEBT-0066 to DEBT-0074 | sessions, MFA and recovery debts (ID-004): DEBT-0066 the trusted browser has no login-time effect, DEBT-0067 no email/SMS second factor and no phone or support recovery, DEBT-0068 Keycloak events are not consumed, DEBT-0069 per-process refresh single-flight, DEBT-0070 three assumed parameters and the duplicated remember-me value, DEBT-0071 the `manage-users` service account, DEBT-0072 best-effort propagation without a queue, DEBT-0073 password-reset abuse residuals, DEBT-0074 session and security residuals |
 
 ## Email contact (ID-002)
@@ -384,6 +387,10 @@ Seven audit actions and five outbox events are added; the error codes are `ACCOU
 ## Sessions, browsers and security (ID-004)
 
 `requireAccount()` also resolves the token's `sid` to an application session when the security service is wired (a revoked session is `401 SESSION_REVOKED` at once; a token without `sid` is `401 INVALID_TOKEN`) and sets `request.securitySession` (`applicationSessionId`, `accountDeviceId`, `created`; ids only). The email and phone routes pass the session's `accountDeviceId` to their limiter, so the per-device dimension has an identifier. Everything else (the twelve `/account/security/*` operations and the public `POST /auth/password-reset`, the guards, the watermark, the Keycloak service account, the realm changes, the privacy rules and the tests) is specified in `docs/engineering/SESSIONS_AND_MFA.md`. A suspended or closed account is a 403 before any session logic; a closed account gets no new session or device and its watermark is not raised (DEBT-0074: closing or suspending an account does not revoke its sessions).
+
+## Consent and legal-version history (ID-005)
+
+The account's consents (which exact version, language and text hash it accepted or withdrew, the history, and what it must accept now) are specified in `docs/engineering/CONSENT.md` (ADR-0037, ADR-0038). They are not part of the profile: `identity.consent_events` is an append-only log bound to `content.versions` by a composite foreign key, the current state is derived, and the policy (`consent.<purpose>.required_for` and `.reacceptance`) is configuration. Four operations are added under `/account/consents` (`getAccountConsents`, `getAccountConsentRequirements`, `acceptAccountConsent`, `withdrawAccountConsent`), two audit actions (`CONSENT_ACCEPTED`, `CONSENT_WITHDRAWN`) and two outbox events. The roles considered for a requirement are the account's PENDING and ACTIVE `account_roles`. No flow requires consent yet (DEBT-0076); `GET /account/me` carries no consent summary.
 
 ## Operations and troubleshooting
 

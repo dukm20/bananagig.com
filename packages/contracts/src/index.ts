@@ -117,3 +117,4 @@ export * from './account';
 export * from './email';
 export * from './phone';
 export * from './security';
+export * from './consent';

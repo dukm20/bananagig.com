@@ -9,6 +9,8 @@ import {
   AccountCreatedPayload,
   AccountRolePayload,
   AccountStatusChangedPayload,
+  CONSENT_EVENTS,
+  ConsentEventPayload,
   ExternalIdentityLinkedPayload,
   EMAIL_EVENTS,
   MfaChangedPayload,
@@ -69,6 +71,7 @@ const app = await buildApp({
   emailVerification: {},
   phoneVerification: {},
   security: {},
+  consent: {},
   readiness: async () => ({}),
 });
 await app.ready();
@@ -277,6 +280,20 @@ const SECURITY_MESSAGES = {
     'identity_account',
   ],
 };
+const CONSENT_MESSAGES = {
+  accepted: [
+    'IdentityConsentAccepted',
+    'An account accepted an exact version of a legal document for a purpose (a consent event ACCEPTED was appended). The payload names the purpose, the consent event, its sequence number and the content version id; the hash and the locale are reachable through that version. Never legal text.',
+    ConsentEventPayload,
+    'identity_account',
+  ],
+  withdrawn: [
+    'IdentityConsentWithdrawn',
+    'An account withdrew the consent it had given for a withdrawable purpose (a consent event WITHDRAWN was appended). The payload carries the same identifiers as the acceptance event, never legal text.',
+    ConsentEventPayload,
+    'identity_account',
+  ],
+};
 const channels = {
   infraPing: {
     address: INFRA_PING_EVENT_TYPE,
@@ -406,13 +423,29 @@ for (const [k, [name, summary, payload, aggregate]] of Object.entries(SECURITY_M
   };
   schemas[name] = typedEnvelope(type, payload);
 }
+for (const [k, [name, summary, payload, aggregate]] of Object.entries(CONSENT_MESSAGES)) {
+  const type = CONSENT_EVENTS[k];
+  channels[`identity_consent_${k}`] = {
+    address: type,
+    description: `${summary} Published through the transactional outbox (aggregate ${aggregate}); the payload carries identifiers only, never the text of a legal document.`,
+    messages: { [name]: { $ref: `#/components/messages/${name}` } },
+  };
+  operations[`send${name}`] = { action: 'send', channel: { $ref: `#/channels/identity_consent_${k}` }, summary };
+  messages[name] = {
+    name,
+    title: summary,
+    headers: { type: 'object', properties: { 'x-correlation-id': { type: 'string' } } },
+    payload: { $ref: `#/components/schemas/${name}` },
+  };
+  schemas[name] = typedEnvelope(type, payload);
+}
 const asyncapi = {
   asyncapi: '3.0.0',
   info: {
     title: 'BananaGig Events',
     version: '1.0.0',
     description:
-      'Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events, the identity account events, the email verification events, the phone verification events and the account security events (sessions, second factor, password reset) exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.',
+      'Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events, the identity account events, the email verification events, the phone verification events, the account security events (sessions, second factor, password reset) and the consent events (acceptance and withdrawal of a legal document version) exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.',
   },
   defaultContentType: 'application/json',
   channels,

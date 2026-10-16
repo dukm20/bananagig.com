@@ -3,7 +3,7 @@ asyncapi: 3.0.0
 info:
   title: BananaGig Events
   version: 1.0.0
-  description: Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events, the identity account events, the email verification events, the phone verification events and the account security events (sessions, second factor, password reset) exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.
+  description: Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events, the identity account events, the email verification events, the phone verification events, the account security events (sessions, second factor, password reset) and the consent events (acceptance and withdrawal of a legal document version) exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.
 defaultContentType: application/json
 channels:
   infraPing:
@@ -246,6 +246,18 @@ channels:
     messages:
       IdentityPasswordResetCompleted:
         $ref: "#/components/messages/IdentityPasswordResetCompleted"
+  identity_consent_accepted:
+    address: bananagig.identity.consent-accepted.v1
+    description: An account accepted an exact version of a legal document for a purpose (a consent event ACCEPTED was appended). The payload names the purpose, the consent event, its sequence number and the content version id; the hash and the locale are reachable through that version. Never legal text. Published through the transactional outbox (aggregate identity_account); the payload carries identifiers only, never the text of a legal document.
+    messages:
+      IdentityConsentAccepted:
+        $ref: "#/components/messages/IdentityConsentAccepted"
+  identity_consent_withdrawn:
+    address: bananagig.identity.consent-withdrawn.v1
+    description: An account withdrew the consent it had given for a withdrawable purpose (a consent event WITHDRAWN was appended). The payload carries the same identifiers as the acceptance event, never legal text. Published through the transactional outbox (aggregate identity_account); the payload carries identifiers only, never the text of a legal document.
+    messages:
+      IdentityConsentWithdrawn:
+        $ref: "#/components/messages/IdentityConsentWithdrawn"
 operations:
   receiveInfraPing:
     action: receive
@@ -447,6 +459,16 @@ operations:
     channel:
       $ref: "#/channels/identity_security_passwordResetCompleted"
     summary: "A password reset was completed: the identity provider password changed after a reset request. Observed, never the password."
+  sendIdentityConsentAccepted:
+    action: send
+    channel:
+      $ref: "#/channels/identity_consent_accepted"
+    summary: An account accepted an exact version of a legal document for a purpose (a consent event ACCEPTED was appended). The payload names the purpose, the consent event, its sequence number and the content version id; the hash and the locale are reachable through that version. Never legal text.
+  sendIdentityConsentWithdrawn:
+    action: send
+    channel:
+      $ref: "#/channels/identity_consent_withdrawn"
+    summary: An account withdrew the consent it had given for a withdrawable purpose (a consent event WITHDRAWN was appended). The payload carries the same identifiers as the acceptance event, never legal text.
 components:
   messages:
     EventEnvelope:
@@ -849,6 +871,26 @@ components:
             type: string
       payload:
         $ref: "#/components/schemas/IdentityPasswordResetCompleted"
+    IdentityConsentAccepted:
+      name: IdentityConsentAccepted
+      title: An account accepted an exact version of a legal document for a purpose (a consent event ACCEPTED was appended). The payload names the purpose, the consent event, its sequence number and the content version id; the hash and the locale are reachable through that version. Never legal text.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/IdentityConsentAccepted"
+    IdentityConsentWithdrawn:
+      name: IdentityConsentWithdrawn
+      title: An account withdrew the consent it had given for a withdrawable purpose (a consent event WITHDRAWN was appended). The payload carries the same identifiers as the acceptance event, never legal text.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/IdentityConsentWithdrawn"
   schemas:
     EventEnvelope:
       type: object
@@ -4009,6 +4051,164 @@ components:
               type: string
           required:
             - accountId
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    IdentityConsentAccepted:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.identity.consent-accepted.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            accountId:
+              type: string
+            purposeCode:
+              type: string
+            consentEventId:
+              type: string
+            eventSeq:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
+            contentVersionId:
+              type: string
+          required:
+            - accountId
+            - purposeCode
+            - consentEventId
+            - eventSeq
+            - contentVersionId
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    IdentityConsentWithdrawn:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.identity.consent-withdrawn.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            accountId:
+              type: string
+            purposeCode:
+              type: string
+            consentEventId:
+              type: string
+            eventSeq:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
+            contentVersionId:
+              type: string
+          required:
+            - accountId
+            - purposeCode
+            - consentEventId
+            - eventSeq
+            - contentVersionId
           additionalProperties: false
       required:
         - eventId

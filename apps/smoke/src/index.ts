@@ -1,19 +1,23 @@
 // Connectivity smoke test. Runs inside the Compose network (pnpm smoke) and verifies real
 // round-trips, not just container status. Exits non-zero if any check fails.
-import { createHmac, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import http from 'node:http';
 import { AccountService, hashDimension } from '@bananagig/accounts';
 import { Redis } from 'iovalkey';
 import { FakeSmsInbox, extractSmsCode } from '@bananagig/testing/sms';
 import {
+  AcceptConsentResponse,
   ACTIVE_ROLE_HEADER,
+  AccountConsentsResponse,
   AccountEmailResponse,
   AccountResponse,
+  ConsentRequirementsResponse,
   CORRELATION_HEADER,
   DeviceRemovedResponse,
   DeviceTrustResponse,
   EmailVerifiedResponse,
   ErrorResponse,
+  LEGAL_ENTRY_KEYS,
   MfaEnrollmentResponse,
   PasswordResetAcceptedResponse,
   PhoneVerifiedResponse,
@@ -30,8 +34,10 @@ import {
   SystemInfoResponse,
   WhoAmIResponse,
   canonicalizeEmail,
+  consentErrorMessageKey,
   maskEmail,
   maskPhone,
+  type ConsentRequirementDto,
 } from '@bananagig/contracts';
 import { createDatabase } from '@bananagig/database';
 import {
@@ -153,6 +159,22 @@ async function retry<T>(fn: () => Promise<T>, tries = 20, delay = 3000): Promise
   }
   throw last;
 }
+/**
+ * Test hygiene for repeated local runs: the verification endpoints limit requests per hour per SOURCE ADDRESS in Valkey, and every smoke run sends from the same one.
+ * A scenario clears ONLY its own Valkey buckets before it starts. This does NOT reset the per-ACCOUNT hourly send cap, which is authoritative in PostgreSQL (5 per
+ * hour): the Email and Phone scenarios therefore pass at most about twice per hour for the same customer.dev, by design. Nothing outside the given prefix is touched.
+ */
+const clearLimiterBuckets = async (prefix: string): Promise<void> => {
+  const client = new Redis(env('VALKEY_URL', 'redis://valkey-cache:6379'), { maxRetriesPerRequest: 2 });
+  client.on('error', () => undefined);
+  try {
+    const keys = await client.keys(`bananagig:rl:${prefix}:*`);
+    if (keys.length) await client.del(...keys);
+  } finally {
+    client.disconnect();
+  }
+};
+
 const expectOk = async (url: string, init?: RequestInit) => {
   const r = await get(url, init);
   if (!r.ok) throw new Error(`${url} -> HTTP ${r.status}`);
@@ -1175,6 +1197,7 @@ await check('Accounts', async () => {
 });
 
 await check('Email verification', async () => {
+  await clearLimiterBuckets('email-verification');
   // Email contact + verification (ID-002) end to end with REAL Keycloak tokens, the real SMTP adapter and Mailpit: set an address, send the verification,
   // read the message from Mailpit through the approved test helper (the code and the link are extracted from the delivered message), verify, and prove the
   // retry is safe. It is idempotent across runs: a customer.dev that is already verified exercises the CHANGE_EMAIL path (the old address stays primary
@@ -1345,6 +1368,7 @@ await check('Email verification', async () => {
 });
 
 await check('Phone verification', async () => {
+  await clearLimiterBuckets('phone-verification');
   // Phone contact + SMS verification (ID-003) end to end with REAL Keycloak tokens: add a national-format number, the line-type policy, send, read the SMS from the
   // fake sink (DEV/TEST only), wrong code counted, verify, derived contacts summary, idempotent repeat, no code or number in responses or Loki, and DEBT-0055:
   // an X-Forwarded-For spoofed through Caddy creates NO rate-limit bucket. Idempotent across runs: INITIAL_PHONE, then CHANGE_PHONE (the old number stays primary
@@ -2536,6 +2560,931 @@ await check('Sessions and security', async () => {
   ].join('; ');
 });
 
+// ---------------------------------------------------------------- Consent and legal-version history (ID-005)
+await check('Consent', async () => {
+  // Account consent (ID-005) end to end with REAL Keycloak tokens (customer.dev on bananagig-web, admin.dev and admin2.dev on bananagig-admin), real HTTP, the database
+  // (read-only SQL) and Loki. Fresh environments hold NO legal text, so the scenario PUBLISHES legal versions of legal.terms_of_service and legal.privacy_policy (en-US)
+  // through the REAL two-approver content workflow (admin.dev authors, submits and publishes; admin2.dev approves; both hold content-legal) on EVERY run: the text is
+  // obviously dev-only ("SMOKE TEST ... <random>: not a legal document"), and because every run supersedes the previous run's versions, every run also exercises
+  // REACCEPTANCE_REQUIRED. Consent state is append-only and is never restored; the scenario is repeatable because it always ends with both purposes SATISFIED.
+  // Assumptions: DATABASE_URL (read-only SELECTs on identity.consent_events, content.versions, integration.outbox_events, identity.account_audit_events); LOKI_URL;
+  // KEYCLOAK_*; WEB_PUBLIC_URL (default http://app.localhost:8080, the Origin the web handlers require); Caddy at caddy-proxy:80 routing Host app.localhost to the web
+  // app; the dev policy of migration 0013 (consent.*.required_for = CUSTOMER, PROVIDER; consent.*.reacceptance = REACCEPT_REQUIRED); content locale en-US registered.
+  const assert = (ok: boolean, what: string): void => {
+    if (!ok) throw new Error(what);
+  };
+  const PURPOSES = ['TERMS_OF_SERVICE', 'PRIVACY_POLICY'] as const;
+  type Purpose = (typeof PURPOSES)[number];
+  const cid = `smoke-consent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const flowStart = Date.now() * 1e6;
+  const seen: string[] = []; // every account-API response body and header block: searched for secrets and legal text at the end (NOT the public resolver or admin replies)
+  const secrets = new Map<string, string[]>(); // what -> values that must appear in no account-API response and no log line
+  const guard = (what: string, ...values: (string | undefined)[]): void => {
+    secrets.set(what, [...(secrets.get(what) ?? []), ...values.filter((v): v is string => typeof v === 'string' && v.length >= 8)]);
+  };
+  const bodyTokens: string[] = []; // the random part of every legal text published here: must appear in no account-API response, log line, outbox payload or audit row
+  const sha256 = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex');
+  const decodeEntities = (s: string): string =>
+    s
+      .replace(/&#x27;|&#39;|&apos;/g, "'")
+      .replace(/&quot;|&#x22;/g, '"')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&amp;/g, '&');
+  let customer = ''; // the access token of customer.dev (bananagig-web), set in step (1)
+  const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+  type Reply = { status: number; text: string; json: any; headers: Headers }; // eslint-disable-line @typescript-eslint/no-explicit-any
+  /** The account API as customer.dev (or anonymously): everything it answers is kept for the secret scan. */
+  const call = async (method: 'GET' | 'POST', path: string, token?: string, o: { body?: unknown; raw?: string } = {}): Promise<Reply> => {
+    const r = await get(`${api}/api/v1${path}`, {
+      method,
+      headers: {
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        [CORRELATION_HEADER]: cid,
+        ...(o.body !== undefined || o.raw !== undefined ? { 'content-type': 'application/json' } : {}),
+      },
+      ...(o.raw !== undefined ? { body: o.raw } : o.body !== undefined ? { body: JSON.stringify(o.body) } : {}),
+    });
+    const text = await r.text();
+    seen.push(text, JSON.stringify([...r.headers]));
+    let json: any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = undefined;
+    }
+    return { status: r.status, text, json, headers: r.headers };
+  };
+  const refusal = (r: Reply, status: number, code: string, what: string): void => {
+    assert(
+      r.status === status && r.json?.error?.code === code,
+      `${what}: expected ${status} ${code}, got ${r.status} ${r.json?.error?.code ?? r.text.slice(0, 120)}`,
+    );
+  };
+  const consentRefusal = (r: Reply, status: number, code: string, what: string): void => {
+    refusal(r, status, `ACCOUNT_${code}`, what);
+    assert(r.headers.get('cache-control') === 'no-store', `${what}: an error about consent must be Cache-Control: no-store`);
+    assert(
+      r.json.error.details?.messageKey === consentErrorMessageKey(code as Parameters<typeof consentErrorMessageKey>[0]),
+      `${what}: the details must carry the message key ${consentErrorMessageKey(code as Parameters<typeof consentErrorMessageKey>[0])}`,
+    );
+  };
+
+  // ---- administrators and the real content workflow (not part of the secret scan: the management API legitimately returns legal text)
+  const adminCache = new Map<string, { token: string; at: number }>();
+  const adminToken = async (user: 'admin' | 'admin2'): Promise<string> => {
+    const cached = adminCache.get(user);
+    if (cached && Date.now() - cached.at < 120_000) return cached.token;
+    const l = await authorizationCodeLogin(kc, { clientId: 'bananagig-admin', redirectUri: ADMIN_REDIRECT_URI, ...DEV_USERS[user] });
+    const token = (
+      await exchangeAuthorizationCode({
+        tokenEndpoint: ep.token,
+        clientId: 'bananagig-admin',
+        redirectUri: ADMIN_REDIRECT_URI,
+        code: l.code,
+        codeVerifier: l.verifier,
+      })
+    ).accessToken;
+    adminCache.set(user, { token, at: Date.now() });
+    return token;
+  };
+  const content = async (token: string | null, method: 'GET' | 'POST', path: string, body?: unknown, okStatuses = [200, 201]) => {
+    const r = await get(`${api}/api/v1/content${path}`, {
+      method,
+      headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    const json = (await r.json().catch(() => ({}))) as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    if (!okStatuses.includes(r.status)) throw new Error(`${method} /content${path} -> ${r.status} ${json?.error?.code ?? ''}`);
+    return { status: r.status, json };
+  };
+  interface Published {
+    key: string;
+    versionId: string;
+    version: number;
+    bodySha256: string;
+    token: string;
+  }
+  /** Authors, submits, approves (by the SECOND administrator) and publishes a new en-US version of a legal document, immediately effective. */
+  const publishLegal = async (key: string, label: string): Promise<Published> => {
+    const token = randomBytes(12).toString('hex');
+    const body = `SMOKE TEST ${label} ${token}: not a legal document`;
+    bodyTokens.push(token);
+    const author = await adminToken('admin');
+    const draft = (await content(author, 'POST', `/entries/${key}/versions`, { locale: 'en-US', body, reason: 'DEV/TEST ONLY consent smoke document' })).json
+      .data;
+    assert(draft.status === 'DRAFT', `${key}: a new version should be a DRAFT (got ${draft.status})`);
+    await content(author, 'POST', `/versions/${draft.versionId}/submit`, {});
+    await content(await adminToken('admin2'), 'POST', `/versions/${draft.versionId}/approve`, {});
+    const published = (await content(author, 'POST', `/versions/${draft.versionId}/publish`, {})).json.data;
+    assert(published.status === 'PUBLISHED', `${key}: the version should be PUBLISHED (got ${published.status})`);
+    assert(published.bodySha256 === sha256(body), `${key}: the stored hash must be the SHA-256 of the UTF-8 text`);
+    return { key, versionId: published.versionId, version: published.version, bodySha256: published.bodySha256, token };
+  };
+  /** The PUBLIC resolver (no token): what any visitor is served for a document. */
+  const resolvePublic = async (key: string, locale: string) => {
+    const r = await get(`${api}/api/v1/content/resolve`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ key, locale, context: {} }),
+    });
+    return { status: r.status, json: (await r.json().catch(() => ({}))) as any }; // eslint-disable-line @typescript-eslint/no-explicit-any
+  };
+  const copyOf = async (key: string): Promise<string> => {
+    const r = await resolvePublic(key, 'en-US');
+    assert(r.status === 200 && typeof r.json.data?.value === 'string' && r.json.data.value.length > 0, `the registry copy ${key} is not served`);
+    return r.json.data.value as string;
+  };
+
+  // ---- the account API views
+  const requirements = async (what: string, locale?: string) => {
+    const r = await call('GET', `/account/consents/requirements${locale === undefined ? '' : `?locale=${encodeURIComponent(locale)}`}`, customer);
+    assert(r.status === 200, `${what}: GET /account/consents/requirements -> ${r.status} ${r.json?.error?.code ?? r.text.slice(0, 120)}`);
+    assert(r.headers.get('cache-control') === 'no-store', `${what}: requirements must be no-store`);
+    return ConsentRequirementsResponse.parse(r.json).data;
+  };
+  const consents = async (what: string) => {
+    const r = await call('GET', '/account/consents', customer);
+    assert(r.status === 200, `${what}: GET /account/consents -> ${r.status}`);
+    return AccountConsentsResponse.parse(r.json).data;
+  };
+  const row = (d: { requirements: ConsentRequirementDto[] }, code: string): ConsentRequirementDto => {
+    const x = d.requirements.find((r) => r.purposeCode === code);
+    assert(!!x, `the requirements do not list ${code}`);
+    return x!;
+  };
+  type Claim = { versionId: string; locale: string; bodySha256: string };
+  const claimOf = (d: { versionId: string; locale: string; bodySha256: string }): Claim => ({
+    versionId: d.versionId,
+    locale: d.locale,
+    bodySha256: d.bodySha256,
+  });
+  const accept = (code: string, body: unknown): Promise<Reply> => call('POST', `/account/consents/${code}/accept`, customer, { body });
+  /** A changed (or unchanged) acceptance that must succeed, checked against the exact version it claims. */
+  const acceptOk = async (code: Purpose, c: Claim & { version: number }, what: string, o: { changed: boolean; seq?: number }) => {
+    const r = await accept(code, claimOf(c));
+    assert(r.status === 200, `${what}: accept ${code} -> ${r.status} ${r.json?.error?.code ?? r.text.slice(0, 120)}`);
+    assert(r.headers.get('cache-control') === 'no-store', `${what}: accept must be no-store`);
+    const d = AcceptConsentResponse.parse(r.json).data;
+    assert(d.changed === o.changed, `${what}: accept ${code} changed=${d.changed}, expected ${o.changed}`);
+    assert(
+      d.event.purposeCode === code &&
+        d.event.eventType === 'ACCEPTED' &&
+        d.event.source === 'ACCOUNT_API' &&
+        d.event.document.versionId === c.versionId &&
+        d.event.document.locale === c.locale &&
+        d.event.document.bodySha256 === c.bodySha256 &&
+        d.event.document.version === c.version,
+      `${what}: the event of ${code} must reference the exact version id, number, locale and hash`,
+    );
+    if (o.seq !== undefined) assert(d.event.eventSeq === o.seq, `${what}: ${code} event_seq ${d.event.eventSeq}, expected ${o.seq}`);
+    assert(uuidRe.test(d.event.consentEventId), `${what}: the event id is not a uuid`);
+    return d;
+  };
+
+  const databaseUrl = env('DATABASE_URL', '');
+  assert(databaseUrl !== '', 'DATABASE_URL is not set in the smoke environment');
+  const database = createDatabase(databaseUrl, { role: 'tests' });
+  try {
+    const startDb = (await database.query<{ t: string }>(`SELECT clock_timestamp()::text AS t`))[0]!.t; // the database clock: both sides of every time comparison come from it
+
+    // ------------------------------------------------------------------------------------------------------ (1) authenticate customer.dev
+    const l = await authorizationCodeLogin(kc, { clientId: 'bananagig-web', redirectUri: WEB_REDIRECT_URI, ...DEV_USERS.customer });
+    customer = (
+      await exchangeAuthorizationCode({
+        tokenEndpoint: ep.token,
+        clientId: 'bananagig-web',
+        redirectUri: WEB_REDIRECT_URI,
+        code: l.code,
+        codeVerifier: l.verifier,
+      })
+    ).accessToken;
+    const principal = await verifier.verifyAccessToken(customer);
+    guard('access token (signature)', customer.split('.')[2]?.slice(0, 64));
+    guard('Keycloak session id', principal.sessionId);
+    guard('Keycloak subject', principal.subject);
+    const me = AccountResponse.parse((await call('GET', '/account/me', customer)).json).data;
+    const accountId = me.accountId;
+    assert(
+      me.roles.some((r) => r.code === 'CUSTOMER'),
+      '(1) customer.dev must hold the CUSTOMER role',
+    );
+    const sessions = SecuritySessionsResponse.parse((await call('GET', '/account/security/sessions', customer)).json).data.sessions;
+    const currentSessionId = sessions.find((s) => s.current)?.sessionId;
+    assert(!!currentSessionId && uuidRe.test(currentSessionId), '(1) the login must have one current application session');
+    refusal(await call('GET', '/account/consents/requirements'), 401, 'AUTHENTICATION_REQUIRED', '(1) anonymous requirements');
+    refusal(await call('GET', '/account/consents'), 401, 'AUTHENTICATION_REQUIRED', '(1) anonymous consents');
+
+    // ------------------------------------------------------------------------------------------------------ (2) requirements before the documents are published
+    const req2 = await requirements('(2)');
+    assert(
+      req2.locale === 'en-US',
+      `(2) the evaluated locale should be the platform default en-US (got ${req2.locale}; does customer.dev have a preferred locale?)`,
+    );
+    const state0 = new Map<Purpose, { status: string; accepted: boolean }>();
+    for (const code of PURPOSES) {
+      const r = row(req2, code);
+      assert(r.required, `(2) ${code} must be required for customer.dev (consent.${code.toLowerCase()}.required_for)`);
+      assert(
+        r.withdrawable === false && r.reacceptance === 'REACCEPT_REQUIRED',
+        `(2) ${code} must be NOT_WITHDRAWABLE with reacceptance REACCEPT_REQUIRED (got withdrawable ${r.withdrawable}, ${r.reacceptance})`,
+      );
+      assert(
+        (r.status === 'DOCUMENT_UNAVAILABLE') === (r.document === null),
+        `(2) ${code}: DOCUMENT_UNAVAILABLE exactly when no document is in force (${r.status})`,
+      );
+      if (r.document) {
+        assert(
+          r.document.entryKey === LEGAL_ENTRY_KEYS[code] && r.document.locale === 'en-US',
+          `(2) ${code}: the document is ${r.document.entryKey} ${r.document.locale}`,
+        );
+        if (r.status === 'SATISFIED')
+          assert(
+            r.acceptanceState === 'ACCEPTED' && r.accepted?.document.versionId === r.document.versionId,
+            `(2) ${code}: SATISFIED needs the acceptance of the version in force`,
+          );
+        if (r.status === 'REACCEPTANCE_REQUIRED')
+          assert(
+            r.acceptanceState === 'ACCEPTED' && r.accepted?.document.versionId !== r.document.versionId,
+            `(2) ${code}: REACCEPTANCE_REQUIRED needs an older acceptance`,
+          );
+        if (r.status === 'OUTSTANDING') assert(r.acceptanceState !== 'ACCEPTED', `(2) ${code}: OUTSTANDING means not accepted`);
+      }
+      assert(
+        ['DOCUMENT_UNAVAILABLE', 'OUTSTANDING', 'REACCEPTANCE_REQUIRED', 'SATISFIED'].includes(r.status),
+        `(2) ${code}: unexpected status ${r.status} (NOT_REQUIRED would mean the policy no longer requires it for CUSTOMER)`,
+      );
+      state0.set(code, { status: r.status, accepted: r.acceptanceState === 'ACCEPTED' });
+    }
+    assert(
+      req2.satisfied === PURPOSES.every((c) => row(req2, c).status === 'SATISFIED') &&
+        req2.outstanding.length === PURPOSES.filter((c) => row(req2, c).status !== 'SATISFIED').length,
+      '(2) satisfied / outstanding must follow the statuses',
+    );
+    const fresh = PURPOSES.every((c) => state0.get(c)!.status === 'DOCUMENT_UNAVAILABLE');
+    // event_seq counts the events of an account and purpose (nothing here withdraws), so the latest sequence numbers are exact even when the history read is capped
+    const latestSeq = async (what: string): Promise<Record<Purpose, number>> => {
+      const c = (await consents(what)).current;
+      return {
+        TERMS_OF_SERVICE: c.find((x) => x.purposeCode === 'TERMS_OF_SERVICE')?.latest?.eventSeq ?? 0,
+        PRIVACY_POLICY: c.find((x) => x.purposeCode === 'PRIVACY_POLICY')?.latest?.eventSeq ?? 0,
+      };
+    };
+    const eventCount = async (what: string): Promise<number> => Object.values(await latestSeq(what)).reduce((n, x) => n + x, 0);
+    const seq0 = await latestSeq('(2)');
+
+    // ------------------------------------------------------------------------------------------------------ (3) publish the documents through the real workflow; the public resolver equals the requirement
+    const published = {} as Record<Purpose, Published>;
+    for (const code of PURPOSES) published[code] = await publishLegal(LEGAL_ENTRY_KEYS[code], code === 'TERMS_OF_SERVICE' ? 'TERMS' : 'PRIVACY');
+    const req3 = await requirements('(3)');
+    assert(
+      !req3.satisfied && PURPOSES.every((c) => req3.outstanding.includes(c)),
+      `(3) both purposes must be outstanding after the new versions (${req3.outstanding.join(',')})`,
+    );
+    for (const code of PURPOSES) {
+      const r = row(req3, code);
+      const pub = published[code];
+      const d = r.document;
+      assert(!!d, `(3) ${code}: the version in force is missing after the publication`);
+      assert(
+        d!.entryKey === pub.key && d!.versionId === pub.versionId && d!.version === pub.version && d!.bodySha256 === pub.bodySha256 && d!.locale === 'en-US',
+        `(3) ${code}: the requirement must name the version just published (entry, id, number, hash, locale)`,
+      );
+      // every run supersedes: an account that accepted before must be asked again; one that never did is outstanding
+      const expected = state0.get(code)!.accepted ? 'REACCEPTANCE_REQUIRED' : 'OUTSTANDING';
+      assert(r.status === expected, `(3) ${code}: expected ${expected} after the supersession, got ${r.status}`);
+      const resolved = await retry(
+        async () => {
+          const x = await resolvePublic(pub.key, 'en-US');
+          if (x.status !== 200 || x.json.data?.versionId !== pub.versionId)
+            throw new Error(`the public resolver served ${x.status} ${x.json.data?.versionId ?? ''}`);
+          return x.json.data;
+        },
+        10,
+        500,
+      );
+      assert(
+        resolved.key === d!.entryKey &&
+          resolved.contentType === 'LEGAL' &&
+          resolved.versionId === d!.versionId &&
+          resolved.version === d!.version &&
+          resolved.bodySha256 === d!.bodySha256 &&
+          resolved.resolvedLocale === d!.locale &&
+          resolved.requestedLocale === 'en-US' &&
+          resolved.fallback.applied === false,
+        `(3) ${code}: the PUBLIC resolver must serve exactly the version of the requirement (id, hash, EXACT en-US, no fallback)`,
+      );
+      assert(String(resolved.value).includes(pub.token), `(3) ${code}: the resolver must serve the text that was published`);
+      assert(
+        resolved.bodySha256 === sha256(`SMOKE TEST ${code === 'TERMS_OF_SERVICE' ? 'TERMS' : 'PRIVACY'} ${pub.token}: not a legal document`),
+        `(3) ${code}: the served hash is not the SHA-256 of the text`,
+      );
+      const other = await resolvePublic(pub.key, 'es-MX');
+      assert(other.status !== 200, `(3) ${code}: es-MX must not silently resolve to another locale (EXACT fallback), got ${other.status}`);
+    }
+
+    // ------------------------------------------------------------------------------------------------------ (4) (5) accept both, exactly what was shown
+    const events = new Map<string, { purpose: Purpose; versionId: string; locale: string; bodySha256: string; seq: number; viaWeb: boolean }>();
+    const noteEvent = (e: { consentEventId: string; purposeCode: string; eventSeq: number; document: Claim }, viaWeb: boolean): void => {
+      events.set(e.consentEventId, { purpose: e.purposeCode as Purpose, ...claimOf(e.document), seq: e.eventSeq, viaWeb });
+    };
+    const first = {} as Record<Purpose, Awaited<ReturnType<typeof acceptOk>>>;
+    for (const code of PURPOSES) {
+      const d = row(req3, code).document!;
+      first[code] = await acceptOk(code, d, `(${code === 'TERMS_OF_SERVICE' ? 4 : 5})`, { changed: true, seq: seq0[code] + 1 });
+      noteEvent(first[code].event, false);
+    }
+
+    // ------------------------------------------------------------------------------------------------------ (6) satisfied
+    const req6 = await requirements('(6)');
+    assert(
+      req6.satisfied === true && req6.outstanding.length === 0,
+      `(6) satisfied must be true with nothing outstanding (outstanding ${req6.outstanding.join(',')})`,
+    );
+    for (const code of PURPOSES) {
+      const r = row(req6, code);
+      assert(
+        r.status === 'SATISFIED' &&
+          r.acceptanceState === 'ACCEPTED' &&
+          r.accepted?.consentEventId === first[code].event.consentEventId &&
+          r.document?.versionId === published[code].versionId,
+        `(6) ${code}: SATISFIED by the event just recorded`,
+      );
+    }
+
+    // ------------------------------------------------------------------------------------------------------ (7) repeating is idempotent
+    const lengthAfterAccepts = await eventCount('(7)');
+    for (const code of PURPOSES) {
+      const again = await acceptOk(code, { ...claimOf(row(req6, code).document!), version: published[code].version }, '(7)', { changed: false });
+      assert(again.event.consentEventId === first[code].event.consentEventId, `(7) ${code}: a repeat must return the original event, not a new one`);
+    }
+    assert((await eventCount('(7)')) === lengthAfterAccepts, '(7) repeating the acceptances must not add history');
+
+    // ------------------------------------------------------------------------------------------------------ (8) the history, refusals, locale handling and the database
+    const all = await consents('(8)');
+    for (const code of PURPOSES) {
+      const ev = first[code].event;
+      const inHistory = all.history.find((e) => e.consentEventId === ev.consentEventId);
+      assert(
+        !!inHistory &&
+          inHistory.document.versionId === published[code].versionId &&
+          inHistory.document.locale === 'en-US' &&
+          inHistory.document.bodySha256 === published[code].bodySha256 &&
+          inHistory.eventType === 'ACCEPTED',
+        `(8) ${code}: the history event must reference the exact version id, locale and hash`,
+      );
+      const current = all.current.find((c) => c.purposeCode === code);
+      assert(
+        current?.state === 'ACCEPTED' && current.withdrawable === false && current.latest?.consentEventId === ev.consentEventId,
+        `(8) ${code}: the derived current state`,
+      );
+    }
+    assert(
+      all.history.every((e) => e.source === 'ACCOUNT_API' && uuidRe.test(e.consentEventId)),
+      '(8) history shape',
+    );
+    const terms = row(req6, 'TERMS_OF_SERVICE').document!;
+    const termsClaim = claimOf(terms);
+    const lengthBeforeRefusals = await eventCount('(8)');
+    const flip = (hash: string): string => (hash[0] === '0' ? '1' : '0') + hash.slice(1);
+    const wrongHash = flip(terms.bodySha256);
+    // the claimed hash or locale is compared with the immutable version and never repaired; the rejected value is never echoed
+    const badHash = await accept('TERMS_OF_SERVICE', { ...termsClaim, bodySha256: wrongHash });
+    consentRefusal(badHash, 400, 'CONSENT_HASH_MISMATCH', '(8) wrong hash');
+    assert(!badHash.text.includes(wrongHash), '(8) a wrong hash must not be echoed');
+    consentRefusal(await accept('TERMS_OF_SERVICE', { ...termsClaim, locale: 'fr-FR' }), 400, 'CONSENT_LOCALE_MISMATCH', '(8) wrong locale');
+    consentRefusal(
+      await accept('TERMS_OF_SERVICE', { ...termsClaim, locale: 'en-us' }),
+      400,
+      'CONSENT_LOCALE_MISMATCH',
+      '(8) locale in another case is not silently normalized',
+    );
+    consentRefusal(await accept('TERMS_OF_SERVICE', { ...termsClaim, versionId: randomUUID() }), 404, 'CONSENT_VERSION_NOT_FOUND', '(8) unknown version id');
+    consentRefusal(
+      await accept('TERMS_OF_SERVICE', { ...termsClaim, versionId: '00000000-0000-0000-0000-000000000000' }),
+      404,
+      'CONSENT_VERSION_NOT_FOUND',
+      '(8) the nil uuid',
+    );
+    consentRefusal(
+      await accept('TERMS_OF_SERVICE', claimOf(row(req6, 'PRIVACY_POLICY').document!)),
+      404,
+      'CONSENT_VERSION_NOT_FOUND',
+      '(8) the version of ANOTHER document for this purpose',
+    );
+    consentRefusal(await accept('NO_SUCH_PURPOSE', termsClaim), 404, 'CONSENT_PURPOSE_NOT_FOUND', '(8) unknown well-formed purpose');
+    consentRefusal(
+      await call('POST', '/account/consents/TERMS_OF_SERVICE/withdraw', customer, { body: {} }),
+      409,
+      'CONSENT_NOT_WITHDRAWABLE',
+      '(8) withdrawing TERMS_OF_SERVICE',
+    );
+    consentRefusal(
+      await call('POST', '/account/consents/PRIVACY_POLICY/withdraw', customer),
+      409,
+      'CONSENT_NOT_WITHDRAWABLE',
+      '(8) withdrawing PRIVACY_POLICY (no body)',
+    );
+    // strict inputs: nothing is coerced, normalized or taken from the client
+    for (const [what, path, body] of [
+      ['an extra field', '/account/consents/TERMS_OF_SERVICE/accept', { ...termsClaim, extra: true }],
+      ['an account id', '/account/consents/TERMS_OF_SERVICE/accept', { ...termsClaim, accountId }],
+      ['a client time', '/account/consents/TERMS_OF_SERVICE/accept', { ...termsClaim, occurredAt: '2001-01-01T00:00:00Z' }],
+      ['an upper-case hash', '/account/consents/TERMS_OF_SERVICE/accept', { ...termsClaim, bodySha256: terms.bodySha256.toUpperCase() }],
+      ['a malformed version id', '/account/consents/TERMS_OF_SERVICE/accept', { ...termsClaim, versionId: 'not-a-uuid' }],
+      ['a numeric locale', '/account/consents/TERMS_OF_SERVICE/accept', { ...termsClaim, locale: 12345 }],
+      ['a missing field', '/account/consents/TERMS_OF_SERVICE/accept', { versionId: terms.versionId, locale: terms.locale }],
+      ['an empty body', '/account/consents/TERMS_OF_SERVICE/accept', {}],
+      ['a lower-case purpose', '/account/consents/terms_of_service/accept', termsClaim],
+      ['a withdraw body with a field', '/account/consents/TERMS_OF_SERVICE/withdraw', { reason: 'x' }],
+    ] as const)
+      assert((await call('POST', path, customer, { body })).status === 400, `(8) ${what} must be a 400`);
+    assert(
+      (await call('POST', '/account/consents/TERMS_OF_SERVICE/accept', customer, { raw: '{"versionId":' })).status === 400,
+      '(8) malformed JSON must be a 400',
+    );
+    assert(
+      (await call('POST', '/account/consents/TERMS_OF_SERVICE/accept', undefined, { body: termsClaim })).status === 401,
+      '(8) accepting without a token must be a 401',
+    );
+    assert((await call('GET', '/account/consents/requirements?locale=en-US&locale=en-US', customer)).status === 400, '(8) a repeated locale must be a 400');
+    assert((await call('GET', '/account/consents/requirements?other=1', customer)).status === 400, '(8) an unknown query parameter must be a 400');
+    // a stale (superseded) version: an older version of the document that is not the account's latest acceptance is refused as NOT_CURRENT
+    let staleNote = 'a superseded version is refused in step (9)';
+    {
+      const detail = (await content(await adminToken('admin'), 'GET', `/entries/${LEGAL_ENTRY_KEYS.TERMS_OF_SERVICE}`)).json.data.versions as {
+        versionId: string;
+        locale: string;
+        scopeType: string;
+        status: string;
+        version: number;
+        bodySha256: string;
+      }[];
+      const older = detail
+        .filter((v) => v.status === 'SUPERSEDED' && v.locale === 'en-US' && v.scopeType === 'PLATFORM')
+        .sort((x, y) => y.version - x.version)[0];
+      if (older) {
+        consentRefusal(
+          await accept('TERMS_OF_SERVICE', { versionId: older.versionId, locale: older.locale, bodySha256: older.bodySha256 }),
+          409,
+          'CONSENT_VERSION_NOT_CURRENT',
+          '(8) a superseded version',
+        );
+        staleNote = `superseded version ${older.version} refused 409 NOT_CURRENT`;
+      }
+    }
+    // ?locale: an explicit locale is evaluated EXACTLY (no silent en-US fallback), or refused when it is not a registered locale
+    const registered = ((await content(await adminToken('admin'), 'GET', '/locales')).json.data as { locale: string }[]).some((x) => x.locale === 'es-MX');
+    let localeNote: string;
+    if (registered) {
+      const es = await requirements('(8) es-MX', 'es-MX');
+      assert(es.locale === 'es-MX', `(8) the requirements were evaluated in ${es.locale}, not es-MX (silent fallback)`);
+      for (const code of PURPOSES) {
+        const r = row(es, code);
+        assert(
+          r.document === null ? r.status === 'DOCUMENT_UNAVAILABLE' : r.document.locale === 'es-MX',
+          `(8) ${code} in es-MX: no en-US document may be offered (status ${r.status})`,
+        );
+      }
+      localeNote = 'es-MX is a registered locale: evaluated exactly, DOCUMENT_UNAVAILABLE (no legal text in es-MX), never the en-US document';
+    } else {
+      const es = await call('GET', '/account/consents/requirements?locale=es-MX', customer);
+      assert(
+        es.status === 400 && es.json?.error?.code === 'ACCOUNT_VALIDATION_FAILED' && es.json.error.details?.reason === 'INVALID_LOCALE',
+        `(8) es-MX is not a registered locale: expected 400 ACCOUNT_VALIDATION_FAILED INVALID_LOCALE, got ${es.status} ${es.json?.error?.code}`,
+      );
+      localeNote = 'es-MX is NOT a registered locale: refused 400 INVALID_LOCALE, no fallback to en-US';
+    }
+    const wrongCase = await call('GET', '/account/consents/requirements?locale=en-us', customer);
+    assert(
+      wrongCase.status === 400 && wrongCase.json?.error?.details?.reason === 'INVALID_LOCALE',
+      `(8) en-us is not the registered tag en-US: expected 400 INVALID_LOCALE, got ${wrongCase.status}`,
+    );
+    assert((await eventCount('(8)')) === lengthBeforeRefusals, '(8) a refused request must write nothing');
+
+    /** The read-only database proof of every event of the account (composite binding, sequence, session, server time) and, optionally, of the events of this run. */
+    const verifyDb = async (what: string): Promise<string> => {
+      const rows = await database.query<{
+        consent_event_id: string;
+        purpose_code: string;
+        event_seq: number;
+        event_type: string;
+        version_id: string;
+        locale: string;
+        body_sha256: string;
+        application_session_id: string | null;
+        source: string;
+        entry_key: string;
+        age_s: string;
+        since_start: boolean;
+      }>(
+        `SELECT e.consent_event_id, e.purpose_code, e.event_seq, e.event_type, e.version_id, e.locale, e.body_sha256, e.application_session_id, e.source, en.key AS entry_key,
+                extract(epoch FROM (clock_timestamp() - e.occurred_at)) AS age_s, (e.occurred_at >= $2::timestamptz) AS since_start
+           FROM identity.consent_events e
+           JOIN content.versions v ON v.version_id = e.version_id AND v.locale = e.locale AND v.body_sha256 = e.body_sha256
+           JOIN content.entries en ON en.entry_id = v.entry_id
+          WHERE e.account_id = $1
+          ORDER BY e.purpose_code, e.event_seq`,
+        [accountId, startDb],
+      );
+      const total = Number((await database.query<{ n: string }>(`SELECT count(*) AS n FROM identity.consent_events WHERE account_id = $1`, [accountId]))[0]!.n);
+      assert(rows.length === total, `${what}: ${total - rows.length} event(s) are not bound to a content version by (version_id, locale, body_sha256)`);
+      for (const code of PURPOSES) {
+        const seqs = rows.filter((x) => x.purpose_code === code).map((x) => x.event_seq);
+        assert(
+          seqs.every((s, n) => s === n + 1),
+          `${what}: ${code} event_seq must be 1..n without gaps (got ${seqs.join(',')})`,
+        );
+        assert(
+          rows.filter((x) => x.purpose_code === code).every((x) => x.entry_key === LEGAL_ENTRY_KEYS[code]),
+          `${what}: ${code} events must be bound to ${LEGAL_ENTRY_KEYS[code]}`,
+        );
+      }
+      assert(
+        rows.every((x) => x.source === 'ACCOUNT_API' && x.application_session_id !== null && uuidRe.test(x.application_session_id)),
+        `${what}: every event must record the application session it happened in`,
+      );
+      const mine = rows.filter((x) => x.since_start);
+      assert(mine.length === events.size, `${what}: ${mine.length} event(s) since the start of this run in the database, ${events.size} recorded by the API`);
+      for (const x of mine) {
+        const known = events.get(x.consent_event_id);
+        assert(!!known, `${what}: the database holds an event of this run that the API never reported`);
+        assert(
+          known!.purpose === x.purpose_code &&
+            known!.versionId === x.version_id &&
+            known!.locale === x.locale &&
+            known!.bodySha256 === x.body_sha256 &&
+            known!.seq === x.event_seq &&
+            x.event_type === 'ACCEPTED',
+          `${what}: the stored event differs from what the API reported`,
+        );
+        if (!known!.viaWeb)
+          assert(x.application_session_id === currentSessionId, `${what}: the event must be tied to the application session of the token that accepted`);
+        const age = Number(x.age_s);
+        assert(age >= 0 && age < 900, `${what}: occurred_at must be the database time of this run (${age.toFixed(1)} s ago)`);
+      }
+      return `${rows.length} events in the database, ${mine.length} of this run`;
+    };
+    const dbNote8 = await verifyDb('(8)');
+
+    // ------------------------------------------------------------------------------------------------------ (9) a newer Terms version supersedes: re-acceptance
+    const termsV1 = { ...termsClaim, version: published.TERMS_OF_SERVICE.version };
+    const termsV2 = await publishLegal(LEGAL_ENTRY_KEYS.TERMS_OF_SERVICE, 'TERMS');
+    const req9 = await requirements('(9)');
+    const t9 = row(req9, 'TERMS_OF_SERVICE');
+    assert(
+      t9.status === 'REACCEPTANCE_REQUIRED' &&
+        t9.acceptanceState === 'ACCEPTED' &&
+        t9.accepted?.document.versionId === termsV1.versionId &&
+        t9.document?.versionId === termsV2.versionId,
+      `(9) Terms must be REACCEPTANCE_REQUIRED (got ${t9.status}); the old acceptance is kept in the record`,
+    );
+    assert(row(req9, 'PRIVACY_POLICY').status === 'SATISFIED', '(9) Privacy is untouched by a new Terms version');
+    assert(!req9.satisfied && req9.outstanding.length === 1 && req9.outstanding[0] === 'TERMS_OF_SERVICE', '(9) only Terms is outstanding');
+    // repeating the account's latest acceptance (now superseded) is an idempotent no-op that does not satisfy the new version
+    const repeatOld = await acceptOk('TERMS_OF_SERVICE', termsV1, '(9) the superseded version again', { changed: false });
+    assert(repeatOld.event.consentEventId === first.TERMS_OF_SERVICE.event.consentEventId, '(9) the repeat returns the original event');
+    assert(
+      row(await requirements('(9) after the repeat'), 'TERMS_OF_SERVICE').status === 'REACCEPTANCE_REQUIRED',
+      '(9) a repeated old acceptance must not satisfy the new version',
+    );
+    const v2Event = await acceptOk('TERMS_OF_SERVICE', { ...claimOf(t9.document!), version: termsV2.version }, '(9) the new version', {
+      changed: true,
+      seq: first.TERMS_OF_SERVICE.event.eventSeq + 1,
+    });
+    noteEvent(v2Event.event, false);
+    const req9b = await requirements('(9) after accepting');
+    assert(
+      req9b.satisfied && req9b.outstanding.length === 0 && row(req9b, 'TERMS_OF_SERVICE').accepted?.document.versionId === termsV2.versionId,
+      '(9) satisfied again with the new version',
+    );
+    consentRefusal(
+      await accept('TERMS_OF_SERVICE', claimOf(termsV1)),
+      409,
+      'CONSENT_VERSION_NOT_CURRENT',
+      '(9) the superseded version after the new acceptance',
+    );
+    const lengthAfterV2 = await eventCount('(9)');
+    assert(lengthAfterV2 === lengthAfterAccepts + 1, `(9) the history must hold exactly one more event (${lengthAfterAccepts} -> ${lengthAfterV2})`);
+
+    // ------------------------------------------------------------------------------------------------------ (10) the web app through Caddy (what a browser reaches)
+    const webOrigin = new URL(webPublic).origin;
+    type Hop = { status: number; location: string | undefined; body: string; cookies: string[]; headers: http.IncomingHttpHeaders };
+    const caddy = (method: 'GET' | 'POST', path: string, o: { cookie?: string; origin?: string; form?: URLSearchParams } = {}): Promise<Hop> =>
+      new Promise((resolve, reject) => {
+        const payload = o.form?.toString();
+        const req = http.request(
+          {
+            host: 'caddy-proxy',
+            port: 80,
+            path,
+            method,
+            headers: {
+              host: 'app.localhost',
+              ...(o.cookie ? { cookie: o.cookie } : {}),
+              ...(o.origin ? { origin: o.origin } : {}),
+              ...(method === 'POST' ? { 'content-length': String(Buffer.byteLength(payload ?? '')) } : {}),
+              ...(payload !== undefined ? { 'content-type': 'application/x-www-form-urlencoded' } : {}),
+            },
+          },
+          (res) => {
+            let body = '';
+            res.setEncoding('utf8');
+            res.on('data', (chunk) => (body += chunk));
+            res.on('end', () =>
+              resolve({ status: res.statusCode ?? 0, location: res.headers.location, body, cookies: res.headers['set-cookie'] ?? [], headers: res.headers }),
+            );
+          },
+        );
+        req.setTimeout(20_000, () => req.destroy(new Error(`${method} ${path} through Caddy timed out`)));
+        req.on('error', reject);
+        req.end(payload);
+      });
+    const jar = new Map<string, string>();
+    const absorb = (h: Hop): void => {
+      for (const line of h.cookies) {
+        const [pair] = line.split(';');
+        const i = pair!.indexOf('=');
+        const name = pair!.slice(0, i);
+        const value = pair!.slice(i + 1);
+        if (!value || /max-age=0/i.test(line)) jar.delete(name);
+        else jar.set(name, value);
+      }
+    };
+    const cookie = (): string => [...jar].map(([k, v]) => `${k}=${v}`).join('; ');
+    const formsOf = (html: string) =>
+      [...html.matchAll(/<form\b([^>]*)>([\s\S]*?)<\/form>/g)].map((m) => ({
+        action: decodeEntities(/\baction="([^"]*)"/.exec(m[1]!)?.[1] ?? ''),
+        inputs: [...m[2]!.matchAll(/<input\b([^>]*)>/g)].map((i) => ({
+          type: decodeEntities(/\btype="([^"]*)"/.exec(i[1]!)?.[1] ?? ''),
+          name: decodeEntities(/\bname="([^"]*)"/.exec(i[1]!)?.[1] ?? ''),
+          value: decodeEntities(/\bvalue="([^"]*)"/.exec(i[1]!)?.[1] ?? ''),
+        })),
+        html: m[2]!,
+      }));
+    /** The web app forbids framing every page (clickjacking): both headers on every response. */
+    const noFraming = (h: Hop, what: string): void => {
+      const csp = String(h.headers['content-security-policy'] ?? '');
+      assert(
+        /frame-ancestors\s+'none'/.test(csp) && String(h.headers['x-frame-options'] ?? '').toUpperCase() === 'DENY',
+        `${what}: the response must carry Content-Security-Policy frame-ancestors 'none' and X-Frame-Options DENY`,
+      );
+    };
+    const pageHas = (html: string, text: string): boolean => html.includes(text) || decodeEntities(html).includes(text);
+    /** How often a registry text is visible in the page (script payloads of the framework excluded). */
+    const countOf = (html: string, text: string): number => decodeEntities(html.replace(/<script[\s\S]*?<\/script>/g, '')).split(text).length - 1;
+    const consentPage = async (query = '') => {
+      const p = await caddy('GET', `/consents${query}`, { cookie: cookie() });
+      assert(p.status === 200, `(10) GET /consents${query} with a session -> ${p.status}`);
+      noFraming(p, `(10) GET /consents${query}`);
+      assert(!/eyJ[A-Za-z0-9_-]{10,}\./.test(p.body) && !p.body.includes(customer), '(10) the consents page leaked token material');
+      for (const v of jar.values()) assert(v.length < 8 || !p.body.includes(v), '(10) the consents page contains the session cookie value');
+      return p;
+    };
+    const redirectsTo = (h: Hop, suffix: string, what: string): void =>
+      assert(h.status === 303 && (h.location ?? '').endsWith(suffix), `${what}: expected 303 ...${suffix}, got ${h.status} ${h.location}`);
+
+    // signed out: sign-in is offered, no control that changes state exists, and every action refuses
+    const anonPage = await caddy('GET', '/consents');
+    assert(
+      anonPage.status === 200 && anonPage.body.includes('/auth/login?returnTo=/consents'),
+      `(10) GET /consents without a session must offer sign-in (got ${anonPage.status})`,
+    );
+    noFraming(anonPage, '(10) signed-out GET /consents');
+    noFraming(await caddy('GET', '/security'), '(10) signed-out GET /security');
+    assert(
+      !anonPage.body.includes('/auth/consents/accept') && !anonPage.body.includes(published.TERMS_OF_SERVICE.token),
+      '(10) the signed-out page must hold no accept form and no legal text',
+    );
+    const claimForm = (c: Claim, purpose = 'TERMS_OF_SERVICE') =>
+      new URLSearchParams({ purpose, versionId: c.versionId, locale: c.locale, bodySha256: c.bodySha256 });
+    assert(
+      (await caddy('POST', '/auth/consents/accept', { form: claimForm(termsV1) })).status === 403,
+      '(10) POST /auth/consents/accept without an Origin must be 403',
+    );
+    assert(
+      (await caddy('POST', '/auth/consents/accept', { form: claimForm(termsV1), origin: 'http://evil.example' })).status === 403,
+      '(10) POST /auth/consents/accept with a foreign Origin must be 403',
+    );
+    assert(
+      (await caddy('POST', '/auth/consents/withdraw', { form: new URLSearchParams({ purpose: 'TERMS_OF_SERVICE' }) })).status === 403,
+      '(10) POST /auth/consents/withdraw without an Origin must be 403',
+    );
+    assert((await caddy('GET', '/auth/consents/accept')).status === 405, '(10) GET /auth/consents/accept must be 405 (no GET changes state)');
+    redirectsTo(
+      await caddy('POST', '/auth/consents/accept', { form: claimForm(termsV1), origin: webOrigin }),
+      '/session',
+      '(10) a same-origin POST without a session',
+    );
+
+    // sign in on the web app (Authorization Code + PKCE through Caddy, like a browser), after publishing a THIRD Terms version so that something is outstanding
+    const termsV3 = await publishLegal(LEGAL_ENTRY_KEYS.TERMS_OF_SERVICE, 'TERMS');
+    const start = await caddy('GET', '/auth/login?returnTo=/consents');
+    absorb(start);
+    assert(start.status === 302 && (start.location ?? '').includes('code_challenge_method=S256'), `(10) web login did not start a PKCE flow (${start.status})`);
+    const callbackUrl = await completeLogin(kc, start.location!, { redirectUri: `${webPublic}/auth/callback`, ...DEV_USERS.customer });
+    const callback = await caddy('GET', `/auth/callback${new URL(callbackUrl).search}`, { cookie: cookie() });
+    absorb(callback);
+    assert(
+      callback.status === 302 && (callback.location ?? '').endsWith('/consents') && jar.has('bg_session'),
+      `(10) web callback failed (${callback.status} ${callback.location})`,
+    );
+    guard('web session cookie', jar.get('bg_session'));
+
+    const req10 = await requirements('(10)');
+    const t10 = row(req10, 'TERMS_OF_SERVICE');
+    assert(
+      t10.status === 'REACCEPTANCE_REQUIRED' && t10.document?.versionId === termsV3.versionId,
+      `(10) Terms must await re-acceptance of the third version (got ${t10.status})`,
+    );
+    const lengthBeforeWeb = await eventCount('(10)');
+    const statusCopy = {
+      reacceptance: await copyOf('account.consent.status.reacceptance_required'),
+      satisfied: await copyOf('account.consent.status.satisfied'),
+    };
+    const pageBefore = await consentPage();
+    assert(pageHas(pageBefore.body, termsV3.token), '(10) the page must show the legal text of the version in force (served by the public resolver)');
+    const reacceptBefore = countOf(pageBefore.body, statusCopy.reacceptance);
+    const satisfiedBefore = countOf(pageBefore.body, statusCopy.satisfied);
+    assert(reacceptBefore >= 1, '(10) the page must show the REACCEPTANCE_REQUIRED status copy');
+    assert(
+      !/<input[^>]*type="checkbox"/i.test(pageBefore.body) && !/<input[^>]*\schecked\b/i.test(pageBefore.body),
+      '(10) nothing may be pre-ticked (PRD R-13)',
+    );
+    const acceptForms = formsOf(pageBefore.body).filter((f) => f.action === '/auth/consents/accept');
+    assert(acceptForms.length === 1, `(10) exactly one accept form expected (Terms), got ${acceptForms.length}`);
+    const form = acceptForms[0]!;
+    const fields = Object.fromEntries(form.inputs.map((i) => [i.name, i.value]));
+    assert(
+      form.inputs.length === 4 && form.inputs.every((i) => i.type === 'hidden') && Object.keys(fields).sort().join() === 'bodySha256,locale,purpose,versionId',
+      '(10) the accept form must hold exactly the four hidden fields',
+    );
+    assert(
+      fields.purpose === 'TERMS_OF_SERVICE' && fields.versionId === termsV3.versionId && fields.locale === 'en-US' && fields.bodySha256 === termsV3.bodySha256,
+      '(10) the hidden fields must be the version in force (proven equal to what the public resolver served)',
+    );
+    assert(!formsOf(pageBefore.body).some((f) => f.action === '/auth/consents/withdraw'), '(10) no withdraw control for a purpose that cannot be withdrawn');
+
+    // a tampered or malformed form changes nothing
+    const post = (form: URLSearchParams) => caddy('POST', '/auth/consents/accept', { cookie: cookie(), origin: webOrigin, form });
+    const good = claimForm(claimOf(t10.document!));
+    const tampered = (change: Record<string, string>): URLSearchParams => new URLSearchParams({ ...Object.fromEntries(good), ...change });
+    redirectsTo(await post(tampered({ bodySha256: flip(termsV3.bodySha256) })), '/consents?error=ACCOUNT_CONSENT_HASH_MISMATCH', '(10) a tampered hash');
+    redirectsTo(await post(tampered({ locale: 'fr-FR' })), '/consents?error=ACCOUNT_CONSENT_LOCALE_MISMATCH', '(10) a tampered locale');
+    redirectsTo(
+      await post(tampered({ versionId: published.PRIVACY_POLICY.versionId })),
+      '/consents?error=ACCOUNT_CONSENT_VERSION_NOT_FOUND',
+      '(10) the version of another document',
+    );
+    redirectsTo(
+      await post(tampered({ versionId: termsV1.versionId, bodySha256: termsV1.bodySha256 })),
+      '/consents?error=ACCOUNT_CONSENT_VERSION_NOT_CURRENT',
+      '(10) a superseded version',
+    );
+    redirectsTo(await post(tampered({ purpose: 'NO_SUCH_PURPOSE' })), '/consents?error=ACCOUNT_CONSENT_PURPOSE_NOT_FOUND', '(10) an unknown purpose');
+    for (const [what, form] of [
+      ['a malformed hash', tampered({ bodySha256: 'nothex' })],
+      ['an upper-case hash', tampered({ bodySha256: termsV3.bodySha256.toUpperCase() })],
+      ['a malformed version id', tampered({ versionId: 'x' })],
+      ['a lower-case purpose', tampered({ purpose: 'terms_of_service' })],
+      ['an extra field', new URLSearchParams([...good, ['accountId', accountId] as [string, string]])],
+      ['a repeated field', new URLSearchParams([...good, ['locale', 'en-US'] as [string, string]])],
+      ['a missing field', new URLSearchParams({ purpose: 'TERMS_OF_SERVICE', versionId: termsV3.versionId, locale: 'en-US' })],
+    ] as const)
+      assert((await post(form)).status === 400, `(10) ${what} must be a 400`);
+    assert((await eventCount('(10)')) === lengthBeforeWeb, '(10) a tampered or malformed form must record nothing');
+    assert(row(await requirements('(10) after tampering'), 'TERMS_OF_SERVICE').status === 'REACCEPTANCE_REQUIRED', '(10) Terms must still await re-acceptance');
+    const errorPage = await consentPage('?error=%3Cscript%3Ealert(1)%3C%2Fscript%3E');
+    assert(
+      !decodeEntities(errorPage.body.replace(/<script[\s\S]*?<\/script>/g, '')).includes('alert(1)'),
+      '(10) an unknown ?error= value must never be echoed in the page',
+    );
+
+    // the correct form is accepted, then the page shows the accepted state
+    const accepted = await post(good);
+    redirectsTo(accepted, '/consents?notice=accepted', '(10) the correct form');
+    const reqAfterWeb = await requirements('(10) after the web acceptance');
+    const afterWeb = row(reqAfterWeb, 'TERMS_OF_SERVICE');
+    assert(
+      reqAfterWeb.satisfied &&
+        afterWeb.status === 'SATISFIED' &&
+        afterWeb.accepted?.document.versionId === termsV3.versionId &&
+        afterWeb.accepted.eventSeq === v2Event.event.eventSeq + 1,
+      '(10) the web acceptance must be recorded for the exact version (event_seq + 1)',
+    );
+    noteEvent(afterWeb.accepted!, true);
+    assert((await eventCount('(10)')) === lengthBeforeWeb + 1, '(10) exactly one event is recorded by the web acceptance');
+    const pageAfter = await consentPage();
+    assert(
+      countOf(pageAfter.body, statusCopy.satisfied) > satisfiedBefore && countOf(pageAfter.body, statusCopy.reacceptance) === reacceptBefore - 1,
+      `(10) the page must show more of the SATISFIED copy (which is also the accepted-state and history-event copy, so the count grows by one or more) and one less REACCEPTANCE_REQUIRED status after the acceptance (satisfied ${satisfiedBefore} -> ${countOf(pageAfter.body, statusCopy.satisfied)}, reacceptance ${reacceptBefore} -> ${countOf(pageAfter.body, statusCopy.reacceptance)})`,
+    );
+    assert(!formsOf(pageAfter.body).some((f) => f.action === '/auth/consents/accept'), '(10) nothing is left to accept: no accept form');
+    const noticePage = await consentPage('?notice=accepted');
+    assert(
+      pageHas(noticePage.body, await copyOf('account.consent.notice.accepted')),
+      '(10) ?notice=accepted shows the registry copy (the data proves the acceptance)',
+    );
+    redirectsTo(await post(good), '/consents?notice=already_accepted', '(10) the same form again');
+    assert((await eventCount('(10)')) === lengthBeforeWeb + 1, '(10) the repeated form must record nothing');
+    const logout = await caddy('POST', '/auth/logout', { cookie: cookie(), origin: webOrigin });
+    assert(logout.status === 303, `(10) web logout -> ${logout.status}`);
+
+    // ------------------------------------------------------------------------------------------------------ (11) database proof, outbox, audit, and no legal text anywhere it must not be
+    const dbNote = await verifyDb('(11)');
+    const accepts = [...events.entries()];
+    const outbox = await database.query<{ event_type: string; payload_json: Record<string, unknown> }>(
+      `SELECT event_type, payload_json FROM integration.outbox_events
+        WHERE event_type LIKE 'bananagig.identity.consent-%' AND payload_json->>'accountId' = $1 AND created_at >= $2::timestamptz`,
+      [accountId, startDb],
+    );
+    assert(
+      outbox.length === accepts.length && outbox.every((o) => o.event_type === 'bananagig.identity.consent-accepted.v1'),
+      `(11) ${accepts.length} consent-accepted events expected in the outbox for this run (and no withdrawal), found ${outbox.length}: ${outbox.map((o) => o.event_type).join(',')}`,
+    );
+    for (const o of outbox) {
+      assert(
+        Object.keys(o.payload_json).sort().join() === 'accountId,consentEventId,contentVersionId,eventSeq,purposeCode',
+        `(11) a consent-accepted payload must carry exactly the 5 keys (got ${Object.keys(o.payload_json).sort().join(',')})`,
+      );
+      const known = events.get(String(o.payload_json.consentEventId));
+      assert(
+        !!known && known.versionId === o.payload_json.contentVersionId && known.purpose === o.payload_json.purposeCode && known.seq === o.payload_json.eventSeq,
+        '(11) an outbox payload must match the event it announces',
+      );
+    }
+    const audit = await database.query<{ action: string; changes: Record<string, unknown>; consent_event_id: string }>(
+      `SELECT action, changes, consent_event_id FROM identity.account_audit_events
+        WHERE account_id = $1 AND action IN ('CONSENT_ACCEPTED', 'CONSENT_WITHDRAWN') AND occurred_at >= $2::timestamptz`,
+      [accountId, startDb],
+    );
+    assert(
+      audit.length === accepts.length &&
+        audit.every(
+          (a) => a.action === 'CONSENT_ACCEPTED' && events.has(a.consent_event_id) && Object.keys(a.changes).sort().join() === 'eventSeq,purposeCode',
+        ),
+      `(11) one CONSENT_ACCEPTED audit row per acceptance, changes = {purposeCode, eventSeq} only (found ${audit.length})`,
+    );
+    const patterns = bodyTokens.map((t) => `%${t}%`);
+    const leaks = (
+      await database.query<{ outbox: string; audit: string; events: string; versions: string }>(
+        `SELECT (SELECT count(*) FROM integration.outbox_events WHERE created_at >= $1::timestamptz AND payload_json::text LIKE ANY($2::text[])) AS outbox,
+                (SELECT count(*) FROM identity.account_audit_events WHERE occurred_at >= $1::timestamptz AND (coalesce(changes::text, '') LIKE ANY($2::text[]) OR coalesce(reason, '') LIKE ANY($2::text[]))) AS audit,
+                (SELECT count(*) FROM identity.consent_events e WHERE e::text LIKE ANY($2::text[])) AS events,
+                (SELECT count(*) FROM content.versions WHERE body LIKE ANY($2::text[])) AS versions`,
+        [startDb, patterns],
+      )
+    )[0]!;
+    assert(Number(leaks.outbox) === 0, '(11) legal text found in integration.outbox_events payloads');
+    assert(Number(leaks.audit) === 0, '(11) legal text found in identity.account_audit_events');
+    assert(Number(leaks.events) === 0, '(11) legal text found in identity.consent_events');
+    assert(
+      Number(leaks.versions) === bodyTokens.length,
+      `(11) the content registry should hold the ${bodyTokens.length} published texts (and only there), found ${leaks.versions}`,
+    );
+
+    const everything = seen.join('\n');
+    for (const token of bodyTokens) assert(!everything.includes(token), '(11) legal body text found in an account API response');
+    for (const [what, values] of secrets) for (const value of values) assert(!everything.includes(value), `(11) an account API response contains the ${what}`);
+    assert(!everything.includes(customer), '(11) an account API response contains the access token');
+    assert(!/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\./.test(everything), '(11) an account API response contains a JWT');
+
+    const loki = env('LOKI_URL', 'http://loki-logs:3100');
+    const query = async (q: string) =>
+      (await (
+        await expectOk(`${loki}/loki/api/v1/query_range?query=${encodeURIComponent(q)}&start=${flowStart}&end=${Date.now() * 1e6 + 60e9}&limit=5`)
+      ).json()) as { data: { result: unknown[] } };
+    await retry(
+      async () => {
+        if ((await query(`{service_name="bananagig-api"} | correlationId = \`${cid}\``)).data.result.length < 1)
+          throw new Error('this flow is not in Loki yet');
+      },
+      12,
+      2000,
+    );
+    await sleep(6000); // the log exporter batches (5 s): give the last lines of the flow time to arrive before asserting an absence
+    const apps = '{service_name=~"bananagig-(api|web|worker)"}';
+    for (const [what, values] of [['legal body text', bodyTokens], ...secrets] as [string, string[]][]) {
+      const unique = [...new Set(values)];
+      if (unique.length === 0) continue;
+      const pattern = unique.map((v) => v.replace(/[\\.+*?()|[\]{}^$]/g, '\\$&')).join('|');
+      assert((await query(`${apps} |~ \`${pattern}\``)).data.result.length === 0, `(11) the ${what} appears in the api, web or worker logs`);
+    }
+
+    return [
+      `customer.dev (${accountId.slice(0, 8)}...): (2) requirements for both purposes ${fresh ? 'DOCUMENT_UNAVAILABLE (fresh environment: no legal text existed)' : [...state0.values()].map((x) => x.status).join('/')}, (3) legal versions published through the real two-approver workflow (admin.dev authors and publishes, admin2.dev approves) and equal to the PUBLIC resolver (version id, hash, EXACT en-US, no fallback)`,
+      `(4)(5) Terms and Privacy accepted with exactly the version id, locale and hash shown, (6) satisfied, (7) repeats idempotent (changed:false, history unchanged)`,
+      `(8) history events carry the exact version id, locale and hash; wrong hash 400, wrong locale 400, unknown or foreign version 404, unknown purpose 404, NOT_WITHDRAWABLE 409, strict bodies 400, ${staleNote}; ${localeNote}; ${dbNote8}`,
+      `(9) a newer Terms version -> REACCEPTANCE_REQUIRED (the repeat of the superseded acceptance is an idempotent no-op that does not satisfy; after the new acceptance the superseded version is refused 409), satisfied again`,
+      `(10) web through Caddy: signed-out /consents offers sign-in, POSTs without a same-origin Origin 403, tampered or malformed forms redirected with an error word and nothing recorded, the correct form 303 notice=accepted, the page then shows the accepted state, a repeat is already_accepted`,
+      `(11) ${dbNote}; ${outbox.length} consent-accepted outbox events with exactly the 5 payload keys and ${audit.length} audit rows; ${bodyTokens.length} legal texts found only in the content registry (none in responses, logs, outbox, audit or consent events); no token, sid, subject or session cookie in any response or in api/web/worker logs`,
+    ].join('; ');
+  } finally {
+    await database.close();
+  }
+});
+
 // Caddy routes are exercised exactly as a browser would reach them (Host header), from inside the network.
 const proxy = (host: string, path: string, method = 'GET'): Promise<{ status: number; body: string }> =>
   new Promise((resolve, reject) => {
@@ -2604,6 +3553,7 @@ const order = [
   'Email verification',
   'Phone verification',
   'Sessions and security',
+  'Consent',
   'NATS Events',
   'JetStream',
   'SeaweedFS Storage',

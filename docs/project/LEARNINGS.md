@@ -1134,3 +1134,128 @@ When rows can be created by requests while a bulk operation must cover rows that
 
 ### Evidence
 `packages/accounts/src/security-service.ts` (`firstSight`, `revokeAllSessions`), `db/migrations/0012_application_sessions.sql` (the watermark guard), `packages/testing/src/security-model.itest.ts` (section H, "the account row serializes first sight (FOR SHARE) with revoke-all (FOR UPDATE)").
+
+## LRN-0046 — Bind an immutable record to an immutable version with a composite foreign key that includes the derived columns, so the database proves them
+
+Date: 2026-10-16
+Checkpoint: ID-005
+Domain: database / identity
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0037
+Related skill: skills/database/SKILL.md
+
+### Context
+A consent event must prove WHICH text a person accepted, without copying the text. The content version is immutable (body, locale and `body_sha256` never change) and never deleted, but a foreign key on `version_id` alone says nothing about the locale and the hash a service stored next to it: a bug, a second writer or a crafted request could store a hash that disagrees with the version.
+
+### Learning
+Give the referenced table an additive unique constraint over the key plus the derived columns (`UNIQUE (version_id, locale, body_sha256)` on `content.versions`; `version_id` is already unique, so it adds no rule) and reference THAT with a composite foreign key from the event. The database then proves that the locale and the hash stored with the record are those of the immutable version, and a wrong claim is a plain foreign key violation (SQLSTATE 23503), not a check that code can skip. It costs a second unique index on the referenced table; if the indexed columns never change the updates stay HOT. Do not add an index on the referencing side when the referenced rows are never deleted or re-keyed (no foreign key check ever scans it) and no query needs it; say so in the migration.
+
+### Why it matters
+Evidence that can disagree with the thing it is evidence of is not evidence. Copying the text instead would duplicate large documents per account and create a second source of truth for the wording.
+
+### Reuse rule
+When a record must pin an immutable version, store the version id AND the immutable attributes the record asserts (locale, hash), and reference a unique key that includes them. Use this for acceptances, notification receipts and any "what exactly was shown" record. Verify the claim in the service too, to answer with a precise error.
+
+### Evidence
+`db/migrations/0013_consent.sql` (`uq_versions__version_locale_hash`, `fk_consent_events__version`), `packages/accounts/src/consent-service.ts` (`acceptOnce`).
+
+## LRN-0047 — Evaluate "in force" with ONE SQL definition used by the trigger and the service, and test it for parity with the resolver
+
+Date: 2026-10-16
+Checkpoint: ID-005
+Domain: database / content / identity
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0037
+Related skill: skills/identity/SKILL.md
+
+### Context
+Whether a legal version can be accepted depends on the same rule the content resolver uses to decide what is served now: a published status, an active entry and locale, platform scope, `effective_from <= now < effective_to`, where SCHEDULED, PUBLISHED and SUPERSEDED are workflow labels and the timestamps decide (a SCHEDULED version whose start has passed counts even if the activation job has not advanced it). Re-implementing that in the guard trigger, in the service and in the page gives three definitions that drift.
+
+### Learning
+Put the rule in one SQL function (`identity.consent_version_state(version_id, entry_id, at)` returning `NOT_FOUND`, `IN_FORCE` or `NOT_CURRENT`) and call it from the guard trigger, from the service's pre-check and from the query that picks the version in force. The function mirrors the resolver, so the resolver and the function must agree: test the PARITY (publish versions in every state and window, ask `ContentService.resolve` and the function, compare) and change the function in a new migration whenever the resolver's definition of "effective" changes. Return `NOT_FOUND` for everything not published, so an unknown id and an unpublished one are indistinguishable to the caller.
+
+### Why it matters
+A drift is silent: the page offers a version the trigger refuses, or worse the trigger accepts a version the resolver would not serve, and nothing fails until a lawyer asks which text a person saw.
+
+### Reuse rule
+Any rule that both the database (as an arbiter) and the service (as an early, precise error) need belongs in a SQL function with a parity test against the other implementation of the same rule, not in two copies.
+
+### Evidence
+`db/migrations/0013_consent.sql` (`identity.consent_version_state`, `identity.guard_consent_events`), `packages/accounts/src/consent-service.ts` (`acceptOnce`, `getRequirements`), `packages/content/src/resolver.ts`, `docs/engineering/CONTENT.md` (Legal documents).
+
+## LRN-0048 — Take FOR SHARE on the referenced version inside the insert trigger, before reading the clock, so an accept and a publish serialize
+
+Date: 2026-10-16
+Checkpoint: ID-005
+Domain: database / concurrency
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0037
+Related skill: skills/database/SKILL.md
+
+### Context
+An acceptance is valid only if the version is in force at the moment of the insert. Publishing a successor closes the head version's window by updating the head row. Checking the window without a lock leaves a gap: the check passes, the publication commits, and an event is stored for a version that is no longer in force; the later arrival looks as if it was never valid.
+
+### Learning
+In the BEFORE INSERT trigger, `SELECT ... FOR SHARE` the referenced version row FIRST, then read `clock_timestamp()` and evaluate the window. If the publication committed first, the lock waits for it and the next statement (a fresh snapshot in READ COMMITTED) sees the closed window and refuses; if the insert holds the lock first, the publication's update waits for the insert's transaction and the event lands as a valid historical fact. There is no interleaving that stores an event for a version that was not in force at the event's own time. The lock order is account row, purpose row, version row, and it relies on the default READ COMMITTED isolation. Prove it with two real transactions holding the locks in both orders, not with sequential calls.
+
+### Why it matters
+The window of this race is milliseconds, so sequential tests and manual checks never hit it, and the failure is a legal record that contradicts the content history.
+
+### Reuse rule
+When a write is valid only against the current state of a row another workflow updates, lock that row FOR SHARE in the guard before you read the clock or the state, and test both orders with held locks.
+
+### Evidence
+`db/migrations/0013_consent.sql` (`identity.guard_consent_events`: the `PERFORM 1 FROM content.versions ... FOR SHARE` before `clock_timestamp()`).
+
+## LRN-0049 — Let the guard trigger overwrite the default timestamp with the instant the check was made
+
+Date: 2026-10-16
+Checkpoint: ID-005
+Domain: database / identity
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0037
+Related skill: skills/database/SKILL.md
+
+### Context
+A record that says "accepted at T" is only meaningful if T is the instant at which the acceptance was proven valid. A column default (`DEFAULT clock_timestamp()`) is evaluated after the BEFORE trigger, and a caller can supply any value, including a past or future one, so the stored time and the instant of the eligibility check could differ.
+
+### Learning
+In the guard trigger, take `v_now := clock_timestamp()` once, evaluate eligibility at `v_now` and assign `NEW.occurred_at := v_now` before returning. A supplied value is overwritten, the default stays only as documentation, and the row's time is exactly the instant of the check, never a client's clock. Tests that need an event in the past must disable the guard trigger as the table owner (and say so), because the trigger deliberately makes backdating impossible through normal SQL.
+
+### Why it matters
+It removes a whole class of "client timestamp" mistakes and makes the record usable as evidence that the version was in force at that instant, with no extra column.
+
+### Reuse rule
+For an append-only evidence table whose validity depends on the time of the insert, set the time in the guard trigger from the same clock reading used for the check; never accept a time from the caller.
+
+### Evidence
+`db/migrations/0013_consent.sql` (`identity.guard_consent_events`: `NEW.occurred_at := v_now`), `packages/accounts/src/consent-service.ts` (the insert supplies no time and returns the stored `occurred_at`).
+
+## LRN-0050 — Do not add locks on entries or locales after the version lock in an insert trigger: publication locks the entry, then the version
+
+Date: 2026-10-16
+Checkpoint: ID-005
+Domain: database / concurrency
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0037
+Related skill: skills/database/SKILL.md
+
+### Context
+The consent guard trigger share-locks the content version row so an accept serializes with a publication (LRN-0048). It is tempting to also lock the entry row or the locale row, so that deactivating an entry or locale serializes with an accept as well.
+
+### Learning
+The content publish path locks the ENTRY row first and then the VERSION row. A trigger that takes the version lock and then an entry or locale lock acquires them in the opposite order, so an accept and a publication can deadlock (each holds what the other waits for). The trigger therefore locks only what comes after the version in the global order (nothing), and entry and locale activation are deliberately not serialized with an accept: an accept that wins that race is a valid historical fact for a version that was in force when it was checked. If such a lock is ever needed, take it BEFORE the version lock, in the order publication uses, and prove both orders with held locks.
+
+### Why it matters
+A deadlock between a user action and an administrator's publication is rare, non-deterministic and only visible in production traffic; the lock order is invisible in the trigger's code unless it is written down.
+
+### Reuse rule
+Before adding a lock to a guard trigger, list the lock order of every other writer of the same rows (here entry, then version) and extend only in that order; document the order next to the trigger.
+
+### Evidence
+`db/migrations/0013_consent.sql` (`identity.guard_consent_events`: account, purpose, then version; the comment on the lock order), `docs/engineering/CONSENT.md` (Database-enforced eligibility), DEBT-0081.

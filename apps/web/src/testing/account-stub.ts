@@ -1,9 +1,19 @@
 // Contract-conforming stand-in for the account endpoints (and whoami) of the API, mounted on the content stub (the real API is exercised by its own
 // integration tests and `pnpm smoke`). It behaves like the API where the web app depends on it: the bearer token is required, the role named in
 // x-active-role must be an ACTIVE role of the account (403 ACCOUNT_ROLE_NOT_HELD otherwise), the role switch validates and persists nothing.
+import { createHash } from 'node:crypto';
 import type http from 'node:http';
 import {
+  AcceptConsentRequest,
+  CONSENT_ACCEPTANCE_STATES,
+  CONSENT_ERROR_CODES,
+  CONSENT_EVENT_TYPES,
+  CONSENT_REQUIREMENT_STATUSES,
   CORRELATION_HEADER,
+  LEGAL_ENTRY_KEYS,
+  SEEDED_CONSENT_PURPOSES,
+  consentErrorMessageKey,
+  consentPurposeLabelKey,
   PasswordResetRequest,
   RegisterSessionRequest,
   RevokeAllSessionsRequest,
@@ -12,7 +22,11 @@ import {
   UpdateProfileRequest,
   KEYCLOAK_ACTION_OF_METHOD,
   type AccountDto,
+  type AccountConsentsDto,
   type AccountEmailDetailDto,
+  type ConsentEventDto,
+  type ConsentRequirementDto,
+  type ConsentRequirementsDto,
   type SecurityActivityDto,
   type SecurityDevicesDto,
   type SecurityOverviewDto,
@@ -269,6 +283,123 @@ export const SECURITY_COPY: StubCatalog = {
   },
 };
 
+// ---------------------------------------------------------------- consent and legal-version history (ID-005)
+export const TOS_VERSION_ID = '7c1e5a9b-2d4f-4b86-a3e0-9f1d6c8b2e47';
+export const PRIVACY_VERSION_ID = 'e08b3d62-5f1a-4c97-8d24-6a7b9c0e1f35';
+/** The legal texts of the stub registry (markup, as the LEGAL content type is); the version hash is the real SHA-256 of the text, like the registry's trigger computes. */
+export const TOS_BODY = '<h2>Registry terms heading</h2><p>Registry terms clause <strong>one</strong>.</p>';
+export const PRIVACY_BODY = '<p>Registry privacy clause one.</p>';
+export const sha256Hex = (value: string): string => createHash('sha256').update(value).digest('hex');
+export const TOS_HASH = sha256Hex(TOS_BODY);
+export const PRIVACY_HASH = sha256Hex(PRIVACY_BODY);
+export const CONSENT_EVENT_ID = 'b2d94f10-7e3a-4a68-9c15-3d8e6f0a7b24';
+
+/** The version in force of a seeded purpose, as the requirements read reports it. */
+export const consentDocument = (
+  purpose: 'TERMS_OF_SERVICE' | 'PRIVACY_POLICY' = 'TERMS_OF_SERVICE',
+  over: Partial<NonNullable<ConsentRequirementDto['document']>> = {},
+) => ({
+  entryKey: LEGAL_ENTRY_KEYS[purpose],
+  versionId: purpose === 'TERMS_OF_SERVICE' ? TOS_VERSION_ID : PRIVACY_VERSION_ID,
+  version: purpose === 'TERMS_OF_SERVICE' ? 3 : 2,
+  locale: 'en-US',
+  bodySha256: purpose === 'TERMS_OF_SERVICE' ? TOS_HASH : PRIVACY_HASH,
+  effectiveFrom: '2026-09-01T00:00:00.000Z',
+  ...over,
+});
+/** An OUTSTANDING, required, never accepted purpose with its document in force. */
+export const requirementDto = (
+  purpose: 'TERMS_OF_SERVICE' | 'PRIVACY_POLICY' = 'TERMS_OF_SERVICE',
+  over: Partial<ConsentRequirementDto> = {},
+): ConsentRequirementDto => ({
+  purposeCode: purpose,
+  labelContentKey: consentPurposeLabelKey(purpose),
+  required: true,
+  status: 'OUTSTANDING',
+  acceptanceState: 'NONE',
+  withdrawable: false,
+  reacceptance: 'REACCEPT_REQUIRED',
+  document: consentDocument(purpose),
+  accepted: null,
+  ...over,
+});
+export const requirementsDto = (
+  requirements: ConsentRequirementDto[] = [requirementDto('TERMS_OF_SERVICE'), requirementDto('PRIVACY_POLICY')],
+): ConsentRequirementsDto => ({
+  locale: 'en-US',
+  requirements,
+  satisfied: requirements.every((r) => !r.required || r.status === 'SATISFIED'),
+  outstanding: requirements.filter((r) => r.required && r.status !== 'SATISFIED').map((r) => r.purposeCode),
+});
+export const consentEventDto = (over: Partial<ConsentEventDto> = {}): ConsentEventDto => ({
+  consentEventId: CONSENT_EVENT_ID,
+  purposeCode: 'TERMS_OF_SERVICE',
+  eventType: 'ACCEPTED',
+  eventSeq: 1,
+  document: { versionId: TOS_VERSION_ID, version: 3, locale: 'en-US', bodySha256: TOS_HASH },
+  occurredAt: '2026-10-16T09:30:00.000Z',
+  source: 'ACCOUNT_API',
+  ...over,
+});
+export const emptyConsentsDto = (): AccountConsentsDto => ({
+  current: SEEDED_CONSENT_PURPOSES.map((p) => ({
+    purposeCode: p,
+    labelContentKey: consentPurposeLabelKey(p),
+    state: 'NONE' as const,
+    withdrawable: false,
+    latest: null,
+  })),
+  history: [],
+});
+
+/**
+ * Registry copy of the consent screen (ID-005): every content key the /consents page requests (the seeded `account.consent.*` keys plus `error.unavailable`, see the
+ * report of ID-005 A4), worded unlike the seeded copy so a test proves the text came from the registry. The stub does not render variables, so the copy with a variable
+ * is plain text here (the tests assert the variables the page sent). No legal text: the legal documents are separate LEGAL entries (CONSENT_COPY).
+ */
+export const CONSENT_TEXT: Readonly<Record<string, string>> = {
+  'account.consent.title': 'Registry consent title',
+  'account.consent.intro': 'Registry consent intro',
+  'account.consent.requirements.title': 'Registry requirements title',
+  'account.consent.requirements.all_done': 'Registry all done',
+  'account.consent.requirements.outstanding_intro': 'Registry outstanding intro',
+  'account.consent.history.title': 'Registry history title',
+  'account.consent.history.empty': 'Registry history empty',
+  'account.consent.document.unavailable_note': 'Registry document unavailable note',
+  'account.consent.document.read': 'Registry read the document',
+  'account.consent.document.version': 'Registry document version',
+  'account.consent.document.locale': 'Registry document locale',
+  'account.consent.action.accept': 'Registry accept',
+  'account.consent.action.withdraw': 'Registry withdraw',
+  'account.consent.accepted_on': 'Registry accepted on',
+  'account.consent.purpose.terms_of_service': 'Registry terms of service',
+  'account.consent.purpose.privacy_policy': 'Registry privacy policy',
+  ...Object.fromEntries(CONSENT_REQUIREMENT_STATUSES.map((x) => [`account.consent.status.${x.toLowerCase()}`, `Registry status ${x.toLowerCase()}`])),
+  ...Object.fromEntries(CONSENT_ACCEPTANCE_STATES.map((x) => [`account.consent.state.${x.toLowerCase()}`, `Registry state ${x.toLowerCase()}`])),
+  ...Object.fromEntries(CONSENT_EVENT_TYPES.map((x) => [`account.consent.event.${x.toLowerCase()}`, `Registry event ${x.toLowerCase()}`])),
+  ...Object.fromEntries(['accepted', 'withdrawn', 'already_accepted'].map((n) => [`account.consent.notice.${n}`, `Registry consent notice ${n}`])),
+  ...Object.fromEntries(CONSENT_ERROR_CODES.map((c) => [consentErrorMessageKey(c), `Registry consent error ${c.toLowerCase()}`])),
+  'account.consent.error.unavailable': 'Registry consent error unavailable',
+};
+export const CONSENT_COPY: StubCatalog = {
+  'en-US': {
+    ...ACCOUNT_COPY['en-US'],
+    ...Object.fromEntries(Object.entries(CONSENT_TEXT).map(([key, value]) => [key, { value, contentType: 'PLAIN_TEXT' as const }])),
+    [LEGAL_ENTRY_KEYS.TERMS_OF_SERVICE]: {
+      value: TOS_BODY,
+      format: 'html',
+      contentType: 'LEGAL',
+      version: { versionId: TOS_VERSION_ID, version: 3, bodySha256: TOS_HASH },
+    },
+    [LEGAL_ENTRY_KEYS.PRIVACY_POLICY]: {
+      value: PRIVACY_BODY,
+      format: 'html',
+      contentType: 'LEGAL',
+      version: { versionId: PRIVACY_VERSION_ID, version: 2, bodySha256: PRIVACY_HASH },
+    },
+  },
+};
+
 /** A scripted failure of one security route: the status and the standard error envelope the API would answer with. */
 export interface ForcedFailure {
   status: number;
@@ -296,6 +427,11 @@ export interface AccountApiStub {
   email: AccountEmailDetailDto;
   /** The security read models (ID-004) GET /api/v1/account/security... report. */
   security: { overview: SecurityOverviewDto; sessions: SecuritySessionsDto; devices: SecurityDevicesDto; activity: SecurityActivityDto };
+  /**
+   * The consent state (ID-005) GET /api/v1/account/consents... report. The accept and withdraw routes validate like the API (strict body, the version in force, locale
+   * and hash of that version, withdrawable and not required, idempotent repeats) and UPDATE this state, so a page rendered after an action shows its effect.
+   */
+  consent: { requirements: ConsentRequirementsDto; consents: AccountConsentsDto };
   /** When true every /account/* request is answered 401 SESSION_REVOKED (what `requireAccount` does for a revoked session). */
   revoked: boolean;
   /** Scripted failures by `METHOD /path` (without the /api/v1 prefix and the query), for example `POST /account/security/devices/current/trust`. */
@@ -313,6 +449,7 @@ export function attachAccountApi(stub: ContentStub): AccountApiStub {
     account: accountDto(),
     email: emailDetail(),
     security: { overview: overviewDto(), sessions: sessionsDto(), devices: devicesDto(), activity: activityDto() },
+    consent: { requirements: requirementsDto(), consents: emptyConsentsDto() },
     revoked: false,
     forced: {},
     mode: 'up',
@@ -322,6 +459,7 @@ export function attachAccountApi(stub: ContentStub): AccountApiStub {
       api.account = accountDto();
       api.email = emailDetail();
       api.security = { overview: overviewDto(), sessions: sessionsDto(), devices: devicesDto(), activity: activityDto() };
+      api.consent = { requirements: requirementsDto(), consents: emptyConsentsDto() };
       api.revoked = false;
       api.forced = {};
       api.mode = 'up';
@@ -431,6 +569,61 @@ export function attachAccountApi(stub: ContentStub): AccountApiStub {
       const parsed = StartMfaEnrollmentRequest.safeParse(body);
       if (!parsed.success) return fail(400, 'VALIDATION_FAILED', 'VALIDATION');
       return ok({ method: parsed.data.method, keycloakAction: KEYCLOAK_ACTION_OF_METHOD[parsed.data.method] });
+    }
+    // ---------------------------------------------------------------- consent (ID-005)
+    if (route === 'GET /account/consents/requirements')
+      return held(activeRole) ? ok(api.consent.requirements) : fail(403, 'ACCOUNT_ROLE_NOT_HELD', 'AUTHORIZATION', { role: activeRole });
+    if (route === 'GET /account/consents')
+      return held(activeRole) ? ok(api.consent.consents) : fail(403, 'ACCOUNT_ROLE_NOT_HELD', 'AUTHORIZATION', { role: activeRole });
+    const consentRoute = /^POST \/account\/consents\/([^/]+)\/(accept|withdraw)$/.exec(route);
+    if (consentRoute) {
+      const purpose = decodeURIComponent(consentRoute[1]!);
+      const req = api.consent.requirements.requirements.find((r) => r.purposeCode === purpose);
+      if (!req) return fail(404, 'ACCOUNT_CONSENT_PURPOSE_NOT_FOUND', 'NOT_FOUND');
+      const history = api.consent.consents.history;
+      const latest = history.find((e) => e.purposeCode === purpose);
+      const append = (eventType: 'ACCEPTED' | 'WITHDRAWN', document: ConsentEventDto['document']): ConsentEventDto => {
+        const event = consentEventDto({
+          consentEventId: `b2d94f10-7e3a-4a68-9c15-${String(history.length + 1).padStart(12, '0')}`,
+          purposeCode: purpose,
+          eventType,
+          eventSeq: (latest?.eventSeq ?? 0) + 1,
+          document,
+          occurredAt: '2026-10-16T11:00:00.000Z',
+        });
+        history.unshift(event);
+        const current = api.consent.consents.current.find((c) => c.purposeCode === purpose);
+        if (current) {
+          current.state = eventType === 'ACCEPTED' ? 'ACCEPTED' : 'WITHDRAWN';
+          current.latest = event;
+        }
+        req.acceptanceState = eventType === 'ACCEPTED' ? 'ACCEPTED' : 'WITHDRAWN';
+        req.accepted = eventType === 'ACCEPTED' ? event : null;
+        req.status = eventType === 'ACCEPTED' ? 'SATISFIED' : req.required ? 'OUTSTANDING' : 'NOT_REQUIRED';
+        const all = api.consent.requirements;
+        all.satisfied = all.requirements.every((r) => !r.required || r.status === 'SATISFIED');
+        all.outstanding = all.requirements.filter((r) => r.required && r.status !== 'SATISFIED').map((r) => r.purposeCode);
+        return event;
+      };
+      if (consentRoute[2] === 'accept') {
+        const parsed = AcceptConsentRequest.safeParse(body);
+        if (!parsed.success) return fail(400, 'VALIDATION_FAILED', 'VALIDATION');
+        const doc = req.document;
+        if (!doc || parsed.data.versionId !== doc.versionId) return fail(404, 'ACCOUNT_CONSENT_VERSION_NOT_FOUND', 'NOT_FOUND');
+        if (parsed.data.locale !== doc.locale) return fail(400, 'ACCOUNT_CONSENT_LOCALE_MISMATCH', 'VALIDATION');
+        if (parsed.data.bodySha256 !== doc.bodySha256) return fail(400, 'ACCOUNT_CONSENT_HASH_MISMATCH', 'VALIDATION');
+        if (latest?.eventType === 'ACCEPTED' && latest.document.versionId === doc.versionId) return ok({ changed: false, event: latest });
+        return ok({
+          changed: true,
+          event: append('ACCEPTED', { versionId: doc.versionId, version: doc.version, locale: doc.locale, bodySha256: doc.bodySha256 }),
+        });
+      }
+      if (body === undefined || JSON.stringify(body) !== '{}') return fail(400, 'VALIDATION_FAILED', 'VALIDATION');
+      if (!req.withdrawable) return fail(409, 'ACCOUNT_CONSENT_NOT_WITHDRAWABLE', 'CONFLICT');
+      if (latest?.eventType === 'WITHDRAWN') return ok({ changed: false, event: latest });
+      if (latest?.eventType !== 'ACCEPTED') return fail(409, 'ACCOUNT_CONSENT_NOT_ACCEPTED', 'CONFLICT');
+      if (req.required) return fail(409, 'ACCOUNT_CONSENT_REQUIRED_FOR_ROLE', 'CONFLICT');
+      return ok({ changed: true, event: append('WITHDRAWN', latest.document) });
     }
     return fail(404, 'ROUTE_NOT_FOUND', 'NOT_FOUND');
   };

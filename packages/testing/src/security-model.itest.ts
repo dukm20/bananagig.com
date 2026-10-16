@@ -456,7 +456,7 @@ const AUDIT_CONSTRAINTS_0012 = [
 ];
 
 describe('A. schema shape: a registry of sessions and browsers that holds no token, no secret, no code, no address and no raw user agent', () => {
-  it('adds exactly two tables to the identity schema (thirteen in total) and no sequence', async () => {
+  it('adds exactly two tables to the identity schema (thirteen with 0012, fifteen after 0013) and no sequence', async () => {
     const tables = await q<{ table_name: string }>(
       "SELECT table_name FROM information_schema.tables WHERE table_schema = 'identity' AND table_type = 'BASE TABLE'",
     );
@@ -468,6 +468,8 @@ describe('A. schema shape: a registry of sessions and browsers that holds no tok
       'account_status_history',
       'accounts',
       'application_sessions',
+      'consent_events',
+      'consent_purposes',
       'email_contacts',
       'email_verification_challenges',
       'external_identities',
@@ -509,7 +511,7 @@ describe('A. schema shape: a registry of sessions and browsers that holds no tok
     ]);
   });
 
-  it('adds exactly two nullable uuid columns (application_session_id, account_device_id) to the audit trail, after phone_contact_id, and keeps the rest', async () => {
+  it('adds exactly two nullable uuid columns (application_session_id, account_device_id) to the audit trail, after phone_contact_id, and keeps the rest (0013 appends consent_event_id)', async () => {
     const cols = await columnsOf('account_audit_events');
     expect(cols.map(([n, t, nullable]) => [n, t, nullable])).toEqual([
       ['audit_event_id', 'uuid', false],
@@ -525,6 +527,7 @@ describe('A. schema shape: a registry of sessions and browsers that holds no tok
       ['phone_contact_id', 'uuid', true],
       ['application_session_id', 'uuid', true],
       ['account_device_id', 'uuid', true],
+      ['consent_event_id', 'uuid', true],
     ]);
     // the two new references have no default: an audit row names a session or a device explicitly or not at all
     expect(cols.filter(([n]) => n === 'application_session_id' || n === 'account_device_id').map(([, , , d]) => d)).toEqual([null, null]);
@@ -552,7 +555,7 @@ describe('A. schema shape: a registry of sessions and browsers that holds no tok
     expect(c).toHaveLength(9);
   });
 
-  it('adds exactly four constraints to the audit trail (two composite foreign keys, two pairing checks) and keeps the action CHECK under its name', async () => {
+  it('adds exactly four constraints to the audit trail (two composite foreign keys, two pairing checks; 0013 adds two more, tested in consent-model.itest.ts) and keeps the action CHECK under its name', async () => {
     const names = (await constraintsOf(AUDIT)).map((r) => r.conname);
     for (const n of AUDIT_CONSTRAINTS_0012) expect(names, n).toContain(n);
     expect(names).toContain('ck_account_audit_events__action');
@@ -560,11 +563,13 @@ describe('A. schema shape: a registry of sessions and browsers that holds no tok
       'ck_account_audit_events__action',
       'ck_account_audit_events__actor',
       'ck_account_audit_events__changes_object',
+      'ck_account_audit_events__consent_event',
       'ck_account_audit_events__device',
       'ck_account_audit_events__email_contact',
       'ck_account_audit_events__phone_contact',
       'ck_account_audit_events__role',
       'ck_account_audit_events__session',
+      'fk_account_audit_events__account_consent_event',
       'fk_account_audit_events__account_device',
       'fk_account_audit_events__account_email_contact',
       'fk_account_audit_events__account_id',
@@ -575,15 +580,15 @@ describe('A. schema shape: a registry of sessions and browsers that holds no tok
     ]);
   });
 
-  it('brings the identity schema to 121 primary key, unique, foreign key and check constraints (96 before 0012 plus 12 + 9 + 4)', async () => {
+  it('brings the identity schema to 141 primary key, unique, foreign key and check constraints (96 before 0012 plus 12 + 9 + 4, plus 20 from 0013)', async () => {
     const { n } = (
       await q<{ n: number }>(
         "SELECT count(*)::int AS n FROM pg_constraint c JOIN pg_namespace s ON s.oid = c.connamespace WHERE s.nspname = 'identity' AND c.contype IN ('p', 'u', 'f', 'c')",
       )
     )[0]!;
-    expect(n).toBe(121);
+    expect(n).toBe(141);
     expect(DEVICE_CONSTRAINTS.length + SESSION_CONSTRAINTS.length + AUDIT_CONSTRAINTS_0012.length).toBe(25);
-    expect(96 + 25).toBe(121);
+    expect(96 + 25 + 20).toBe(141);
   });
 
   it('declares every foreign key of the registry ON DELETE RESTRICT with the default MATCH SIMPLE, and no foreign key of the identity schema cascades', async () => {
@@ -1957,10 +1962,10 @@ describe('G. audit extension: the sixteen security actions, the session and the 
     expect(NEUTRAL_SECURITY_ACTIONS).toHaveLength(10);
   });
 
-  it('names every one of the 37 actions in the CHECK definition (catalog) and nothing else', async () => {
+  it('names every one of the 39 actions in the CHECK definition (catalog: 37 from 0009 to 0012 plus the two consent actions of 0013) and nothing else', async () => {
     const def = await constraintDef('ck_account_audit_events__action');
     const names = [...def.matchAll(/'([A-Z_]+)'::text/g)].map((m) => m[1]!).sort();
-    expect(names).toEqual([...OLD_ACTIONS, ...SECURITY_AUDIT_ACTIONS].sort());
+    expect(names).toEqual([...OLD_ACTIONS, ...SECURITY_AUDIT_ACTIONS, 'CONSENT_ACCEPTED', 'CONSENT_WITHDRAWN'].sort());
   });
 
   it.each(OLD_ACTIONS)('still accepts the old action %s with the references of its own family and no session or device', async (action) => {
@@ -2700,10 +2705,11 @@ describe('I. seeded configuration: the six session, MFA and recovery parameters'
     expect(PARAM_KEYS).toHaveLength(6);
   });
 
-  it('leaves the eight verification.email.* and ten verification.phone.* parameters untouched (24 in all)', async () => {
+  it('leaves the eight verification.email.* and ten verification.phone.* parameters untouched (24 in all, 28 with the four consent.* parameters of 0013)', async () => {
     expect(await count('configuration.parameters', "key LIKE 'verification.email.%'")).toBe(8);
     expect(await count('configuration.parameters', "key LIKE 'verification.phone.%'")).toBe(10);
-    expect(await count('configuration.parameters')).toBe(24);
+    expect(await count('configuration.parameters', "key LIKE 'consent.%'")).toBe(4);
+    expect(await count('configuration.parameters')).toBe(28);
   });
 
   it.each(PARAM_SEEDS)(

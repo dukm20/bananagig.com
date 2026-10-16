@@ -4,11 +4,14 @@ import {
   API_PREFIX,
   CORRELATION_HEADER,
   ErrorResponse,
+  AcceptConsentResponse,
+  AccountConsentsResponse,
   AccountEmailResponse,
   AccountResponse,
   AddressFormatResponse,
   AddressValidationResponse,
   AdministrativeAreaListResponse,
+  ConsentRequirementsResponse,
   DeviceRemovedResponse,
   DeviceTrustResponse,
   EmailVerificationSentResponse,
@@ -30,12 +33,17 @@ import {
   SignedOutResponse,
   SystemInfoResponse,
   WhoAmIResponse,
+  WithdrawConsentResponse,
+  type AcceptConsentRequest,
+  type AcceptConsentResultDto,
+  type AccountConsentsDto,
   type AccountDto,
   type AccountEmailDetailDto,
   type AddressFormatDto,
   type AddressInput,
   type AddressValidationResultDto,
   type AdministrativeAreaListDto,
+  type ConsentRequirementsDto,
   type ContentContext,
   type DeviceRemovedDto,
   type DeviceTrustDto,
@@ -61,6 +69,7 @@ import {
   type SystemInfo,
   type UpdateProfileRequest,
   type WhoAmI,
+  type WithdrawConsentResultDto,
 } from '@bananagig/contracts';
 
 export class ApiError extends Error {
@@ -316,6 +325,46 @@ export function createApiClient(opts: ApiClientOptions) {
     async requestPasswordReset(email: string, o: AccountCallOptions = {}): Promise<PasswordResetAcceptedDto> {
       return (
         await request('/auth/password-reset', (j) => PasswordResetAcceptedResponse.parse(j).data, { email }, { method: 'POST', headers: emailHeaders(o) })
+      ).data;
+    },
+    // ---------------------------------------------------------------- consent and legal-version history (ID-005)
+    /** GET /api/v1/account/consents: the caller's derived current consent per purpose and the history of every consent event, newest first. */
+    async getAccountConsents(o: AccountCallOptions = {}): Promise<AccountConsentsDto> {
+      return (await request('/account/consents', (j) => AccountConsentsResponse.parse(j).data, undefined, { headers: roleHeader(o) })).data;
+    },
+    /**
+     * GET /api/v1/account/consents/requirements: which purposes the caller's roles require, their status, and the version in force (the one a person could accept now).
+     * `locale` overrides the evaluation locale (default: the account's preferred locale, else the platform default).
+     */
+    async getConsentRequirements(q: { locale?: string } = {}, o: AccountCallOptions = {}): Promise<ConsentRequirementsDto> {
+      const qs = q.locale !== undefined ? `?${new URLSearchParams({ locale: q.locale }).toString()}` : '';
+      return (await request(`/account/consents/requirements${qs}`, (j) => ConsentRequirementsResponse.parse(j).data, undefined, { headers: roleHeader(o) }))
+        .data;
+    },
+    /**
+     * POST /api/v1/account/consents/:purpose/accept: accepts exactly the version the person was shown (id, locale and hash of its text). The server verifies that
+     * the version is in force for the purpose and that the locale and hash are those of the immutable version; a mismatch is an ApiError, never repaired.
+     */
+    async acceptConsent(purpose: string, input: AcceptConsentRequest, o: AccountCallOptions = {}): Promise<AcceptConsentResultDto> {
+      return (
+        await request(`/account/consents/${encodeURIComponent(purpose)}/accept`, (j) => AcceptConsentResponse.parse(j).data, input, {
+          method: 'POST',
+          headers: roleHeader(o),
+        })
+      ).data;
+    },
+    /** POST /api/v1/account/consents/:purpose/withdraw: withdraws an accepted, withdrawable purpose that no role of the account requires (idempotent). */
+    async withdrawConsent(purpose: string, o: AccountCallOptions = {}): Promise<WithdrawConsentResultDto> {
+      return (
+        await request(
+          `/account/consents/${encodeURIComponent(purpose)}/withdraw`,
+          (j) => WithdrawConsentResponse.parse(j).data,
+          {},
+          {
+            method: 'POST',
+            headers: roleHeader(o),
+          },
+        )
       ).data;
     },
     /** GET /api/v1/system/info */

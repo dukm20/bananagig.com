@@ -1,11 +1,14 @@
 // Account API shaping and error mapping. The account read model carries the caller's OWN data only; it never holds a token, a Keycloak subject or an
 // issuer, and the full name appears only in the caller's own profile (never in a public view).
 import {
+  PURPOSE_CODE_PATTERN,
   authSecurityErrorMessageKey,
+  consentErrorMessageKey,
   emailErrorMessageKey,
   phoneErrorMessageKey,
   securityErrorMessageKey,
   type AccountDto,
+  type ConsentErrorCode,
   type EmailErrorCode,
   type PhoneErrorCode,
   type SecurityErrorCode,
@@ -13,6 +16,9 @@ import {
 import { AccountError, type AccountContext } from '@bananagig/accounts';
 import { AppError } from '../../errors';
 import { challenge } from '../../plugins/auth';
+
+/** The only detail of a consent failure: the content key of the managed copy (no service detail is passed on). */
+const consentDetails = (code: ConsentErrorCode): { messageKey: string } => ({ messageKey: consentErrorMessageKey(code) });
 
 export const accountDto = (ctx: AccountContext): AccountDto => ({
   accountId: ctx.accountId,
@@ -34,6 +40,9 @@ export const accountDto = (ctx: AccountContext): AccountDto => ({
  * The security codes (ID-004) carry NOTHING from the service details except a wait in seconds: no session or device id, no account id (the message key is
  * enough for the client). SESSION_REVOKED is an authentication failure, not an ACCOUNT_ code: 401 with the Bearer `invalid_token` challenge (`realm` is the API
  * realm when the caller knows it).
+ *
+ * The consent codes (ID-005) are answered with FIXED messages and `details.messageKey` only (plus the purpose codes of `outstanding` for CONSENT_REQUIRED, each
+ * checked against the purpose pattern): nothing of the service message or details is passed on, so no version id, locale, hash or document text can come back in an error.
  */
 export function toAppError(err: unknown, realm?: string): never {
   if (!(err instanceof AccountError)) throw err;
@@ -145,6 +154,30 @@ export function toAppError(err: unknown, realm?: string): never {
         wait === undefined ? undefined : { 'retry-after': String(wait) },
       );
     }
+    case 'CONSENT_PURPOSE_NOT_FOUND':
+      throw new AppError('NOT_FOUND', code, 'The consent purpose was not found', consentDetails(err.code));
+    case 'CONSENT_VERSION_NOT_FOUND':
+      throw new AppError('NOT_FOUND', code, 'The document version was not found', consentDetails(err.code));
+    case 'CONSENT_PURPOSE_INACTIVE':
+      throw new AppError('CONFLICT', code, 'The consent purpose is not active', consentDetails(err.code));
+    case 'CONSENT_VERSION_NOT_CURRENT':
+      throw new AppError('CONFLICT', code, 'The document version is not the one in force', consentDetails(err.code));
+    case 'CONSENT_NOT_WITHDRAWABLE':
+      throw new AppError('CONFLICT', code, 'This consent cannot be withdrawn', consentDetails(err.code));
+    case 'CONSENT_NOT_ACCEPTED':
+      throw new AppError('CONFLICT', code, 'Nothing is accepted for this purpose', consentDetails(err.code));
+    case 'CONSENT_REQUIRED_FOR_ROLE':
+      throw new AppError('CONFLICT', code, 'This consent is required for a role of the account', consentDetails(err.code));
+    case 'CONSENT_REQUIRED': {
+      const outstanding = Array.isArray(details.outstanding)
+        ? details.outstanding.filter((p): p is string => typeof p === 'string' && p.length <= 64 && PURPOSE_CODE_PATTERN.test(p)).slice(0, 50)
+        : [];
+      throw new AppError('CONFLICT', code, 'Required consents are outstanding', { ...consentDetails(err.code), outstanding });
+    }
+    case 'CONSENT_LOCALE_MISMATCH':
+      throw new AppError('VALIDATION', code, 'The locale does not match the document version', consentDetails(err.code));
+    case 'CONSENT_HASH_MISMATCH':
+      throw new AppError('VALIDATION', code, 'The document hash does not match the document version', consentDetails(err.code));
     case 'EMAIL_DELIVERY_FAILED':
       throw new AppError('DEPENDENCY', code, 'The verification email could not be sent', {
         retryable: details.retryable === true,

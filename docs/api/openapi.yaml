@@ -29740,6 +29740,1566 @@ paths:
                 required:
                   - error
                 additionalProperties: false
+  /api/v1/account/consents:
+    get:
+      operationId: getAccountConsents
+      summary: "The caller's own consents: the derived current state of every purpose that is active or has events (NONE, ACCEPTED or WITHDRAWN, from the latest event, with whether it can be withdrawn) and the whole append-only history of acceptances and withdrawals, newest first. Each event is bound to the exact document version (id, number, locale) and the SHA-256 of its text; the text itself is never returned here (read it from the content registry)"
+      tags: &a17
+        - consent
+      security: &a18
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      current:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            purposeCode:
+                              type: string
+                            labelContentKey:
+                              type: string
+                            state:
+                              type: string
+                              enum:
+                                - NONE
+                                - ACCEPTED
+                                - WITHDRAWN
+                            withdrawable:
+                              type: boolean
+                            latest:
+                              anyOf:
+                                - type: object
+                                  properties:
+                                    consentEventId:
+                                      type: string
+                                    purposeCode:
+                                      type: string
+                                    eventType:
+                                      type: string
+                                      enum:
+                                        - ACCEPTED
+                                        - WITHDRAWN
+                                    eventSeq:
+                                      type: integer
+                                      minimum: -9007199254740991
+                                      maximum: 9007199254740991
+                                    document:
+                                      type: object
+                                      properties:
+                                        versionId:
+                                          type: string
+                                        version:
+                                          type: integer
+                                          minimum: -9007199254740991
+                                          maximum: 9007199254740991
+                                        locale:
+                                          type: string
+                                        bodySha256:
+                                          type: string
+                                      required:
+                                        - versionId
+                                        - version
+                                        - locale
+                                        - bodySha256
+                                      additionalProperties: false
+                                    occurredAt:
+                                      type: string
+                                    source:
+                                      type: string
+                                      enum:
+                                        - ACCOUNT_API
+                                  required:
+                                    - consentEventId
+                                    - purposeCode
+                                    - eventType
+                                    - eventSeq
+                                    - document
+                                    - occurredAt
+                                    - source
+                                  additionalProperties: false
+                                - type: "null"
+                          required:
+                            - purposeCode
+                            - labelContentKey
+                            - state
+                            - withdrawable
+                            - latest
+                          additionalProperties: false
+                      history:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            consentEventId:
+                              type: string
+                            purposeCode:
+                              type: string
+                            eventType:
+                              type: string
+                              enum:
+                                - ACCEPTED
+                                - WITHDRAWN
+                            eventSeq:
+                              type: integer
+                              minimum: -9007199254740991
+                              maximum: 9007199254740991
+                            document:
+                              type: object
+                              properties:
+                                versionId:
+                                  type: string
+                                version:
+                                  type: integer
+                                  minimum: -9007199254740991
+                                  maximum: 9007199254740991
+                                locale:
+                                  type: string
+                                bodySha256:
+                                  type: string
+                              required:
+                                - versionId
+                                - version
+                                - locale
+                                - bodySha256
+                              additionalProperties: false
+                            occurredAt:
+                              type: string
+                            source:
+                              type: string
+                              enum:
+                                - ACCOUNT_API
+                          required:
+                            - consentEventId
+                            - purposeCode
+                            - eventType
+                            - eventSeq
+                            - document
+                            - occurredAt
+                            - source
+                          additionalProperties: false
+                    required:
+                      - current
+                      - history
+                    additionalProperties: false
+                  meta:
+                    type: object
+                    properties:
+                      correlationId:
+                        type: string
+                    required:
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - data
+                  - meta
+                additionalProperties: false
+        "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "401":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "403":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "409":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "503":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+  /api/v1/account/consents/requirements:
+    get:
+      operationId: getAccountConsentRequirements
+      summary: "What the caller must accept now, evaluated for the roles of the account (pending and active) against the configured policy: per active purpose whether it is required, its status (NOT_REQUIRED, SATISFIED, OUTSTANDING, REACCEPTANCE_REQUIRED, DOCUMENT_UNAVAILABLE), the account's acceptance state, the version in force in the evaluated locale (id, number, locale, SHA-256, effective from) and the account's latest acceptance. `locale` selects the language (default: the preferred locale of the account, else the platform default); legal documents never fall back to another locale. `satisfied` is true when every required purpose is satisfied"
+      tags: *a17
+      parameters:
+        - schema:
+            type: string
+            minLength: 2
+            maxLength: 35
+            pattern: ^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$
+          in: query
+          name: locale
+          required: false
+          description: A locale tag registered in the content registry (for example en-US). Given at most once.
+      security: *a18
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      locale:
+                        type: string
+                      requirements:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            purposeCode:
+                              type: string
+                            labelContentKey:
+                              type: string
+                            required:
+                              type: boolean
+                            status:
+                              type: string
+                              enum:
+                                - NOT_REQUIRED
+                                - SATISFIED
+                                - OUTSTANDING
+                                - REACCEPTANCE_REQUIRED
+                                - DOCUMENT_UNAVAILABLE
+                            acceptanceState:
+                              type: string
+                              enum:
+                                - NONE
+                                - ACCEPTED
+                                - WITHDRAWN
+                            withdrawable:
+                              type: boolean
+                            reacceptance:
+                              type: string
+                              enum:
+                                - NO_REACCEPT
+                                - REACCEPT_FOR_NEW_USERS_ONLY
+                                - REACCEPT_REQUIRED
+                            document:
+                              anyOf:
+                                - type: object
+                                  properties:
+                                    entryKey:
+                                      type: string
+                                    versionId:
+                                      type: string
+                                    version:
+                                      type: integer
+                                      minimum: -9007199254740991
+                                      maximum: 9007199254740991
+                                    locale:
+                                      type: string
+                                    bodySha256:
+                                      type: string
+                                    effectiveFrom:
+                                      type: string
+                                  required:
+                                    - entryKey
+                                    - versionId
+                                    - version
+                                    - locale
+                                    - bodySha256
+                                    - effectiveFrom
+                                  additionalProperties: false
+                                - type: "null"
+                            accepted:
+                              anyOf:
+                                - type: object
+                                  properties:
+                                    consentEventId:
+                                      type: string
+                                    purposeCode:
+                                      type: string
+                                    eventType:
+                                      type: string
+                                      enum:
+                                        - ACCEPTED
+                                        - WITHDRAWN
+                                    eventSeq:
+                                      type: integer
+                                      minimum: -9007199254740991
+                                      maximum: 9007199254740991
+                                    document:
+                                      type: object
+                                      properties:
+                                        versionId:
+                                          type: string
+                                        version:
+                                          type: integer
+                                          minimum: -9007199254740991
+                                          maximum: 9007199254740991
+                                        locale:
+                                          type: string
+                                        bodySha256:
+                                          type: string
+                                      required:
+                                        - versionId
+                                        - version
+                                        - locale
+                                        - bodySha256
+                                      additionalProperties: false
+                                    occurredAt:
+                                      type: string
+                                    source:
+                                      type: string
+                                      enum:
+                                        - ACCOUNT_API
+                                  required:
+                                    - consentEventId
+                                    - purposeCode
+                                    - eventType
+                                    - eventSeq
+                                    - document
+                                    - occurredAt
+                                    - source
+                                  additionalProperties: false
+                                - type: "null"
+                          required:
+                            - purposeCode
+                            - labelContentKey
+                            - required
+                            - status
+                            - acceptanceState
+                            - withdrawable
+                            - reacceptance
+                            - document
+                            - accepted
+                          additionalProperties: false
+                      satisfied:
+                        type: boolean
+                      outstanding:
+                        type: array
+                        items:
+                          type: string
+                    required:
+                      - locale
+                      - requirements
+                      - satisfied
+                      - outstanding
+                    additionalProperties: false
+                  meta:
+                    type: object
+                    properties:
+                      correlationId:
+                        type: string
+                    required:
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - data
+                  - meta
+                additionalProperties: false
+        "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "401":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "403":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "409":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "503":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+  /api/v1/account/consents/{purpose}/accept:
+    post:
+      operationId: acceptAccountConsent
+      summary: "Record that the caller accepted the exact document version it was shown: `versionId`, `locale` and `bodySha256` (the SHA-256 of the text, lower-case hex). The account comes from the token and the time from the server. The version must belong to the purpose's document, be in force now in the platform scope, and carry that locale and hash (400 ACCOUNT_CONSENT_LOCALE_MISMATCH or ACCOUNT_CONSENT_HASH_MISMATCH otherwise; 404 ACCOUNT_CONSENT_VERSION_NOT_FOUND for an unknown or unpublished version, whatever the reason; 409 ACCOUNT_CONSENT_VERSION_NOT_CURRENT for a published version that is superseded or not yet effective; 409 ACCOUNT_CONSENT_PURPOSE_INACTIVE). Repeating the same acceptance is idempotent (`changed` false, nothing written). Nothing is ever accepted by default: only this explicit call records consent"
+      tags: *a17
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                versionId:
+                  type: string
+                  format: uuid
+                  pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+                locale:
+                  type: string
+                  minLength: 2
+                  maxLength: 35
+                bodySha256:
+                  type: string
+                  pattern: ^[0-9a-f]{64}$
+              required:
+                - versionId
+                - locale
+                - bodySha256
+              additionalProperties: false
+      parameters:
+        - schema:
+            type: string
+            minLength: 2
+            maxLength: 64
+            pattern: ^[A-Z][A-Z0-9_]{1,63}$
+          in: path
+          name: purpose
+          required: true
+          description: The purpose code (upper snake case), for example TERMS_OF_SERVICE.
+      security: *a18
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      changed:
+                        type: boolean
+                      event:
+                        type: object
+                        properties:
+                          consentEventId:
+                            type: string
+                          purposeCode:
+                            type: string
+                          eventType:
+                            type: string
+                            enum:
+                              - ACCEPTED
+                              - WITHDRAWN
+                          eventSeq:
+                            type: integer
+                            minimum: -9007199254740991
+                            maximum: 9007199254740991
+                          document:
+                            type: object
+                            properties:
+                              versionId:
+                                type: string
+                              version:
+                                type: integer
+                                minimum: -9007199254740991
+                                maximum: 9007199254740991
+                              locale:
+                                type: string
+                              bodySha256:
+                                type: string
+                            required:
+                              - versionId
+                              - version
+                              - locale
+                              - bodySha256
+                            additionalProperties: false
+                          occurredAt:
+                            type: string
+                          source:
+                            type: string
+                            enum:
+                              - ACCOUNT_API
+                        required:
+                          - consentEventId
+                          - purposeCode
+                          - eventType
+                          - eventSeq
+                          - document
+                          - occurredAt
+                          - source
+                        additionalProperties: false
+                    required:
+                      - changed
+                      - event
+                    additionalProperties: false
+                  meta:
+                    type: object
+                    properties:
+                      correlationId:
+                        type: string
+                    required:
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - data
+                  - meta
+                additionalProperties: false
+        "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "401":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "403":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "409":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "503":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+  /api/v1/account/consents/{purpose}/withdraw:
+    post:
+      operationId: withdrawAccountConsent
+      summary: Withdraw the accepted consent of a withdrawable purpose. Refused (409) when the purpose cannot be withdrawn (ACCOUNT_CONSENT_NOT_WITHDRAWABLE), when nothing is accepted (ACCOUNT_CONSENT_NOT_ACCEPTED) and while a role of the account requires it (ACCOUNT_CONSENT_REQUIRED_FOR_ROLE). Repeating a withdrawal is idempotent (`changed` false). The request takes no body (none, or exactly {})
+      tags: *a17
+      parameters:
+        - schema:
+            type: string
+            minLength: 2
+            maxLength: 64
+            pattern: ^[A-Z][A-Z0-9_]{1,63}$
+          in: path
+          name: purpose
+          required: true
+          description: The purpose code (upper snake case), for example TERMS_OF_SERVICE.
+      security: *a18
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      changed:
+                        type: boolean
+                      event:
+                        type: object
+                        properties:
+                          consentEventId:
+                            type: string
+                          purposeCode:
+                            type: string
+                          eventType:
+                            type: string
+                            enum:
+                              - ACCEPTED
+                              - WITHDRAWN
+                          eventSeq:
+                            type: integer
+                            minimum: -9007199254740991
+                            maximum: 9007199254740991
+                          document:
+                            type: object
+                            properties:
+                              versionId:
+                                type: string
+                              version:
+                                type: integer
+                                minimum: -9007199254740991
+                                maximum: 9007199254740991
+                              locale:
+                                type: string
+                              bodySha256:
+                                type: string
+                            required:
+                              - versionId
+                              - version
+                              - locale
+                              - bodySha256
+                            additionalProperties: false
+                          occurredAt:
+                            type: string
+                          source:
+                            type: string
+                            enum:
+                              - ACCOUNT_API
+                        required:
+                          - consentEventId
+                          - purposeCode
+                          - eventType
+                          - eventSeq
+                          - document
+                          - occurredAt
+                          - source
+                        additionalProperties: false
+                    required:
+                      - changed
+                      - event
+                    additionalProperties: false
+                  meta:
+                    type: object
+                    properties:
+                      correlationId:
+                        type: string
+                    required:
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - data
+                  - meta
+                additionalProperties: false
+        "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "401":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "403":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "409":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "503":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
 servers:
   - url: http://api.localhost:8080
     description: Local development via Caddy
@@ -29756,3 +31316,5 @@ tags:
     description: "The caller's own application account (ID-001): account, application roles, active role and core profile. Authenticated with the normal web identity context; the admin context has no application account. Application roles live in PostgreSQL, not in Keycloak"
   - name: security
     description: The caller's own sessions, browsers (devices) and second-factor state, the step-up protocol (RFC 9470) and the security timeline (ID-004), plus the public password-reset request. Passwords, authenticator secrets and recovery codes live in the identity provider; BananaGig stores none of them
+  - name: consent
+    description: "The caller's own consent to the legal documents (ID-005): what each purpose needs, the version in force, and an append-only history of acceptances and withdrawals bound to the exact version, locale and text hash. The legal text itself is owned and served by the content registry; no account id is ever accepted"

@@ -138,6 +138,7 @@ Why deferred: pg-boss needs DDL rights unless its schema is pre-created from its
 Exit criteria: separate migrator and runtime roles in the local stack, api and worker connect as the runtime role, pg-boss schema created by the migrator, an integration test proving the runtime role cannot run DDL or create extensions.
 Target checkpoint: production deployment checkpoint
 Reviewed in INF-004: the identity baseline needed no per-service database roles (the API validates tokens and has no identity persistence); unchanged.
+ID-005 note (2026-10-16): the consent guard trigger takes `FOR SHARE` on `content.versions`, `identity.accounts` and `identity.consent_purposes`, which needs UPDATE (or a stronger) privilege on those tables; a DML-only runtime role must therefore be granted it, or the trigger made `SECURITY DEFINER` (DEBT-0081).
 
 ## DEBT-0013 — Idempotency records table not built
 
@@ -245,6 +246,7 @@ Description: Access to the configuration API uses admin-context tokens plus clie
 Why deferred: Application roles and permissions do not exist yet.
 Exit criteria: Application RBAC (identity-linked, in the BananaGig database) governs configuration access and owner-role approval; Keycloak client roles removed or reduced to authentication context.
 Target checkpoint: admin/RBAC checkpoint (after ID-001)
+ID-005 note (2026-10-16): the four `consent.*` parameters are owned by `legal` (CRITICAL, second approver), but `owner_role` is still metadata: any holder of `configuration-approve` other than the requester can approve a change to who must accept a legal document or what a new version does to existing acceptances. The application RBAC must restrict these to the legal owner (DEBT-0077).
 
 ## DEBT-0022 — Activation marker lag and cache invalidation limits
 
@@ -323,6 +325,7 @@ Description: Content management uses the same temporary model as configuration (
 Why deferred: Application roles and permissions do not exist yet.
 Exit criteria: Role-based permissions per owner role in the application RBAC, replacing `requireContentPermission`.
 Target checkpoint: application RBAC checkpoint (with DEBT-0021)
+ID-005 note (2026-10-16): the gap now reaches consent. A content-write holder can deactivate a locale and make the consent documents in that language `DOCUMENT_UNAVAILABLE`, so required consents in it cannot be accepted or satisfied (`docs/engineering/CONSENT.md`); an accept racing the deactivation is not serialized by a lock and is a valid historical fact if it won (DEBT-0081). The two seeded LEGAL entries are restricted to PLATFORM scope.
 
 ## DEBT-0029 — Content registry covers product shell copy only; other text channels are unmanaged
 
@@ -518,6 +521,7 @@ Why deferred: Bookings, payments and payouts do not exist; closure rules depend 
 Exit criteria: Closure rules per role with tests, an erasure and anonymization procedure that keeps legally retained records, a data export, and the retention policy (with DEBT-0036).
 Target checkpoint: the account closure and privacy checkpoints (CU-09 and PR-09 account sections)
 ID-004 note (2026-10-16): unchanged. The new `identity.application_sessions`, `identity.account_devices` and security audit rows also hold personal data (browser families, times, the Keycloak `sid`) and are never deleted (DEBT-0057); closing or suspending an account does not revoke its sessions (DEBT-0074).
+ID-005 note (2026-10-16): consent events (`identity.consent_events`) and their audit rows are legal records of what an account accepted and are never updated, deleted or truncated (append-only triggers). The erasure and retention procedure must decide what survives an erasure request: a legal record may have to be retained, and it holds only the account reference, the purpose, the version id, locale, text hash and times, never the text (DEBT-0081). The events block deleting an account row (`ON DELETE RESTRICT`).
 
 ## DEBT-0046 — Admin identities have no application identity
 
@@ -657,6 +661,7 @@ Exit criteria: a retention period per table, a purge or anonymization job that k
 Target checkpoint: the account closure and privacy checkpoints
 ID-003 note (2026-10-08): the same gap covers `identity.phone_verification_challenges` (one row per SMS, code hash and delivery outcome) and DISABLED `identity.phone_contacts` rows (the E.164 number and country), which are never purged. The DEV/TEST fake SMS sink is the only store of a plaintext code; its Valkey entries expire by a 15-minute TTL, which is their only retention control (the sink is never enabled in production).
 ID-004 note (2026-10-16): the same gap covers `identity.application_sessions` (one row per login, the Keycloak `sid`), `identity.account_devices` (a keyed device hash and three coarse families) and the security audit rows: none is ever deleted or anonymized, and there is no retention period.
+ID-005 note (2026-10-16): the same gap covers `identity.consent_events` and the `CONSENT_` audit rows (account id, purpose, version reference, locale, hash, database time and the optional application session id): none is ever deleted or anonymized and there is no retention period; unlike the other tables they may have to be RETAINED against erasure (DEBT-0081).
 
 ## DEBT-0058 — Two verification abuse limits are engineering assumptions awaiting owner confirmation
 
@@ -724,6 +729,7 @@ Description: `verification.phone.max_accounts_per_number` and `verification.phon
 Why deferred: the account market (sign-up location, provider service area) belongs to onboarding and the market model, not to phone verification.
 Exit criteria: the account or the request carries a market, the phone policy resolves with it, and a test shows a market override changing the accounts-per-number and blocked types.
 Target checkpoint: the onboarding and market checkpoints
+ID-005 note (2026-10-16): the consent policy parameters (`consent.<purpose>.required_for` and `.reacceptance`) also allow COUNTRY and MARKET overrides for the consent law of a region and are read at PLATFORM scope only, for the same reason; the two consent documents are restricted to PLATFORM scope (DEBT-0079).
 
 ## DEBT-0064 — Two phone abuse limits are engineering assumptions awaiting owner confirmation
 
@@ -856,3 +862,69 @@ Description: Every failure of the Keycloak admin client, the detached password-r
 Why deferred: the metrics and alerting conventions for domain services are not designed yet.
 Exit criteria: counters by code for the admin client and the detached work, a gauge for the last successful call, and an alert on a sustained failure ratio, plus an operations note.
 Target checkpoint: the observability hardening checkpoint
+
+## DEBT-0076 — No flow requires consent yet: the sign-up and provider-onboarding screens do not exist
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: ID-005
+Owner/domain: identity / web / onboarding
+Description: The consent layer is complete as infrastructure (the append-only log, the evaluator, four API operations, the minimal `/consents` page, and `listOutstandingConsents`, `hasRequiredConsents` and `requireConsents`), but NOTHING calls the readiness services and no journey is gated by consent. The sign-up screen with its required Terms and Privacy checkbox (PRD CU-03; "consent version and time stored") and the provider sign-up with its required acknowledgements (PR-01) do not exist, so an account is created and can use every account route without accepting anything, and `requireConsents` (`ACCOUNT_CONSENT_REQUIRED`) has no caller. Until Legal publishes a version of each document (a fresh environment has none) every required purpose is `DOCUMENT_UNAVAILABLE` and nothing can be accepted at all.
+Why deferred: the sign-up and onboarding screens belong to the web checkpoints (CU-03, PR-01); this checkpoint delivers the data model, the rules and the API they will call.
+Exit criteria: the customer sign-up and provider onboarding screens present the verified legal text, post an explicit acceptance (never pre-ticked) and are gated by `requireConsents` / `hasRequiredConsents`; a test shows an account with an outstanding required purpose cannot complete onboarding; Legal has published the first versions.
+Target checkpoint: the onboarding checkpoints (CU-03 and PR-01)
+
+## DEBT-0077 — The consent policy defaults are assumptions awaiting the legal owner
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: ID-005
+Owner/domain: identity / legal / configuration
+Description: `consent.terms_of_service.reacceptance` and `consent.privacy_policy.reacceptance` are seeded as `REACCEPT_REQUIRED` (everyone accepts the version in force). That is an ID-005 engineering ASSUMPTION: the PRD says documents are versioned and each acceptance records the exact version (SV-02.04) but not what a new version does to existing acceptances, nor whether it differs by document, role, region or kind of change (editorial versus material). `consent.terms_of_service.required_for` and `consent.privacy_policy.required_for` are `["CUSTOMER","PROVIDER"]`, taken from the PRD (CU-03 sign-up consent and PR-01 provider sign-up) but not confirmed with Legal: whether providers accept the customer Terms or a separate provider agreement, and whether the Privacy Policy applies to both, is open. The seeds are flagged in the migration header, the seed reason and the basis, and are changed by a configuration change request (second approver), not a deploy.
+Why deferred: the legal owner has not reviewed the values; the conservative defaults keep the product safe in the meantime.
+Exit criteria: Legal confirms or changes the four values through a configuration change request, decides whether the mode should differ by document, region or kind of change, and the provider agreement question is settled (see DEBT-0080).
+Target checkpoint: before launch
+
+## DEBT-0078 — No re-acceptance notification, no compliance console, no consent export, and no way to read the text of a historical accepted version
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: ID-005
+Owner/domain: identity / legal / admin / notifications
+Description: (1) When Legal publishes a new version under `REACCEPT_REQUIRED` a person is told only when they next open `/consents` (the requirement turns `REACCEPTANCE_REQUIRED`); no email, push or in-app notice is sent and nobody consumes `legal-document-published` or the consent events. (2) No admin legal-compliance console exists: nobody can see how many accounts have not accepted the version in force, or who accepted what (the data is complete in `identity.consent_events`, and no index serves a "who accepted this version" query, deliberately). (3) No consent export: PRD CU-09.22 and "Download my data" want the consent history in the export, and none exists. (4) The history shows the version number, locale, time and a shortened hash, but there is no customer-facing way to read the full text of a historical accepted version; the text is reachable in-process through `ContentService.getVersion(versionId)` and, for administrators with `content-read`, in the entry detail of the management API, but no route reads one version by id for its owner, and the consent routes deliberately never return legal text. (5) The hash covers the SOURCE (template body) of the version while the person is shown its rendered, sanitized output; the evidence is the immutable source version and a pinned rendering test guards the renderer and sanitizer, but the rendered output is not hashed or stored at accept time. A stronger design compares and stores a hash of the rendered output when the person accepts.
+Why deferred: notifications (NOTIF-001), the admin console and the export are separate checkpoints; the data needed by all four is already recorded.
+Exit criteria: a notification when a new version needs acceptance, an admin console report of outstanding acceptances and per-account consent history, the consent history in the data export, and a read of a historical version by its id for its owner (or the console), and (if Legal wants it) a hash of the rendered output compared at accept time, each with tests and its own data-model review.
+Target checkpoint: NOTIF-001, the admin console and the privacy checkpoints (CU-09.22)
+
+## DEBT-0079 — No regional consent-law engine; policy resolves at platform scope; no cross-language equivalence
+
+Status: OPEN
+Severity: LOW
+Introduced by: ID-005
+Owner/domain: identity / legal / configuration / geography
+Description: (1) Consent law differs by region, and the four `consent.*` parameters allow COUNTRY and MARKET overrides, but accounts have no market (DEBT-0063) and the policy provider passes no context, so only the PLATFORM value is ever read; overrides would be stored and ignored. There is no engine that maps a person's jurisdiction to documents, ages or opt-in rules. (2) The two consent documents are restricted to PLATFORM scope (`max_scope_type` PLATFORM on the LEGAL entry shells) and only a PLATFORM-scope version can be accepted, so a country- or market-specific version of the Terms cannot exist yet. (3) An acceptance in one language is not equated with another: under `REACCEPT_REQUIRED` a person who accepted in `en-US` and is evaluated in `es-MX` must accept the `es-MX` version, and under `REACCEPT_FOR_NEW_USERS_ONLY` must accept once in that language; a person who accepts in a second language makes it their latest event, so switching back may require another acceptance. (4) A person whose preferred locale has no LEGAL version stays `DOCUMENT_UNAVAILABLE` under `REACCEPT_REQUIRED` (no silent fallback, by design); the caller passes the locale it shows, and the future gating flows must pass it.
+Why deferred: it needs accounts with a market, a legal decision on regional documents and on whether translations are equivalent (and which locale is authoritative), none of which exist.
+Exit criteria: the policy resolves with the account's country and market, Legal decides regional documents (the entry's max scope widened in a new migration with a model change for scoped versions) and translation equivalence, and the evaluator and the trigger apply the decision with tests.
+Target checkpoint: the onboarding and market checkpoints (with DEBT-0063)
+
+## DEBT-0080 — Other consent purposes are not seeded, and a withdrawable consent that is not required cannot be re-granted from the page
+
+Status: OPEN
+Severity: LOW
+Introduced by: ID-005
+Owner/domain: identity / legal / web
+Description: Only `TERMS_OF_SERVICE` and `PRIVACY_POLICY` exist. The model supports more (a purpose is a migration: a LEGAL entry shell, a purpose row, two parameters and a label), but none is seeded: the independent-business acknowledgement and other provider agreements (PR-01), marketing email and web push (R-13), the saved-checkout consent, cookie consent and the admin confidentiality policy (AD-07 "accept the current confidentiality policy before any console access"). There is no marketing preference centre. On the `/consents` page the Accept form is offered only for `OUTSTANDING` and `REACCEPTANCE_REQUIRED`, so a withdrawable purpose that is NOT required (the typical optional consent) shows no Accept control: after a voluntary withdrawal it cannot be re-granted from the page (the API allows it), and a first opt-in has no place on the page either. The page is infrastructure, not the final account screen. HARD PRECONDITION: the first `WITHDRAWABLE` purpose must not be seeded before the rate limit on accept and withdraw exists (DEBT-0081); until then no purpose can append events without bound.
+Why deferred: each purpose needs Legal's document, the product decision about who must accept it and its flow; the final account privacy screen (CU-09.22) is a later checkpoint.
+Exit criteria: the accept and withdraw rate limit exists (DEBT-0081), the purposes are added with their documents and policy, the final privacy screens offer optional consents unticked (R-13) and let a person grant, withdraw and re-grant them, and the admin console gates on the confidentiality policy.
+Target checkpoint: the onboarding, marketing, cookie and admin checkpoints (CU-09.22, AD-07)
+
+## DEBT-0081 — Consent infrastructure residuals found in the ID-005 review
+
+Status: OPEN
+Severity: LOW
+Introduced by: ID-005
+Owner/domain: identity / privacy / platform
+Description: Accepted residuals: (1) TRUNCATE of `identity.account_audit_events` is unguarded (pre-existing since ID-001: only UPDATE and DELETE are refused there; the new `consent_events` table does refuse TRUNCATE, so the audit rows of consents are protected only by the table owner's discipline); (2) deactivating a locale or a LEGAL entry racing an accept is not serialized by a lock: the guard trigger share-locks the version row, not the locale or entry rows, so an accept that wins the race is a valid historical fact for a version that was in force when the check ran (benign); (3) the check relies on the default READ COMMITTED isolation of the write transaction; (4) no retention or erasure model for legal consent records: consent events and their audit rows are never purged, and a legal record may have to be retained against an erasure request (DEBT-0045, DEBT-0057); (5) the consent routes are not rate limited (`RATE_LIMITING.md`). This is DORMANT today (both seeded purposes are `NOT_WITHDRAWABLE` and a repeated accept is an idempotent no-op, so an account appends at most one event per published version) and MUST be fixed BEFORE the first `WITHDRAWABLE` purpose is seeded (a hard precondition, also in DEBT-0080): once accept and withdraw can cycle, one token can append about 50 events per second per account, about 1.5 KB each across the event, audit and outbox rows, about 6 GB per day, and starve the connection pool. The fix is a `ValkeyRateLimiter` keyed per account with the limit from configuration (CFG-001), failing closed; (6) `GET /account/me` carries no consent summary (on purpose: it would add configuration reads to a hot read), so a client learns `satisfied` only from `GET /account/consents/requirements`; (7) `getRequirements` reads the configuration registry once per evaluated purpose with no caching (CRITICAL parameters are never cached), and no metric or alert exists for consent policy failures; (8) a future least-privilege database role needs UPDATE on `content.versions`, `identity.accounts` and `identity.consent_purposes` because the guard trigger takes `FOR SHARE` on them, or the trigger must become `SECURITY DEFINER` (see DEBT-0012); (9) `FOR SHARE` on a version row can in theory starve a publisher (a stream of share-lockers; PostgreSQL gives no queue priority to a waiting `FOR UPDATE`): the mitigation is a `lock_timeout` with retry on the content publish path, a content-package change that is not done; (10) publishing truncates `effective_to` to milliseconds, so an accept within the same millisecond could be recorded fractionally after the window it was proven in (cosmetic); (11) entry and locale activation are deliberately NOT locked by the trigger and must not be added after the version lock: publication locks the entry and then the version, so the reverse order would deadlock.
+Why deferred: each needs a decision (retention, rate limits), a dependency (the observability conventions) or touches pre-existing tables outside this checkpoint.
+Exit criteria: a TRUNCATE guard on the audit tables, a retention and erasure policy that keeps legally required consent records, the rate limit on accept and withdraw (before the first withdrawable purpose), a `lock_timeout` with retry on publish or a documented decision, grants or `SECURITY DEFINER` for the guard trigger, and metrics for the policy and registry failures, and, if wanted, a consent summary on the account read.
+Target checkpoint: the privacy checkpoints (with DEBT-0045 and DEBT-0057) and the observability hardening checkpoint

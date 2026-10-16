@@ -17,7 +17,7 @@ import {
 } from '@bananagig/platform';
 import { ConfigurationService, ValkeyConfigCache } from '@bananagig/configuration';
 import { ContentService } from '@bananagig/content';
-import { AccountService, EmailVerificationService, PhoneVerificationService, SecurityService } from '@bananagig/accounts';
+import { AccountService, ConsentService, EmailVerificationService, PhoneVerificationService, SecurityService } from '@bananagig/accounts';
 import {
   AddressService,
   GeographyService,
@@ -29,6 +29,7 @@ import {
 import { KeycloakAdminClient, createTokenVerifier } from '@bananagig/identity';
 import { buildApp } from './app';
 import { createContentSmsRenderer, createPhoneCountryDirectory, createPhonePolicyProvider } from './modules/account/phone-wiring';
+import { createConsentPolicyProvider, createDefaultLocaleResolver } from './modules/consent/wiring';
 import { createKeycloakSecurityIdentityProvider, createSecurityPolicyProvider, createUnavailableSecurityIdentityProvider } from './modules/security/wiring';
 import { createContentEmailRenderer, createVerificationLinkBuilder, createVerificationPolicyProvider } from './modules/account/email-wiring';
 
@@ -159,6 +160,16 @@ const security = new SecurityService({
   hashSecret: cfg.verification.hashSecret,
 });
 
+// Consent and legal-version history (ID-005): the account's relationship to the versions of the legal documents (CFG-002 owns the documents and their immutable
+// versions; this layer owns only the append-only acceptance record and derives the state). Who needs which purpose and what a newer version does to an existing
+// acceptance come from the configuration registry (CFG-001, `consent.<purpose>.required_for` / `.reacceptance`, no code default); the default locale is the platform
+// default row of the content registry.
+const consent = new ConsentService({
+  database,
+  policy: createConsentPolicyProvider(configuration),
+  defaultLocale: createDefaultLocaleResolver(content),
+});
+
 const app = await buildApp({
   cfg,
   verifier,
@@ -170,6 +181,7 @@ const app = await buildApp({
   emailVerification,
   phoneVerification,
   security,
+  consent,
   // Critical for serving requests: Postgres only. Valkey/NATS/OpenSearch/flagd outages must not take the API down.
   readiness: async () => ({ postgres: (await database.health()).ok ? 'up' : 'down' }),
   diagnostics: () => runDiagnostics(adapters),

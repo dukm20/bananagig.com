@@ -46,7 +46,7 @@ const forbidden = (): Response => new Response('Forbidden', { status: 403, heade
  * The fields of a submitted form when it holds EXACTLY the allowed names, each once, each as text. undefined for anything else (not a form, an extra or repeated
  * field, a file part), so an unexpected shape is refused instead of half-read.
  */
-async function strictForm(req: Request, allowed: readonly string[]): Promise<Record<string, string> | undefined> {
+export async function strictForm(req: Request, allowed: readonly string[]): Promise<Record<string, string> | undefined> {
   let form: FormData;
   try {
     form = await req.formData();
