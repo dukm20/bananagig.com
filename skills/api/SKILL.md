@@ -72,6 +72,8 @@ Services never write SQL in routes. Persistence changes go through the database 
 - Geography follows the same pattern (`requireGeographyPermission(read|write)`, `hasGeographyPermission`, public reads behind `optionalAuthenticated()`; `docs/engineering/GEOGRAPHY.md`): a caller without the admin context plus `geography-read` (or `geography-write`, which implies read) is anonymous and sees ACTIVE rows and public fields only (`effectiveTo` is null publicly), and the DTO mappers build every response field by field. `optionalAuthenticated()` adds `Vary: Authorization` to every response of the route (401 and 404 included). Management bodies are validated by a strict zod `preValidation` hook (`strictBody`, after the guard) before ajv can coerce them, so `{"active":1}` is a 400; administrator free text uses the contracts `adminText` rule. Error codes are `GEOGRAPHY_<code>`. Path parameters are validated by the route schema, so a non-canonical code (`/countries/us`, `/markets/LA-OC`) is a 400, not a 404.
 - Account guard (ID-001, `apps/api/src/plugins/account.ts`, ADR-0025 and ADR-0026): `preValidation: [requireAccount({ includeProfile? }), strictBody(Schema)]` authenticates (401), requires the normal web context (the admin context and any other client get 403 `ACCOUNT_CONTEXT_NOT_SUPPORTED`), maps the verified issuer and subject to the application account (created on the first request), refuses `SUSPENDED` and `CLOSED` accounts (403) and sets `request.account` (id, status, ACTIVE roles, memberships, primary role, active role, optional own profile; no token, no subject). The role a request acts as comes from the `x-active-role` header (`ACTIVE_ROLE_HEADER`) and is validated against the account's ACTIVE memberships on EVERY request (403 `ACCOUNT_ROLE_NOT_HELD` or `ACCOUNT_ROLE_NOT_ACTIVE`); a role-switch route turns the header off and validates its body instead. Never accept an account id, subject or role from the client (strict bodies and `additionalProperties: false` on the query reject them), never authorize with `request.principal.realmRoles`, and never add a role-granting endpoint. Account responses (errors included) are `Cache-Control: no-store` because they carry the caller's own name. Errors are `ACCOUNT_<code>` through the module `toAppError`. The shared `parseBody` and `strictBody` (`apps/api/src/plugins/strict-body.ts`) serve the account, content, geography and address routes.
 
+- Client address behind a proxy (ID-003, ADR-0033, DEBT-0055): Fastify's `trustProxy` receives the function `trustHops(hops)` from `apps/api/src/app.ts` (`(address, hop) => hop < hops`, proxy-addr's contract: hop 0 is the socket peer), so `request.ip` is the first address that is not a trusted proxy: the LAST `X-Forwarded-For` entry with 1 hop, the socket with 0; never `trustProxy: true` and never a client-chosen leftmost entry. `hops` is `TRUSTED_PROXY_HOPS` (0 to 4, required in production, 1 elsewhere). A function is used because the Fastify 5.12.5 option is typed `boolean | string | string[] | TrustProxyFunction` (no number), and the function makes the hop semantics explicit and unit-testable (LRN-0040). The proxy must REPLACE the header (`header_up X-Forwarded-For {remote_host}` in `infra/caddy/Caddyfile`) and the API must not be published; both are asserted by tests (`apps/api/src/trust-proxy.test.ts`).
+
 ## Do not
 
 - Do not hand-edit generated spec files.
@@ -84,8 +86,8 @@ Services never write SQL in routes. Persistence changes go through the database 
 
 ## Related ADRs
 
-ADR-0006, ADR-0004, ADR-0013, ADR-0024, ADR-0025, ADR-0026
+ADR-0006, ADR-0004, ADR-0013, ADR-0024, ADR-0025, ADR-0026, ADR-0033
 
 ## Last reviewed
 
-2026-10-07 (ID-001)
+2026-10-08 (ID-003)

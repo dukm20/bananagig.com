@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ACTIVE_ROLE_HEADER, CORRELATION_HEADER, type AddressInput } from '@bananagig/contracts';
 import { ApiError, createApiClient } from './lib/api-client';
+import { CUSTOMER_ROLE, accountDto } from './testing/account-stub';
 
 const meta = { correlationId: 'corr-1234567' };
 const json = (status: number, body: unknown, headers: Record<string, string> = {}) =>
@@ -552,5 +553,70 @@ describe('api client: email verification', () => {
     const f = stubFetch(() => json(401, errorBody('AUTHENTICATION_REQUIRED', 'AUTHENTICATION')));
     await expect(clientWith(f).getAccountEmail()).rejects.toMatchObject({ status: 401, code: 'AUTHENTICATION_REQUIRED' });
     expect('authorization' in requestHeaders(f)).toBe(false);
+  });
+});
+
+describe('api client: getAccount carries the phone summary and the derived contacts (ID-003)', () => {
+  const opts = { correlationId: () => 'web-corr-12345', accessToken: () => 'access-token-1' };
+  const PHONE_ACCOUNT = accountDto([CUSTOMER_ROLE], {
+    phone: {
+      phoneVerificationStatus: 'VERIFIED',
+      primary: { maskedPhone: '+*******0142', countryCode: 'US', verifiedAt: '2026-02-03T04:05:06.000Z', source: 'USER_ENTERED' },
+      pending: {
+        maskedPhone: '+*******0199',
+        countryCode: 'US',
+        purpose: 'CHANGE_PHONE',
+        status: 'REPLACEMENT_PENDING',
+        lastSentAt: null,
+        expiresAt: null,
+      },
+    },
+    contacts: { emailVerified: true, phoneVerified: true, contactsVerified: true },
+  });
+
+  it('parses an account carrying the phone summary and the contacts, with the masked numbers as sent', async () => {
+    const f = stubFetch(() => json(200, { data: PHONE_ACCOUNT, meta }));
+    const account = await clientWith(f, opts).getAccount();
+    expect(account.phone.phoneVerificationStatus).toBe('VERIFIED');
+    expect(account.phone.primary).toMatchObject({ maskedPhone: '+*******0142', countryCode: 'US', source: 'USER_ENTERED' });
+    expect(account.phone.pending).toMatchObject({ maskedPhone: '+*******0199', purpose: 'CHANGE_PHONE', status: 'REPLACEMENT_PENDING' });
+    expect(account.contacts).toEqual({ emailVerified: true, phoneVerified: true, contactsVerified: true });
+    expect(f.mock.calls[0]![0]).toBe('http://api.test/api/v1/account/me');
+  });
+
+  it('parses the empty state (NONE, no numbers, nothing verified)', async () => {
+    const account = await clientWith(
+      stubFetch(() => json(200, { data: accountDto(), meta })),
+      opts,
+    ).getAccount();
+    expect(account.phone).toEqual({ phoneVerificationStatus: 'NONE', primary: null, pending: null });
+    expect(account.contacts).toEqual({ emailVerified: false, phoneVerified: false, contactsVerified: false });
+  });
+
+  it('rejects an account that lacks phone or contacts, or carries a malformed one, with UNEXPECTED_RESPONSE (never a half-parsed account)', async () => {
+    const { phone: _phone, ...withoutPhone } = accountDto();
+    const { contacts: _contacts, ...withoutContacts } = accountDto();
+    const broken: Record<string, unknown> = {
+      'no phone': withoutPhone,
+      'no contacts': withoutContacts,
+      'phone null': { ...accountDto(), phone: null },
+      'contacts null': { ...accountDto(), contacts: null },
+      'phone status unknown': { ...accountDto(), phone: { phoneVerificationStatus: 'WEIRD', primary: null, pending: null } },
+      'phone without primary and pending': { ...accountDto(), phone: { phoneVerificationStatus: 'NONE' } },
+      'contacts flag not a boolean': { ...accountDto(), contacts: { emailVerified: 'yes', phoneVerified: false, contactsVerified: false } },
+      'contacts without the derived flag': { ...accountDto(), contacts: { emailVerified: false, phoneVerified: false } },
+    };
+    for (const [what, data] of Object.entries(broken))
+      await expect(
+        clientWith(
+          stubFetch(() => json(200, { data, meta })),
+          opts,
+        ).getAccount(),
+        what,
+      ).rejects.toMatchObject({
+        status: 200,
+        code: 'UNEXPECTED_RESPONSE',
+        category: 'INTERNAL',
+      });
   });
 });

@@ -8,6 +8,7 @@ import { parseBody as parse, strictBody } from '../../plugins/strict-body';
 import { authErrorResponses, errorResponses, schemaOf } from '../../schema';
 import { accountDto, toAppError } from './dto';
 import { accountEmailRoutes } from './email-routes';
+import { accountPhoneRoutes } from './phone-routes';
 
 const bearer = [{ bearerAuth: [] }];
 /** 401 missing or invalid token, 403 for the admin context, a suspended or closed account and a role the account does not hold, 409 conflicts. */
@@ -19,7 +20,7 @@ const activeRoleHeader = (req: FastifyRequest): string | undefined => {
   return Array.isArray(h) ? h.join(',') : h;
 };
 
-export async function accountRoutes(app: FastifyInstance, opts: { emailRoutes?: boolean } = {}): Promise<void> {
+export async function accountRoutes(app: FastifyInstance, opts: { emailRoutes?: boolean; phoneRoutes?: boolean } = {}): Promise<void> {
   // the responses (and the error bodies) concern one person and carry the caller's own name: never stored by a shared cache or the browser
   app.addHook('onRequest', async (_req, reply) => {
     reply.header('cache-control', 'no-store');
@@ -27,6 +28,7 @@ export async function accountRoutes(app: FastifyInstance, opts: { emailRoutes?: 
   const tags = ['account'];
   const svc = (req: FastifyRequest) => req.server.accounts;
   if (opts.emailRoutes) await app.register(accountEmailRoutes);
+  if (opts.phoneRoutes) await app.register(accountPhoneRoutes);
 
   app.get(
     '/account/me',
@@ -35,7 +37,7 @@ export async function accountRoutes(app: FastifyInstance, opts: { emailRoutes?: 
       schema: {
         operationId: 'getAccountMe',
         summary:
-          "The caller's own application account: id, status, ACTIVE application roles, preferred (primary) role, the role this request acts as, the core profile and the email verification state (status NONE, PENDING or VERIFIED, with the address masked). The account is created on the first authenticated request. The role named in the x-active-role header is accepted only when the account holds it as an ACTIVE role",
+          "The caller's own application account: id, status, ACTIVE application roles, preferred (primary) role, the role this request acts as, the core profile, the email and phone verification states (status NONE, PENDING or VERIFIED, addresses and numbers masked) and the derived contacts summary (email verified, phone verified, both). The account is created on the first authenticated request. The role named in the x-active-role header is accepted only when the account holds it as an ACTIVE role",
         description:
           'Application roles come from PostgreSQL, not from Keycloak. The admin identity context has no application account (403). A suspended or closed account is refused (403).',
         tags,

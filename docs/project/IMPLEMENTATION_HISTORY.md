@@ -689,3 +689,49 @@ ADR-0027, ADR-0028, ADR-0029.
 
 ### Known follow-up
 DEBT-0049 to DEBT-0058 (production provider, change-email step-up and screens, contested addresses, branded layout, brokered social login, bot protection and re-verification, trusted proxy address, admin timeline, retention, unconfirmed abuse limits). Confirm or change the two assumed limits and the channel-specific key decision with the security owner. Push and confirm CI is green end to end (the Email verification smoke scenario has not run in CI).
+
+## ID-003 — 2026-10-16
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(ID-003)"`.
+Summary: The BananaGig-owned phone contact and its verification. A person adds a number (national or international), receives ONE concise SMS with a one-time code and verifies it; the number is canonical E.164 through libphonenumber-js (no custom dialing rules, no hardcoded calling code), country-aware through geography, masked everywhere and never stored in Keycloak. A change keeps the old verified number primary until the new one verifies. Introduces the provider-neutral `SmsSender` and `PhoneIntelligence` ports with fake adapters, the channel-neutral verification primitives shared with email, the per-country accounts-per-number policy, the derived contacts summary on `GET /account/me`, and the exact trusted-proxy hop model that resolves DEBT-0055.
+
+### Housekeeping at the start (requested)
+`PROJECT_STATE` records the verified ID-002 CI result (run 37728760371 for `675bb83`, green end to end). `la-oc` stays PLANNED and DEBT-0030 stays OPEN.
+
+### Delivered
+- Migration `0011_phone_verification.sql`: `identity.phone_contacts` and `identity.phone_verification_challenges` (one challenge per send), guard triggers with `identity_rule:<KEY>` details (including `PHONE_NUMBER_CAP`, counting holders on accounts that are not CLOSED), two deferred constraint triggers, the audit extension (seven PHONE_* actions, composite foreign key to the contact), the ten `verification.phone.*` parameters seeded through the real change workflow and 33 managed content entries.
+- Contracts `phone.ts`: vocabularies, masking, strict request bodies, read models, five events, error codes; `AccountDto` gains `phone` and the derived `contacts` summary.
+- `packages/accounts`: `PhoneVerificationService` (add/change number, send, confirm), `canonicalizePhone`, the phone policy, the channel-neutral `verification-core` and `verification-crypto` shared with email (email unchanged and proven by its full suites).
+- `packages/platform`: `SmsSender` (fake sink and disabled adapters) and `PhoneIntelligence` (fake and unknown adapters) ports; `packages/testing`: the fake SMS inbox helper; `packages/config`: `SMS_TRANSPORT`, `PHONE_INTELLIGENCE`, `TRUSTED_PROXY_HOPS`; the development hash secret is refused in production.
+- API: four operations under `/api/v1/account/phone*`, strict raw bodies, error mapping with `Retry-After`, `trustHops(hops)` replacing `trustProxy: true`; Caddy replaces `X-Forwarded-For`; the web BFF forwards one value.
+- Smoke scenario "Phone verification": the code read from the fake sink, line-type refusals, wrong code counted, verified, derived contacts, email unchanged, idempotent repeat, no number or code in responses or Loki, and a spoofed `X-Forwarded-For` through Caddy that creates no bucket; run twice (INITIAL_PHONE, then CHANGE_PHONE).
+- Docs: `docs/engineering/PHONE_VERIFICATION.md`, ADR-0030 to ADR-0033, the data-model documents, the engineering documents and skills.
+- Quality process: unit, data-model, service and API suites written by independent workers; two independent read-only reviews (security, concurrency and database invariants) of the finished work. Findings fixed: the country directory rejected every country (the public geography view carries no `status`), `canonicalizePhone` returned INVALID_NUMBER for an unknown default country, the per-number budget could be charged to a different number than the one texted and was spent by sends the cooldown then refused, a closed account held its number forever, a counted wrong attempt could be rolled back by a failing audit or event write, the send-window cap silently ignored non-Date timestamps, and the development hash secret was accepted in production. Smoke bug: the line-type case used the VOIP tail, which the default blocklist allows.
+
+### Decisions
+- ADR-0030: the channel-neutral primitives are shared as code (`verification-core`, `verification-crypto`), not as a generic table or a framework; email and phone keep their own hash domains.
+- ADR-0031: separate `phone_contacts` and `phone_verification_challenges` tables; canonical E.164 only; a line-type snapshot; `country_code` kept on the contact; accounts per number is configuration enforced by the service and a guard trigger, not a unique index.
+- ADR-0032: SMS delivery and phone intelligence behind provider-neutral ports; fake adapters refused in production.
+- ADR-0033: the exact trusted-proxy hop count; DEBT-0055 RESOLVED with two documented deployment invariants.
+- DEBT-0043 option B again for the new bodies; DEBT-0030 stays OPEN (the limiter is not applied to the public address and content endpoints).
+- The PRD keys `verification.code.*` are shared by channel; ID-003 uses channel-specific `verification.phone.*`, as ID-002 did.
+- Repeating a confirmation after the pending change was withdrawn stays the documented idempotent success for any code; a code-bound variant was tried, contradicted four pinned tests and the documentation, and was reverted (DEBT-0065).
+
+### Schema
+Two new tables, one extended table (`identity.account_audit_events`), 96 constraints in the `identity` schema; see `docs/data/DATA_MODEL_CHANGELOG.md` and `NORMALIZATION_LOG.md` (ID-003). Intentional denormalization: `country_code` is derivable from `phone_e164` and kept for the foreign key and queries; the challenge `purpose` snapshot of the contact status at issuance; `is_primary` coincides with `status = 'VERIFIED'` by guard; `line_type` is a point-in-time snapshot.
+
+### Contracts
+OpenAPI: four phone operations and the extended account context. AsyncAPI: `bananagig.identity.phone-contact-added`, `phone-verification-sent`, `phone-verified`, `phone-verification-failed` and `phone-change-requested` (v1).
+
+### Tests
+Unit 6349, root script tests 71, integration 2679 in 31 files (phone data model rules 577, phone verification service 370, API phone 108), smoke 34 checks (run twice).
+
+### Skills updated
+`skills/identity`, `skills/testing`, `skills/configuration`, `skills/content`, `skills/database`, `skills/api`, `skills/web`.
+
+### ADRs
+ADR-0030, ADR-0031, ADR-0032, ADR-0033.
+
+### Known follow-up
+DEBT-0059 to DEBT-0065 (production SMS provider and spend caps, telecom risk vendor, contested numbers and lost phones, change step-up and screens, account market, unconfirmed limits, abuse residuals). DEBT-0055 is RESOLVED. Confirm or change the two assumed limits and the channel-specific key decision with the security owner. Push and confirm CI is green end to end (the Phone verification smoke scenario has not run in CI).

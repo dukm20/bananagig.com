@@ -4,7 +4,7 @@ import type { AppConfig } from '@bananagig/config';
 import { API_PREFIX } from '@bananagig/contracts';
 import type { ConfigurationService } from '@bananagig/configuration';
 import type { ContentService } from '@bananagig/content';
-import type { AccountService, EmailVerificationService } from '@bananagig/accounts';
+import type { AccountService, EmailVerificationService, PhoneVerificationService } from '@bananagig/accounts';
 import type { AddressService, GeographyService } from '@bananagig/geography';
 import type { TokenVerifier } from '@bananagig/identity';
 import { metrics } from '@bananagig/observability';
@@ -49,7 +49,19 @@ export interface AppDeps {
   accounts?: AccountService;
   /** The email contact and its verification (ID-002); the email routes are registered only when provided together with `accounts`. */
   emailVerification?: EmailVerificationService;
+  /** The phone contact and its verification (ID-003); the phone routes are registered only when provided together with `accounts`. */
+  phoneVerification?: PhoneVerificationService;
 }
+
+/**
+ * Trust exactly `hops` reverse proxies (DEBT-0055). proxy-addr calls this for each hop counted from the socket (hop 0 is the connection peer, the first proxy); a hop
+ * is trusted while its index is below the count, so `request.ip` is the first address that is NOT a trusted proxy: with 1 hop the last X-Forwarded-For entry (the one
+ * the proxy wrote), with 0 hops always the socket address. A client-chosen leftmost entry is never used.
+ */
+export const trustHops =
+  (hops: number) =>
+  (_address: string, hop: number): boolean =>
+    hop < hops;
 
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   // removeAdditional=false: unknown request properties are REJECTED (400) instead of silently stripped.
@@ -57,7 +69,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   // entry. frameworkErrors routes router-level failures (over-long params, malformed URLs) through the standard error envelope.
   const app = Fastify({
     logger: false,
-    trustProxy: true,
+    // the EXACT number of trusted reverse proxies (DEBT-0055): request.ip is the address that many hops from the socket, never a client-chosen leftmost entry
+    trustProxy: trustHops(deps.cfg.trustedProxyHops),
     ajv: { customOptions: { removeAdditional: false } },
     routerOptions: { maxParamLength: MAX_PATH_PARAM_LENGTH },
     frameworkErrors,
@@ -120,8 +133,12 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   if (deps.geography) await app.register(geographyRoutes, { prefix: `${API_PREFIX}/geography`, geography: deps.geography });
   if (deps.address) await app.register(addressRoutes, { prefix: `${API_PREFIX}/geography`, address: deps.address });
   if (deps.accounts) {
-    await app.register(accountPlugin, { accounts: deps.accounts, emailVerification: deps.emailVerification });
-    await app.register(accountRoutes, { prefix: API_PREFIX, emailRoutes: deps.emailVerification !== undefined });
+    await app.register(accountPlugin, { accounts: deps.accounts, emailVerification: deps.emailVerification, phoneVerification: deps.phoneVerification });
+    await app.register(accountRoutes, {
+      prefix: API_PREFIX,
+      emailRoutes: deps.emailVerification !== undefined,
+      phoneRoutes: deps.phoneVerification !== undefined,
+    });
   }
 
   app.get('/metrics', { schema: { hide: true } }, async (_req, reply) => reply.type(metrics.contentType).send(await metrics.metrics()));

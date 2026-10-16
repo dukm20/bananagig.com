@@ -14,7 +14,8 @@
     "@bananagig/contracts": "workspace:*",
     "@bananagig/database": "workspace:*",
     "@bananagig/observability": "workspace:*",
-    "@bananagig/platform": "workspace:*"
+    "@bananagig/platform": "workspace:*",
+    "libphonenumber-js": "1.13.14"
   },
   "devDependencies": {
     "@bananagig/testing": "workspace:*"

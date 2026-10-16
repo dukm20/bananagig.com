@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./mailpit": "./src/mailpit.ts"
+    "./mailpit": "./src/mailpit.ts",
+    "./sms": "./src/sms.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
@@ -14,6 +15,7 @@
   "dependencies": {
     "@bananagig/config": "workspace:*",
     "@bananagig/database": "workspace:*",
+    "iovalkey": "^0.4.0",
     "pg": "^8.23.1"
   },
   "devDependencies": {

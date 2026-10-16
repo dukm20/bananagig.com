@@ -356,7 +356,7 @@ const commentOn = async (table: string, column?: string): Promise<string | null>
   )[0]!.c;
 
 describe('A. schema shape: only hashes, no plaintext secret, no plain address, restrictive foreign keys', () => {
-  it('adds exactly two tables to the identity schema (nine in total) and no sequence', async () => {
+  it('adds exactly two tables to the identity schema (nine with 0010, eleven after 0011) and no sequence', async () => {
     const tables = await q<{ table_name: string }>(
       "SELECT table_name FROM information_schema.tables WHERE table_schema = 'identity' AND table_type = 'BASE TABLE'",
     );
@@ -369,6 +369,8 @@ describe('A. schema shape: only hashes, no plaintext secret, no plain address, r
       'email_contacts',
       'email_verification_challenges',
       'external_identities',
+      'phone_contacts',
+      'phone_verification_challenges',
       'roles',
     ]);
     expect(
@@ -384,7 +386,7 @@ describe('A. schema shape: only hashes, no plaintext secret, no plain address, r
     expect(await columnsOf('email_verification_challenges')).toEqual(CHALLENGE_COLUMNS);
   });
 
-  it('adds exactly one nullable uuid column (email_contact_id) to the audit trail and keeps the rest', async () => {
+  it('adds exactly one nullable uuid column (email_contact_id) to the audit trail and keeps the rest (0011 adds phone_contact_id after it)', async () => {
     expect((await columnsOf('account_audit_events')).map(([n, t, nullable]) => [n, t, nullable])).toEqual([
       ['audit_event_id', 'uuid', false],
       ['occurred_at', 'timestamp with time zone', false],
@@ -396,6 +398,7 @@ describe('A. schema shape: only hashes, no plaintext secret, no plain address, r
       ['reason', 'text', true],
       ['correlation_id', 'text', false],
       ['email_contact_id', 'uuid', true],
+      ['phone_contact_id', 'uuid', true],
     ]);
   });
 
@@ -495,13 +498,13 @@ describe('A. schema shape: only hashes, no plaintext secret, no plain address, r
     expect(loose).toEqual([]);
   });
 
-  it('brings the identity schema to 70 primary key, unique, foreign key and check constraints (44 from 0009 plus 26)', async () => {
+  it('brings the identity schema to 96 primary key, unique, foreign key and check constraints (44 from 0009, 26 from 0010, 26 from 0011)', async () => {
     const { n } = (
       await q<{ n: number }>(
         "SELECT count(*)::int AS n FROM pg_constraint c JOIN pg_namespace s ON s.oid = c.connamespace WHERE s.nspname = 'identity' AND c.contype IN ('p', 'u', 'f', 'c')",
       )
     )[0]!;
-    expect(n).toBe(70);
+    expect(n).toBe(96);
   });
 
   it('CHECKs both hash columns to 64 lowercase hex characters (catalog)', async () => {

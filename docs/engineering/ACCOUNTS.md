@@ -22,7 +22,8 @@ Not in scope (no table, column or route exists for any of them):
 | Not here | Where it belongs |
 |---|---|
 | Onboarding screens, sign-up and sign-in forms, carousels, the role switcher UI | web checkpoints (CU-03 and later); the account area (CU-09, PR-09) |
-| Phone storage and verification | ID-003 (phone); CU-03.04 to CU-03.06, SV-03 |
+| Phone storage and verification | IMPLEMENTED in ID-003 (`docs/engineering/PHONE_VERIFICATION.md`); CU-03.04 to CU-03.06, SV-03 |
+| Account recovery by phone, the step-up before a phone change and the phone screens (verification page, "Change number") | not built: recovery is DEBT-0017; the production SMS provider is DEBT-0059; see `TECH_DEBT.md` for the others |
 | Email recovery of access, the account email screens and the step-up before an email change | DEBT-0017, DEBT-0050 (the email contact and its verification are IMPLEMENTED in ID-002: `docs/engineering/EMAIL_VERIFICATION.md`) |
 | Password recovery and reset, notifications | DEBT-0017 |
 | Consent and legal acceptance records | ID-005 |
@@ -49,7 +50,7 @@ Not in scope (no table, column or route exists for any of them):
 | The active role of a request | BananaGig (web server session plus API validation) | NOT persisted anywhere in PostgreSQL |
 | Core profile (names, locale, time zone) | BananaGig | `identity.account_profiles` |
 | Email contact and its verification | BananaGig (ID-002) | `identity.email_contacts`, `identity.email_verification_challenges`; the Keycloak email claim is never trusted or copied (ADR-0027) |
-| Phone contact and verification | not yet (ID-003) | nothing stored |
+| Phone contact and verification | BananaGig (ID-003) | `identity.phone_contacts`, `identity.phone_verification_challenges`; Keycloak is NOT a phone store: the number is never written to Keycloak and tokens carry no phone claim (ADR-0031) |
 | Realm roles `customer`, `provider` | Keycloak (identity claims); used ONCE as a bootstrap hint | the token; never copied |
 | Admin identity and `admin-console-access` | Keycloak admin client; no BananaGig account | the `keycloak` database |
 | Fine-grained permissions | later (the admin client roles are temporary, DEBT-0021) | not modelled |
@@ -193,7 +194,7 @@ Base `/api/v1/account`; standard envelope `{ data, meta: { correlationId } }`; e
 | `setAccountActiveRole` | POST `/account/active-role` | `{ role }` (strict; a role code) | 200 `AccountDto` with `activeRole` = the role | validation only, persists nothing; ignores the `x-active-role` header (the body is validated instead) |
 | `updateAccountProfile` | PUT `/account/profile` | `{ firstName, lastName, preferredLocale?, timeZone? }` (strict; omitted or null clears the optional two) | 200 `AccountDto` with the updated profile | replace semantics; idempotent; honors `x-active-role` |
 
-`AccountDto`: `accountId` (opaque uuid), `status`, `roles` (the ACTIVE roles: `code` and `nameContentKey`, resolved through the content API), `primaryRole` (code or null), `activeRole` (code or null), `profile` (`firstName`, `lastName`, `preferredLocale`, `timeZone`, or null before the person gave a name) and `createdAt`. It never carries a token, a subject, an issuer, an email or a phone number.
+`AccountDto`: `accountId` (opaque uuid), `status`, `roles` (the ACTIVE roles: `code` and `nameContentKey`, resolved through the content API), `primaryRole` (code or null), `activeRole` (code or null), `profile` (`firstName`, `lastName`, `preferredLocale`, `timeZone`, or null before the person gave a name) and `createdAt`. It never carries a token, a subject, an issuer, an email or a phone number. ID-003 adds `phone` (`phoneVerificationStatus`, `primary`, `pending`; numbers MASKED) and the DERIVED `contacts` summary (`emailVerified`, `phoneVerified`, `contactsVerified`) to `AccountDto`, next to the masked `email` of ID-002.
 
 Errors use the standard model with code `ACCOUNT_<code>` (the `constraint` and driver `cause` are stripped from `details`; messages are fixed text):
 
@@ -229,6 +230,8 @@ Every response of a matched account route, errors included, carries `Cache-Contr
 | `primaryRole` | the preferred role code, or null |
 | `activeRole` | the role this request acts as (resolved and validated as above), or null |
 | `profile` | the caller's own profile, only when `includeProfile` was requested |
+| `phone` | the phone contact state (ID-003): `phoneVerificationStatus` (`NONE`, `PENDING`, `VERIFIED`) with the primary and pending number MASKED |
+| `contacts` | `emailVerified`, `phoneVerified`, `contactsVerified`, DERIVED from the two statuses at read time (nothing is stored); the summary future booking and provider gates will read |
 | `createdAt`, `created` | the account creation time; `created` is true only on the request that created it |
 
 It never holds a token, the Keycloak subject or the issuer (the token's own claims stay on `request.principal`).
@@ -354,10 +357,24 @@ Test files (counts change with every test; run them rather than quoting numbers)
 | DEBT-0047 | no cache for the account lookup on the authenticated path |
 | DEBT-0048 | no endpoint or screen for the preferred role; account screens are infrastructure only |
 | DEBT-0049 to DEBT-0058 | email verification debts: production provider, change-email step-up and screens, contested addresses, branded layout, brokered social login, bot protection and re-verification, trusted proxy address, admin timeline, retention, unconfirmed abuse limits |
+| DEBT-0059 to DEBT-0064 | phone verification debts (ID-003): DEBT-0059 production SMS provider, DEBT-0060 telecom risk vendor, DEBT-0061 contested numbers (support process), DEBT-0063 the market scope of country and market policy waits for accounts to have a market, DEBT-0064 the two Valkey abuse limits are engineering assumptions; see `TECH_DEBT.md` for each entry and for DEBT-0062 |
 
 ## Email contact (ID-002)
 
 The account's email address, its verification by one-time code or magic link, the replacement of a verified address and the rules for a trusted identity provider's verified email are specified in `docs/engineering/EMAIL_VERIFICATION.md` (ADR-0027, ADR-0028, ADR-0029). `AccountContext` and `GET /account/me` carry `email: { emailVerificationStatus, primary, pending }` (status `NONE`, `PENDING`, `VERIFIED`; addresses MASKED); nothing gates on it yet (booking gating is CU-03/CU-04). Five operations live under `/api/v1/account/email` (`getAccountEmail`, `setAccountEmail`, `sendAccountEmailVerification`, `confirmAccountEmailCode`, `confirmAccountEmailLink`) with the same guard, strict bodies and `no-store` as the three above. Seven audit actions and five outbox events are added; the error codes are `ACCOUNT_EMAIL_*` (400, 409, 429 with `Retry-After`, 503). Rate limiting uses the reusable limiter (`docs/engineering/RATE_LIMITING.md`).
+
+## Phone contact (ID-003)
+
+The account's mobile number (stored in E.164 with its country), its verification by a one-time SMS code, the replacement of a verified number, the line-type policy and the configurable number of accounts per number are specified in `docs/engineering/PHONE_VERIFICATION.md` (ADR-0030 to ADR-0033). Keycloak is not a phone store. `AccountContext` and `GET /account/me` carry `phone: { phoneVerificationStatus, primary, pending }` (status `NONE`, `PENDING`, `VERIFIED`; numbers MASKED) and the DERIVED `contacts: { emailVerified, phoneVerified, contactsVerified }`; nothing gates on them yet. Four operations live under `/api/v1/account/phone` with the same guard, strict bodies and `no-store` as the operations above:
+
+| Operation | Method and path | Request |
+|---|---|---|
+| `getAccountPhone` | GET `/account/phone` | no body |
+| `setAccountPhone` | POST `/account/phone` | `{ phone, country? }` (sends nothing) |
+| `sendAccountPhoneVerification` | POST `/account/phone/verification/send` | `{}` |
+| `confirmAccountPhoneCode` | POST `/account/phone/verification/confirm-code` | `{ code }` |
+
+Seven audit actions and five outbox events are added; the error codes are `ACCOUNT_PHONE_*` (400, 409, 429 with `Retry-After` where the wait is known, 503).
 
 ## Operations and troubleshooting
 

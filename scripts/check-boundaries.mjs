@@ -29,7 +29,7 @@ const ALLOWED = {
     'testing',
   ],
   '@bananagig/worker': ['config', 'contracts', 'configuration', 'content', 'database', 'observability', 'platform', 'testing'],
-  '@bananagig/smoke': ['accounts', 'contracts', 'database', 'identity'],
+  '@bananagig/smoke': ['accounts', 'contracts', 'database', 'identity', 'testing'],
 };
 
 const pkgs = {};

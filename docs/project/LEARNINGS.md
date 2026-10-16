@@ -959,3 +959,78 @@ Any emailed or shared one-time link: fragment for the secret, POST to act, keyed
 
 ### Evidence
 `apps/web/src/app/verify-email/link-confirm.tsx`, `apps/api/src/modules/account/email-wiring.ts` (`createVerificationLinkBuilder`), `apps/smoke/src/index.ts` (check `Email verification`, Loki absence queries), `packages/accounts/src/email-crypto.ts`.
+
+## LRN-0039 — A uniqueness policy that is configuration cannot be a unique index: lock, count, and let the trigger enforce the same value
+
+Date: 2026-10-08
+Checkpoint: ID-003
+Domain: database / identity
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0031
+Related skill: skills/database/SKILL.md
+
+### Context
+The PRD lets a market decide how many accounts may verify the same phone number (`verification.phone.max_accounts_per_number`, default 1, overridable per country and market). For email the rule is fixed ("one account"), so a partial unique index on the verified address is exact. For the phone, an index is correct only for a maximum of one and wrong the moment a market raises it.
+
+### Learning
+Serialize the competing verifications of ONE key with `pg_advisory_xact_lock(hashtextextended('phone:' || number, 0))`, count the OTHER holders inside the same transaction, refuse at the limit, and pass the limit to the guard trigger through a transaction-local setting (`set_config('app.phone_max_accounts', n, true)`). The trigger takes the same lock and enforces that setting, or a structural ceiling when the setting is absent, so a writer that bypasses the service still cannot exceed it. Do the typed refusal only after the caller proved control (a correct code), so the answer before that reveals nothing about other accounts. Prove it with a race test: N parallel verifications (more than the cap) end at exactly the cap, and raw SQL against the trigger fails with its rule key.
+
+### Why it matters
+A read-then-write count without the lock lets two concurrent verifications both see "one holder fewer than the limit" and both succeed; a check only in the service is skipped by any other writer. Both failures pass every single-threaded test.
+
+### Reuse rule
+Any limit that is policy data (accounts per number, devices per account, seats): lock on the key, count, compare, setting for the trigger, structural ceiling as defence in depth, a concurrency test that ends at exactly the limit, and a mutation check that removing the lock fails the test.
+
+### Evidence
+`db/migrations/0011_phone_verification.sql` (the guard trigger, rule key `PHONE_NUMBER_CAP`), `packages/accounts/src/phone-verification.ts` (`completeVerification`).
+
+## LRN-0040 — Trust a proxy hop count with an explicit function, and prove the proxy replaces X-Forwarded-For
+
+Date: 2026-10-08
+Checkpoint: ID-003
+Domain: api / infrastructure / security
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0033
+Related skill: skills/api/SKILL.md
+
+### Context
+DEBT-0055: `trustProxy: true` made `request.ip` the leftmost `X-Forwarded-For` entry, which a client chooses, so every request could get a new source-address rate-limit bucket. The exact hop count is the fix, but Fastify 5.12.5 types the option as `boolean | string | string[] | TrustProxyFunction`: there is no numeric form to rely on.
+
+### Learning
+Pass a function, `(address, hop) => hop < hops` (`trustHops`). proxy-addr counts hops from the socket (hop 0 is the connection peer), so with 1 hop `request.ip` is the LAST entry, the one the proxy wrote, and with 0 hops it is the socket address. Unit-test the function and the real Fastify behaviour for 0, 1 and 2 hops with chains of different length. The count is only half the control: the proxy must REPLACE the header (`header_up X-Forwarded-For {remote_host}` in Caddy), the web server must forward one value (the last entry it received, not the leftmost), and the API must be unreachable except through the proxy. Prove the replacement twice: statically (a test that reads the Caddyfile and the compose file) and end to end (a smoke test that sends a spoofed header through Caddy and then inspects Valkey for the rate-limit bucket the spoofed address would have created, which must not exist).
+
+### Why it matters
+A wrong count fails silently in both directions: too low puts every user in one bucket (a global lockout at the limit), too high lets a client choose its bucket and defeats the limit that protects SMS spend. Unit tests with a fake request cannot see the proxy.
+
+### Reuse rule
+Any decision that depends on the client address: a hop-count function, a documented topology invariant, a static test of the proxy config, and a smoke test that looks for the bucket a spoofed address would create.
+
+### Evidence
+`apps/api/src/app.ts` (`trustHops`), `apps/api/src/trust-proxy.test.ts`, `infra/caddy/Caddyfile`, `apps/web/src/lib/auth/email-handlers.ts` (`clientIpOf`), `apps/smoke/src/index.ts` (the spoofed `X-Forwarded-For` check in the phone scenario).
+
+## LRN-0041 — Docker Desktop clock drift fails integration tests that compare a database timestamp with the host clock
+
+Date: 2026-10-16
+Checkpoint: ID-003
+Domain: testing / infrastructure
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/testing/SKILL.md
+
+### Context
+The ID-003 finalize run failed twice in files this checkpoint did not touch (`address-model.itest.ts` timed out, then `outbox.itest.ts` failed a backoff comparison) although the same suite had passed minutes earlier.
+
+### Learning
+The Postgres container reads the Docker Desktop VM clock, which can run tens of seconds behind the host after the laptop sleeps. Integration tests that compare a database-computed timestamp (`now()`, a backoff `next_attempt_at`) with the host's `Date.now()` then fail intermittently in files nobody changed (seen as `outbox.itest.ts` "records failures ... and backoff": expected 1792173131583 to be greater than 1792173159306), and a stalled file can also hit the 30 s test timeout. Compare `date +%s` on the host with `docker exec bananagig-postgres-db date +%s` before debugging; the drift corrects itself, and the same test passes alone once the clocks agree.
+
+### Why it matters
+It looks like a flaky or broken test in an unrelated area and costs a full 5 minute integration run per retry, and `checkpoint:finalize` fails on it.
+
+### Reuse rule
+When an unchanged integration file fails on a time comparison, check the host and container clocks first, rerun that file alone, and only then look at the code. New tests should take both sides of a time comparison from the database clock (`clock_timestamp()`), as the phone tests do.
+
+### Evidence
+`apps/worker/src/outbox.itest.ts` (host `Date.now()` against `next_attempt_at`); host 1792173169 against container 1792173140 on 2026-10-16, equal again seconds later.

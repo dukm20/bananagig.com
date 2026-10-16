@@ -1,6 +1,6 @@
 // Account API shaping and error mapping. The account read model carries the caller's OWN data only; it never holds a token, a Keycloak subject or an
 // issuer, and the full name appears only in the caller's own profile (never in a public view).
-import { emailErrorMessageKey, type AccountDto, type EmailErrorCode } from '@bananagig/contracts';
+import { emailErrorMessageKey, phoneErrorMessageKey, type AccountDto, type EmailErrorCode, type PhoneErrorCode } from '@bananagig/contracts';
 import { AccountError, type AccountContext } from '@bananagig/accounts';
 import { AppError } from '../../errors';
 
@@ -12,6 +12,8 @@ export const accountDto = (ctx: AccountContext): AccountDto => ({
   activeRole: ctx.activeRole,
   profile: ctx.profile ? { ...ctx.profile } : null,
   email: ctx.email,
+  phone: ctx.phone,
+  contacts: ctx.contacts,
   createdAt: ctx.createdAt.toISOString(),
 });
 
@@ -63,6 +65,41 @@ export function toAppError(err: unknown): never {
         wait === undefined ? undefined : { 'retry-after': String(wait) },
       );
     }
+    case 'PHONE_INVALID':
+      throw new AppError('VALIDATION', code, err.message, details);
+    case 'PHONE_NOT_PENDING':
+    case 'PHONE_UNAVAILABLE':
+      throw new AppError('CONFLICT', code, err.message, { ...details, messageKey: phoneErrorMessageKey(err.code) });
+    case 'PHONE_NOT_ACCEPTED':
+    case 'PHONE_CODE_INVALID':
+    case 'PHONE_CODE_EXPIRED':
+    case 'PHONE_CODE_USED':
+      throw new AppError('VALIDATION', code, err.message, { ...details, messageKey: phoneErrorMessageKey(err.code) });
+    case 'PHONE_VERIFICATION_LOCKED':
+    case 'PHONE_RESEND_TOO_SOON':
+    case 'PHONE_SEND_LIMIT':
+    case 'PHONE_RATE_LIMITED': {
+      // 429 with Retry-After where the wait is known. The refusing dimension (account, number, source) is never named.
+      const wait = typeof details.retryAfterSeconds === 'number' ? details.retryAfterSeconds : undefined;
+      throw new AppError(
+        'RATE_LIMIT',
+        code,
+        err.message,
+        { ...details, messageKey: phoneErrorMessageKey(err.code as Exclude<PhoneErrorCode, 'PHONE_INVALID'>) },
+        wait === undefined ? undefined : { 'retry-after': String(wait) },
+      );
+    }
+    case 'PHONE_RISK_UNAVAILABLE':
+    case 'PHONE_DELIVERY_FAILED':
+      throw new AppError(
+        'DEPENDENCY',
+        code,
+        err.code === 'PHONE_RISK_UNAVAILABLE' ? 'The phone number could not be checked right now' : 'The verification text could not be sent',
+        {
+          retryable: err.code === 'PHONE_RISK_UNAVAILABLE' ? true : details.retryable === true,
+          messageKey: phoneErrorMessageKey(err.code),
+        },
+      );
     case 'EMAIL_DELIVERY_FAILED':
       throw new AppError('DEPENDENCY', code, 'The verification email could not be sent', {
         retryable: details.retryable === true,

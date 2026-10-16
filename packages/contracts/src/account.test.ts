@@ -37,6 +37,7 @@ import {
 } from './account';
 import { ContentKey } from './content';
 import { EMAIL_ERROR_CODES } from './email';
+import { PHONE_ERROR_CODES } from './phone';
 import { EVENT_TYPE_PATTERN, EventEnvelope } from './index';
 import { containsForbiddenText } from './text';
 
@@ -432,6 +433,8 @@ const validAccount = {
   activeRole: 'CUSTOMER',
   profile: { firstName: 'Ana', lastName: 'Martinez', preferredLocale: 'en-US', timeZone: 'America/Los_Angeles' },
   email: { emailVerificationStatus: 'NONE', primary: null, pending: null },
+  phone: { phoneVerificationStatus: 'NONE', primary: null, pending: null },
+  contacts: { emailVerified: false, phoneVerified: false, contactsVerified: false },
   createdAt: '2026-01-01T00:00:00.000Z',
 };
 const verifiedEmailSummary = {
@@ -443,6 +446,17 @@ const pendingEmailSummary = {
   emailVerificationStatus: 'PENDING',
   primary: null,
   pending: { maskedEmail: 'a***@e***.test', purpose: 'INITIAL_EMAIL', status: 'PENDING', lastSentAt: null, expiresAt: null },
+};
+
+const verifiedPhoneSummary = {
+  phoneVerificationStatus: 'VERIFIED',
+  primary: { maskedPhone: '+*******0142', countryCode: 'US', verifiedAt: '2026-01-02T00:00:00.000Z', source: 'USER_ENTERED' },
+  pending: null,
+};
+const pendingPhoneSummary = {
+  phoneVerificationStatus: 'PENDING',
+  primary: null,
+  pending: { maskedPhone: '+*******0142', countryCode: 'US', purpose: 'INITIAL_PHONE', status: 'PENDING', lastSentAt: null, expiresAt: null },
 };
 
 describe('AccountDto', () => {
@@ -467,11 +481,31 @@ describe('AccountDto', () => {
     ['a plain address string instead of the email summary', { email: 'ana@example.test' }],
     ['an email summary with an unknown verification status', { email: { emailVerificationStatus: 'CONFIRMED', primary: null, pending: null } }],
     ['an email summary without the pending field', { email: { emailVerificationStatus: 'NONE', primary: null } }],
+    ['a missing phone summary', { phone: undefined }],
+    ['a null phone summary', { phone: null }],
+    ['a plain number string instead of the phone summary', { phone: '+12025550142' }],
+    ['a phone summary with an unknown verification status', { phone: { phoneVerificationStatus: 'CONFIRMED', primary: null, pending: null } }],
+    ['a phone summary without the pending field', { phone: { phoneVerificationStatus: 'NONE', primary: null } }],
+    ['missing contacts', { contacts: undefined }],
+    ['null contacts', { contacts: null }],
+    ['contacts without contactsVerified', { contacts: { emailVerified: false, phoneVerified: false } }],
+    ['contacts with a non-boolean flag', { contacts: { emailVerified: 'yes', phoneVerified: false, contactsVerified: false } }],
   ])('rejects an account with %s', (_label, over) => {
     expect(AccountDto.safeParse({ ...validAccount, ...over }).success).toBe(false);
   });
   it('carries exactly the documented fields and none that identify the Keycloak identity', () => {
-    expect(Object.keys(AccountDto.shape).sort()).toEqual(['accountId', 'activeRole', 'createdAt', 'email', 'primaryRole', 'profile', 'roles', 'status']);
+    expect(Object.keys(AccountDto.shape).sort()).toEqual([
+      'accountId',
+      'activeRole',
+      'contacts',
+      'createdAt',
+      'email',
+      'phone',
+      'primaryRole',
+      'profile',
+      'roles',
+      'status',
+    ]);
     expect(Object.keys(AccountDto.shape.roles.element.shape).sort()).toEqual(['code', 'nameContentKey']);
     expect(Object.keys(AccountDto.shape.profile.unwrap().shape).sort()).toEqual(['firstName', 'lastName', 'preferredLocale', 'timeZone']);
     const json = JSON.stringify(Object.keys(AccountDto.shape));
@@ -514,6 +548,67 @@ describe('AccountDto', () => {
     expect(parsed.email).toEqual(verifiedEmailSummary);
     expect(JSON.stringify(parsed)).not.toContain('ana.martinez');
     expect(Object.keys(parsed.email).sort()).toEqual(['emailVerificationStatus', 'pending', 'primary']);
+  });
+  it('carries the phone as a summary object (status, primary, pending), never as a number field', () => {
+    expect(Object.keys(AccountDto.shape.phone.shape).sort()).toEqual(['pending', 'phoneVerificationStatus', 'primary']);
+    expect(Object.keys(AccountDto.shape.phone.shape.primary.unwrap().shape).sort()).toEqual(['countryCode', 'maskedPhone', 'source', 'verifiedAt']);
+    expect(Object.keys(AccountDto.shape.phone.shape.pending.unwrap().shape).sort()).toEqual([
+      'countryCode',
+      'expiresAt',
+      'lastSentAt',
+      'maskedPhone',
+      'purpose',
+      'status',
+    ]);
+    const phoneKeys = JSON.stringify([
+      ...Object.keys(AccountDto.shape.phone.shape),
+      ...Object.keys(AccountDto.shape.phone.shape.primary.unwrap().shape),
+      ...Object.keys(AccountDto.shape.phone.shape.pending.unwrap().shape),
+    ]);
+    for (const word of ['phone', 'number', 'e164', 'code', 'token', 'hash', 'normalized']) expect(phoneKeys.toLowerCase()).not.toContain(`"${word}"`);
+  });
+  it('carries the contacts as exactly three booleans', () => {
+    expect(Object.keys(AccountDto.shape.contacts.shape).sort()).toEqual(['contactsVerified', 'emailVerified', 'phoneVerified']);
+  });
+  it.each([
+    ['no number', validAccount.phone],
+    ['a verified primary number', verifiedPhoneSummary],
+    ['a pending number', pendingPhoneSummary],
+  ])('parses an account whose phone is %s and returns it unchanged', (_label, phone) => {
+    const account = { ...validAccount, phone };
+    expect(AccountDto.parse(account)).toEqual(account);
+  });
+  it('requires the phone and contacts fields: an account without either does not parse', () => {
+    const { phone: _phone, ...withoutPhone } = validAccount;
+    expect(AccountDto.safeParse(withoutPhone).success).toBe(false);
+    const { contacts: _contacts, ...withoutContacts } = validAccount;
+    expect(AccountDto.safeParse(withoutContacts).success).toBe(false);
+  });
+  it('strips an unknown field smuggled into the phone summary, so a full number cannot ride along', () => {
+    const smuggled = {
+      ...validAccount,
+      phone: {
+        ...verifiedPhoneSummary,
+        number: '+12025550142',
+        primary: { ...verifiedPhoneSummary.primary, phone: '+12025550142', e164: '+12025550142' },
+      },
+    };
+    const parsed = AccountDto.parse(smuggled);
+    expect(parsed.phone).toEqual(verifiedPhoneSummary);
+    expect(JSON.stringify(parsed)).not.toContain('2025550142');
+    expect(Object.keys(parsed.phone).sort()).toEqual(['pending', 'phoneVerificationStatus', 'primary']);
+  });
+  it('strips an unknown field smuggled into the contacts summary', () => {
+    const parsed = AccountDto.parse({ ...validAccount, contacts: { ...validAccount.contacts, phone: '+12025550142' } });
+    expect(parsed.contacts).toEqual(validAccount.contacts);
+  });
+  it('carries only the masked number through the envelope and refuses a response without phone or contacts', () => {
+    const data = { ...validAccount, phone: verifiedPhoneSummary };
+    expect(AccountResponse.parse({ data, meta: { correlationId: 'c-1' } }).data.phone).toEqual(verifiedPhoneSummary);
+    const { phone: _phone, ...withoutPhone } = validAccount;
+    expect(AccountResponse.safeParse({ data: withoutPhone, meta: { correlationId: 'c-1' } }).success).toBe(false);
+    const { contacts: _contacts, ...withoutContacts } = validAccount;
+    expect(AccountResponse.safeParse({ data: withoutContacts, meta: { correlationId: 'c-1' } }).success).toBe(false);
   });
   it('wraps the account in the standard data and meta envelope', () => {
     expect(AccountResponse.parse({ data: validAccount, meta: { correlationId: 'c-1' } })).toEqual({ data: validAccount, meta: { correlationId: 'c-1' } });
@@ -722,9 +817,22 @@ describe('ACCOUNT_ERROR_CODES', () => {
       'EMAIL_UNAVAILABLE',
       'EMAIL_DELIVERY_FAILED',
       'EMAIL_RATE_LIMITED',
+      'PHONE_INVALID',
+      'PHONE_NOT_PENDING',
+      'PHONE_CODE_INVALID',
+      'PHONE_CODE_EXPIRED',
+      'PHONE_CODE_USED',
+      'PHONE_VERIFICATION_LOCKED',
+      'PHONE_RESEND_TOO_SOON',
+      'PHONE_SEND_LIMIT',
+      'PHONE_UNAVAILABLE',
+      'PHONE_NOT_ACCEPTED',
+      'PHONE_RISK_UNAVAILABLE',
+      'PHONE_DELIVERY_FAILED',
+      'PHONE_RATE_LIMITED',
     ]);
   });
-  it('lists every email error code after the ten account codes, in the email vocabulary order', () => {
+  it('lists every email error code after the ten account codes and every phone error code after those, in vocabulary order', () => {
     expect(ACCOUNT_ERROR_CODES.slice(0, 10)).toEqual([
       'NOT_FOUND',
       'SUSPENDED',
@@ -737,8 +845,11 @@ describe('ACCOUNT_ERROR_CODES', () => {
       'INVALID_STATE',
       'UNAVAILABLE',
     ]);
-    expect(ACCOUNT_ERROR_CODES.slice(10)).toEqual([...EMAIL_ERROR_CODES]);
-    expect(ACCOUNT_ERROR_CODES).toHaveLength(22);
+    expect(ACCOUNT_ERROR_CODES.slice(10, 10 + EMAIL_ERROR_CODES.length)).toEqual([...EMAIL_ERROR_CODES]);
+    expect(ACCOUNT_ERROR_CODES.slice(10 + EMAIL_ERROR_CODES.length)).toEqual([...PHONE_ERROR_CODES]);
+    expect(EMAIL_ERROR_CODES).toHaveLength(12);
+    expect(PHONE_ERROR_CODES).toHaveLength(13);
+    expect(ACCOUNT_ERROR_CODES).toHaveLength(35);
   });
   it('has unique upper-case codes, usable as the ACCOUNT_<code> API error code suffix', () => {
     expect(new Set(ACCOUNT_ERROR_CODES).size).toBe(ACCOUNT_ERROR_CODES.length);

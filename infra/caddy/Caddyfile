@@ -9,8 +9,14 @@
 	handle @app {
 		# Same-origin access to the versioned API for browser code
 		@appapi path /api/v1/*
-		reverse_proxy @appapi api-service:3000
-		reverse_proxy web-app:3000
+		# The client address is what Caddy sees on the connection: any X-Forwarded-For sent by the client is REPLACED, never appended to (DEBT-0055). The API trusts
+		# exactly one proxy hop (TRUSTED_PROXY_HOPS=1), so the entry Caddy writes is the only one it reads.
+		reverse_proxy @appapi api-service:3000 {
+			header_up X-Forwarded-For {remote_host}
+		}
+		reverse_proxy web-app:3000 {
+			header_up X-Forwarded-For {remote_host}
+		}
 	}
 
 	@api host api.localhost
@@ -18,7 +24,9 @@
 		# Diagnostics are internal-only
 		@internal path /internal/*
 		respond @internal 404
-		reverse_proxy api-service:3000
+		reverse_proxy api-service:3000 {
+			header_up X-Forwarded-For {remote_host}
+		}
 	}
 
 	@auth host auth.localhost

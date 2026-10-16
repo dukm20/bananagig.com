@@ -196,6 +196,7 @@ Why deferred: They are business flows with their own contracts and need a delive
 Exit criteria: Verified-email and recovery flows implemented with configured SMTP (Mailpit locally), recovery codes and tests. ID-001 persists no email or phone: contact channels and their verification state belong to ID-002 and ID-003.
 Target checkpoint: ID-001 and following identity checkpoints
 ID-002 note: email verification (the BananaGig email contact, code and magic link, Mailpit) is implemented without Keycloak SMTP; the realm still has `verifyEmail` and `resetPasswordAllowed` off. Recovery through email (password reset link, recovery codes), SMS and phone verification remain open (ID-003 for phone).
+ID-003 note (2026-10-08): phone verification is built (the BananaGig phone contact and the SMS code, `docs/engineering/PHONE_VERIFICATION.md`) with the Valkey fake sink for development and tests and no production SMS provider (DEBT-0059). SMS-based account recovery and SMS second factors are NOT built and stay open.
 
 ## DEBT-0018 — WebAuthn and web step-up authentication deferred
 
@@ -344,6 +345,7 @@ Why deferred: Rate limiting belongs at the edge or in a shared plugin and needs 
 Exit criteria: A documented rate-limit policy enforced at Caddy or by an API plugin (with trusted client IP handling), tests, and per-route classes (public read, authenticated read, admin write).
 Target checkpoint: before the first public customer screen goes live
 ID-002 note: the reusable facility now exists (`RateLimiter`, `ValkeyRateLimiter`, ADR-0029, `docs/engineering/RATE_LIMITING.md`) and protects the email verification endpoints, but it is NOT applied to the public address or content endpoints, so this item stays OPEN. `docs/engineering/RATE_LIMITING.md` lists the steps to close it; the client address must be trustworthy first (DEBT-0055).
+ID-003 note (2026-10-08): the limiter now also protects the phone verification operations (set number, send, confirm; buckets `phone-verification:account|ip|device|number`) and the source address it counts comes from the exact trusted-proxy model (ADR-0033). It is still NOT applied to the public content or address endpoints, so this item stays OPEN.
 
 ## DEBT-0031 — Only the US reference dataset exists; no management API or bulk import for currencies, time zones and locale activation
 
@@ -434,6 +436,7 @@ Description: PRD SV-10.07 requires phone entry, formatting and validation to use
 Why deferred: No phone entry exists until account verification; the rule model (and a libphonenumber-style adapter) belongs with it.
 Exit criteria: Data-driven phone numbering rules per country used by one server and client validator, E.164 storage, tested like the postal rules.
 Target checkpoint: ID-001 (phone verification)
+ID-003 note (2026-10-08): E.164 storage and library-based validation now exist (`canonicalizePhone` over libphonenumber-js, ADR-0031; the number's country comes from the library and is cross-checked against the ACTIVE country and its configured dialing code in geography). The numbering rules are the library's, not data-driven country rules an admin can edit, and no client-side validator exists, so the exit criteria are not met. The item stays OPEN, severity LOW.
 
 ## DEBT-0039 — No admin UI, preview or draft management for address formats and areas
 
@@ -612,17 +615,20 @@ Description: SV-03.04 asks for bot protection on code requests, rate limits by d
 Why deferred: the device identifier, the risk signals (SV-09.03) and the bot-protection vendor do not exist yet.
 Exit criteria: a device or session identifier passed to the service, bot protection on the send operation, and re-verification with the configured period.
 Target checkpoint: the sign-up hardening and risk checkpoints
+ID-003 note (2026-10-08): the same gaps apply to the SMS send, where they cost money (SMS pumping, DEBT-0059); there is no bot protection on `POST /account/phone/verification/send`. The phone service accepts a device dimension like the email service, but no device identifier exists and none is passed, so that dimension is still unused.
 
 ## DEBT-0055 — The API trusts a client-supplied X-Forwarded-For
 
-Status: OPEN
+Status: RESOLVED
 Severity: MEDIUM
 Introduced by: INF-002 (surfaced by ID-002)
 Owner/domain: api / infrastructure
 Description: Fastify runs with `trustProxy: true`, so `request.ip` is the first address of `X-Forwarded-For`, which a client can set. The email verification limits count `request.ip` (hashed) as one dimension; an attacker who sets the header gets a new bucket per request. The account and address dimensions and the PostgreSQL limits are not affected.
 Why deferred: the number of proxy hops depends on the deployment topology (Caddy only locally).
 Exit criteria: `trustProxy` set to the exact hop count (or a CIDR list) per environment, the web server forwarding the real client address, and a test that a spoofed header does not create a new bucket. Required before DEBT-0030 relies on the IP dimension.
-Target checkpoint: with DEBT-0030, before the first public customer screen goes live
+Target checkpoint: ID-003 (done)
+Resolved by: ID-003 (ADR-0033). `trustProxy: true` is gone: `TRUSTED_PROXY_HOPS` (0 to 4, required explicitly in production) is the exact number of proxies, `trustHops(hops)` trusts a hop while `hop < hops`, so `request.ip` is the entry the nearest trusted proxy wrote and a client-chosen leftmost entry is never used. Caddy REPLACES `X-Forwarded-For` (`header_up X-Forwarded-For {remote_host}`) and the web server forwards the last entry (`clientIpOf`). Verified by `apps/api/src/trust-proxy.test.ts` (0, 1 and 2 hops, spoofed chains, IPv6, config defaults, static Caddyfile and compose checks) and the `Phone verification` smoke scenario (a spoofed header through the real Caddy creates no rate-limit bucket). Residual, not code: the API must be reachable only through the proxy (Compose publishes no API port; production must keep it on a private network) and the hop count must match the real topology (a CDN in front means 2); both are deployment invariants recorded in `RATE_LIMITING.md`. DEBT-0030 stays OPEN: the limiter is still not applied to the public content and address endpoints.
+
 
 ## DEBT-0056 — No admin view of the verification timeline and attempts
 
@@ -645,6 +651,7 @@ Description: Challenge rows (one per send) and DISABLED contact rows are never d
 Why deferred: retention and erasure are decided with DEBT-0036 and DEBT-0045.
 Exit criteria: a retention period per table, a purge or anonymization job that keeps what the audit needs, and the erasure procedure for the contact data.
 Target checkpoint: the account closure and privacy checkpoints
+ID-003 note (2026-10-08): the same gap covers `identity.phone_verification_challenges` (one row per SMS, code hash and delivery outcome) and DISABLED `identity.phone_contacts` rows (the E.164 number and country), which are never purged. The DEV/TEST fake SMS sink is the only store of a plaintext code; its Valkey entries expire by a 15-minute TTL, which is their only retention control (the sink is never enabled in production).
 
 ## DEBT-0058 — Two verification abuse limits are engineering assumptions awaiting owner confirmation
 
@@ -656,3 +663,80 @@ Description: The six PRD values (6 digits, 10 minutes, 30 seconds, 5 per hour, 1
 Why deferred: the security owner has not reviewed the values.
 Exit criteria: the owner confirms or changes the values through a configuration change request (second approver), and decides whether the PRD keys should be shared across channels.
 Target checkpoint: before launch
+
+## DEBT-0059 — No production SMS provider, no spend caps or dashboard, no SMS-pumping alerts
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: ID-003
+Owner/domain: platform / identity / security
+Description: `SmsSender` and `SmsTransport` are provider-neutral ports (ADR-0032) with two adapters: the Valkey fake sink (DEV and TEST only) and `DisabledSmsTransport`, the production default, which fails every send as `ACCOUNT_PHONE_DELIVERY_FAILED`. No SMS provider is selected, so no verification SMS can be delivered in production. There is no spend cap or budget per day or per country, no delivery-status or cost dashboard, no delivery receipts and no alert on SMS pumping or on an unusual share of failures (SV-03.04). The per-account, per-source-address and per-number limits (`verification.phone.*`) bound abuse but do not replace spend controls. MEDIUM rather than LOW because an SMS costs money and a provider adapter without these controls can be abused for fraud; it blocks launch of phone verification, not development.
+Why deferred: the vendor is a commercial decision; the port keeps the identity domain free of it.
+Exit criteria: a provider adapter implementing `SmsTransport`, delivery receipts, a spend cap and an alert on pumping patterns (many numbers per source, high failure share, premium or unusual destinations), and an operations dashboard.
+Target checkpoint: before launch, with the sign-up hardening and risk checkpoints
+
+## DEBT-0060 — No telecom line-type or risk vendor
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: ID-003
+Owner/domain: platform / identity / security
+Description: `PhoneIntelligence` is a port (ADR-0032) with a fake classifier (DEV and TEST, the line type from the last three digits) and `UnknownPhoneIntelligence`, which classifies every number UNKNOWN. The market policy blocks VIRTUAL and HIGH_RISK by default (`verification.phone.blocked_line_types`), so in production nothing is classified VIRTUAL or HIGH_RISK and the line-type policy has no effect until a vendor exists (SV-03.02). A market that adds UNKNOWN to the blocked list would refuse every number.
+Why deferred: the vendor is a commercial decision and carries a per-lookup cost and privacy review.
+Exit criteria: a vendor adapter implementing `PhoneIntelligence` with the five-second timeout and fail-closed behaviour, a data-processing review of sending numbers to the vendor, and tests against recorded vendor responses.
+Target checkpoint: before launch, with DEBT-0059
+
+## DEBT-0061 — No recovery for a number that is verified on another account or whose phone was lost
+
+Status: OPEN
+Severity: LOW
+Introduced by: ID-003
+Owner/domain: identity / support
+Description: A verified number belongs to at most `verification.phone.max_accounts_per_number` accounts (default 1) and there is no takeover or displacement (ADR-0031). A person who proves a number held by another account gets `ACCOUNT_PHONE_UNAVAILABLE` with no self-service way out, and a person who lost the phone that is their verified number has no recovery. Recovery is intended as a support process; neither the process nor an admin tool exists.
+Why deferred: takeover of a number is an account-takeover vector, so the release flow needs identity proofing, support roles and the admin console (DEBT-0046, DEBT-0021).
+Exit criteria: a documented support process with identity proofing and an admin action that releases a verified number with an audit trail.
+Target checkpoint: AD-07 and the account recovery checkpoints
+
+## DEBT-0062 — Phone change has no step-up, no notice to the old number, no screens and no phone verification page
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: ID-003
+Owner/domain: identity / web
+Description: The data model and lifecycle of a phone change are complete (the verified primary stays active until the replacement verifies, CU-09.15), but CU-09.14 and CU-09.15 also require fresh two-factor authentication before the change and a notice to the old number, and nothing implements either. No web page exists to enter a number, show the masked number and countdown, send, confirm or change it (the API operations exist under `/api/v1/account/phone`); the managed copy for the screens is seeded but unused. A signed-in session alone can start a number change.
+Why deferred: step-up needs the 2FA checkpoints; the notice needs an SMS notification template and a provider (DEBT-0059); the account area is CU-09.
+Exit criteria: a step-up check before `POST /account/phone` for a verified account, an old-number notice on `PhoneVerified` with a replacement, a phone verification page and the account phone screens.
+Target checkpoint: the account security checkpoints (CU-09.13 to CU-09.15)
+
+## DEBT-0063 — Accounts have no market, so market-scoped phone policy resolves by country only
+
+Status: OPEN
+Severity: LOW
+Introduced by: ID-003
+Owner/domain: identity / geography / configuration
+Description: `verification.phone.max_accounts_per_number` and `verification.phone.blocked_line_types` may be overridden per COUNTRY and per MARKET (PRD SV-03.02), but an account has no market yet, so the policy resolves with the number's country only; a market override is stored and ignored. The default country of a national-format number is the only ACTIVE country in geography (launch: the United States), so the form cannot offer a market-specific default until the account or the sign-up context carries a market (SV-10.07).
+Why deferred: the account market (sign-up location, provider service area) belongs to onboarding and the market model, not to phone verification.
+Exit criteria: the account or the request carries a market, the phone policy resolves with it, and a test shows a market override changing the accounts-per-number and blocked types.
+Target checkpoint: the onboarding and market checkpoints
+
+## DEBT-0064 — Two phone abuse limits are engineering assumptions awaiting owner confirmation
+
+Status: OPEN
+Severity: LOW
+Introduced by: ID-003
+Owner/domain: identity / security
+Description: The six PRD code-policy values (6 digits, 10 minutes, 30 seconds, 5 per hour, 10 per day, 5 attempts) are seeded as written. `verification.phone.requests.max_per_hour` (30 requests per account, source address and device per hour) and `verification.phone.number.max_per_hour` (5 verification SMS to one number per hour across all accounts) are NOT in the PRD; they are ID-003's engineering assumptions. The PRD keys are shared across channels (`verification.code.*`); ID-003, like ID-002 (DEBT-0058), uses channel-specific keys (`verification.phone.*`) so the channels can differ. A shared number (a household or office line) can reach the per-number limit.
+Why deferred: the security owner has not reviewed the values.
+Exit criteria: the owner confirms or changes the values through a configuration change request (second approver), and decides whether the PRD keys should be shared across channels (together with DEBT-0058).
+Target checkpoint: before launch
+
+## DEBT-0065 — Phone abuse residuals found in the ID-003 review
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: ID-003
+Owner/domain: identity / security
+Description: Accepted residuals, none exploitable to take over an account but each a cost or availability risk: (1) wrong-code attempts are capped per challenge (5) and a resend resets them, with no cap per NUMBER across challenges and accounts: an attacker account gets about 25 guesses per hour against a victim's number (about 0.06% a day of a 6-digit code), and success squats the number (recovery is DEBT-0061); (2) the per-number SMS budget (5 per hour, all accounts) equals one account's own hourly cap, so one account can exhaust a victim's budget and show them `PHONE_RATE_LIMITED` for up to an hour; (3) no global or per-country daily SMS ceiling or kill switch, and the source-address bucket keys the exact address, so an IPv6 /64 rotates freely; (4) a number added while the blocked-line-type list was empty has no snapshot and is never blocked by a later tightening; (5) repeating a confirmation after the pending change was withdrawn answers an idempotent 200 `changed:false` for any code while a primary exists (documented, but a client could misread it); (6) a failed resend supersedes the previous working code (one open challenge per contact), so the user holds an SMS whose code no longer works; (7) the SMS provider call has no timeout of its own, and a process death after the challenge commit and before the SENT update leaves a usable challenge with delivery PENDING (counts toward the caps, replaced by a resend); (8) the audit and outbox writes of a wrong attempt now run in a savepoint (the counted attempt survives their failure), but the email flow of ID-002 still writes its counter, audit and event in one transaction.
+Why deferred: each needs a product or security decision (limits, support process, vendor) or touches the unchanged email flow; the production SMS provider does not exist yet (DEBT-0059) so sends are disabled in production.
+Exit criteria: a per-number attempt cap across challenges, a number budget above the per-account cap with a per-(account, number) sub-limit, a global and per-country send ceiling with a kill switch and IPv6 /64 keys, a re-lookup for numbers without a snapshot when the policy tightens, a code-bound idempotent confirm, a provider timeout and a stale-PENDING sweeper, and the same savepoint treatment for the email attempt counter.
+Target checkpoint: before the production SMS provider is enabled (DEBT-0059)

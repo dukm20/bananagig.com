@@ -69,6 +69,7 @@ The web app has no database access and no data-model impact. Needing data means 
 - User-visible copy comes from the content registry through the API only, via `getContent`, `getContentMany` and `renderContent` in `apps/web/src/lib/content.ts` (ADR-0020). When the registry cannot serve a key the helper returns `undefined` and the page omits the element; never write `?? 'literal'` for managed copy. The only static copy is `BOOTSTRAP_COPY` (wordmark, `Sign in`, `Sign out`) plus the error, not-found and loading shells. Tests use the contract-validating stub `apps/web/src/testing/content-stub.ts`, and `apps/web/src/boundaries.test.ts` scans for forbidden imports.
 - One-time tokens in links travel in the URL FRAGMENT (`/verify-email#token=...`): a fragment is never sent to a server, so it is in no access log, trace or Referer. A client component reads it, removes it with `history.replaceState`, and the page offers a button that POSTs it in a form body to a same-origin BFF handler; opening the link must never change state (mail scanners prefetch). The token is never stored (not in the login transaction, storage or a cookie): a signed-out visitor signs in and opens the link again.
 - BFF handlers that act for the signed-in user (`/auth/email/<action>`): POST only, `Origin` must equal the web origin, session required, forward the browser's address as `x-forwarded-for` (the API's IP rate limit must count real clients, not the web server), answer a 303 back to the page with `?ok=` or `?error=<API code>` and never put a submitted value in the redirect, a cookie or a log line.
+- The address a BFF handler forwards (`clientIpOf` in `apps/web/src/lib/auth/email-handlers.ts`) is the LAST `x-forwarded-for` entry, the one Caddy wrote (it REPLACES the header with `{remote_host}`), never the leftmost, which a client can set. The web server forwards exactly one value to the API, which trusts one hop (ADR-0033). No phone verification page exists yet (DEBT-0062); a future one reuses this handler pattern.
 
 ## Do not
 
@@ -81,8 +82,8 @@ The web app has no database access and no data-model impact. Needing data means 
 
 ## Related ADRs
 
-ADR-0006, ADR-0007, ADR-0014, ADR-0026
+ADR-0006, ADR-0007, ADR-0014, ADR-0026, ADR-0033
 
 ## Last reviewed
 
-2026-10-07 (ID-002)
+2026-10-08 (ID-003)

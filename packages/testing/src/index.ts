@@ -96,4 +96,5 @@ export async function dropStaleTestDatabases(): Promise<string[]> {
 
 export * from './helpers';
 export * from './mailpit';
+export * from './sms';
 export const migrationsDir = (): string => MIGRATIONS_DIR;

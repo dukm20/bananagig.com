@@ -244,9 +244,16 @@ describe('migration 0006 seeded shell copy', () => {
     );
     expect(rows.every((r) => r.content_type !== 'LEGAL' && r.owner_role === 'CONTENT')).toBe(true);
     expect(rows.some((r) => /price|fee|legal|terms|privacy|commission|marketplace/i.test(r.key))).toBe(false);
-    // migration 0006 seeds no product configuration (migration 0010 seeds the verification.email.* parameters, which are tested in email-model.itest.ts)
+    // migration 0006 seeds no product configuration (migrations 0010 and 0011 seed the verification.email.* and verification.phone.* parameters, which are
+    // tested in email-model.itest.ts and phone-model.itest.ts)
     expect(
-      Number((await iso.database.query<{ n: string }>("SELECT count(*) AS n FROM configuration.parameters WHERE key NOT LIKE 'verification.email.%'"))[0]!.n),
+      Number(
+        (
+          await iso.database.query<{ n: string }>(
+            "SELECT count(*) AS n FROM configuration.parameters WHERE key NOT LIKE 'verification.email.%' AND key NOT LIKE 'verification.phone.%'",
+          )
+        )[0]!.n,
+      ),
     ).toBe(0);
   });
 });

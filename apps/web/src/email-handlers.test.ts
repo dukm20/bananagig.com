@@ -210,29 +210,33 @@ describe('EMAIL_ACTIONS and isEmailAction', () => {
 describe('clientIpOf', () => {
   const ip = (value: string | null): string | undefined =>
     clientIpOf(new Request('http://web-app:3000/', value === null ? {} : { headers: { 'x-forwarded-for': value } }));
-  it('is the first entry of the list, trimmed', () => {
+  it('is the LAST entry of the list (the one the trusted proxy wrote), trimmed', () => {
     expect(ip('203.0.113.7')).toBe('203.0.113.7');
-    expect(ip('203.0.113.7, 10.0.0.1, 10.0.0.2')).toBe('203.0.113.7');
-    expect(ip('  203.0.113.7  ,10.0.0.1')).toBe('203.0.113.7');
-    expect(ip('203.0.113.7,10.0.0.1')).toBe('203.0.113.7');
+    expect(ip('10.0.0.1, 10.0.0.2, 203.0.113.7')).toBe('203.0.113.7');
+    expect(ip('10.0.0.1  ,  203.0.113.7  ')).toBe('203.0.113.7');
+    expect(ip('10.0.0.1,203.0.113.7')).toBe('203.0.113.7');
+  });
+  it('never takes a client-chosen first entry (DEBT-0055): a spoofed leading entry is ignored', () => {
+    expect(ip('198.51.100.99, 203.0.113.7')).toBe('203.0.113.7');
+    expect(ip('198.51.100.99, 198.51.100.98, 203.0.113.7')).toBe('203.0.113.7');
   });
   it('keeps IPv6 addresses whole (colons are not separators)', () => {
     expect(ip('2001:db8::1')).toBe('2001:db8::1');
-    expect(ip('2001:db8:85a3::8a2e:370:7334, 10.0.0.1')).toBe('2001:db8:85a3::8a2e:370:7334');
+    expect(ip('10.0.0.1, 2001:db8:85a3::8a2e:370:7334')).toBe('2001:db8:85a3::8a2e:370:7334');
     expect(ip('::ffff:203.0.113.7')).toBe('::ffff:203.0.113.7');
   });
-  it('is undefined without the header and for an empty or blank first entry (a later entry is never promoted)', () => {
+  it('is undefined without the header and for an empty or blank last entry (an earlier entry is never promoted)', () => {
     expect(ip(null)).toBeUndefined();
     expect(ip('')).toBeUndefined();
     expect(ip('   ')).toBeUndefined();
-    expect(ip(',10.0.0.1')).toBeUndefined();
-    expect(ip(' , 10.0.0.1')).toBeUndefined();
+    expect(ip('10.0.0.1,')).toBeUndefined();
+    expect(ip('10.0.0.1 , ')).toBeUndefined();
   });
-  it('ignores an entry of more than 64 characters (and does not fall back to a later one)', () => {
+  it('ignores a last entry of more than 64 characters (and does not fall back to an earlier one)', () => {
     expect(ip('a'.repeat(64))).toBe('a'.repeat(64));
     expect(ip('a'.repeat(65))).toBeUndefined();
-    expect(ip(`${'a'.repeat(65)}, 203.0.113.7`)).toBeUndefined();
-    expect(ip(`  ${'a'.repeat(64)}  , 203.0.113.7`)).toBe('a'.repeat(64)); // the limit applies to the trimmed entry
+    expect(ip(`203.0.113.7, ${'a'.repeat(65)}`)).toBeUndefined();
+    expect(ip(`203.0.113.7  ,  ${'a'.repeat(64)}  `)).toBe('a'.repeat(64)); // the limit applies to the trimmed entry
   });
 });
 
@@ -370,7 +374,7 @@ describe('POST /auth/email/<action> (handleEmailAction): the actions', () => {
   it('set: stores the address and THEN sends the verification email, with the same options, and redirects to ?ok=sent', async () => {
     const h = harness();
     seed(h, { activeRole: 'PROVIDER' });
-    const res = await handleEmailAction(post('set', { email: EMAIL_MARKER }, { headers: { 'x-forwarded-for': '203.0.113.7, 10.0.0.1' } }), h.deps, 'set');
+    const res = await handleEmailAction(post('set', { email: EMAIL_MARKER }, { headers: { 'x-forwarded-for': '10.0.0.1, 203.0.113.7' } }), h.deps, 'set');
     expectRedirect(res, '?ok=sent');
     expect(h.order).toEqual(['set', 'send']);
     const opts = { activeRole: 'PROVIDER', clientIp: '203.0.113.7' };
@@ -497,14 +501,14 @@ describe('POST /auth/email/<action> (handleEmailAction): the actions', () => {
     expect(JSON.stringify([h.fns.sendEmailVerification.mock.calls, h.apiTokens])).not.toMatch(/refresh|tok-id/);
   });
 
-  it('carries the session active role and the first x-forwarded-for entry in the options of every call', async () => {
+  it('carries the session active role and the last x-forwarded-for entry in the options of every call', async () => {
     const forwarded: [string | null, string | undefined][] = [
       ['203.0.113.7', '203.0.113.7'],
-      [' 203.0.113.7 , 10.0.0.1 ', '203.0.113.7'],
-      ['2001:db8::7, 192.0.2.1', '2001:db8::7'],
+      [' 10.0.0.1 , 203.0.113.7 ', '203.0.113.7'],
+      ['192.0.2.1, 2001:db8::7', '2001:db8::7'],
       [null, undefined],
       ['', undefined],
-      [`${'z'.repeat(65)}, 203.0.113.7`, undefined],
+      [`203.0.113.7, ${'z'.repeat(65)}`, undefined],
     ];
     for (const action of EMAIL_ACTIONS)
       for (const activeRole of ['PROVIDER', undefined])

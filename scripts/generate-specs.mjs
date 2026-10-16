@@ -11,6 +11,12 @@ import {
   AccountStatusChangedPayload,
   ExternalIdentityLinkedPayload,
   EMAIL_EVENTS,
+  PHONE_EVENTS,
+  PhoneChangeRequestedPayload,
+  PhoneContactAddedPayload,
+  PhoneVerificationFailedPayload,
+  PhoneVerificationSentPayload,
+  PhoneVerifiedPayload,
   EmailChangeRequestedPayload,
   EmailContactAddedPayload,
   EmailVerificationFailedPayload,
@@ -186,6 +192,38 @@ const EMAIL_MESSAGES = {
     'identity_account',
   ],
 };
+const PHONE_MESSAGES = {
+  contactAdded: [
+    'IdentityPhoneContactAdded',
+    'A phone number was added to an account as a pending first number or as a pending replacement of the verified primary.',
+    PhoneContactAddedPayload,
+    'identity_account',
+  ],
+  verificationSent: [
+    'IdentityPhoneVerificationSent',
+    'A verification SMS (one-time code) was accepted by the SMS sender for a pending number.',
+    PhoneVerificationSentPayload,
+    'identity_account',
+  ],
+  verified: [
+    'IdentityPhoneVerified',
+    'A phone number became the verified primary number of an account by code; replacedPhoneContactId names the primary it replaced.',
+    PhoneVerifiedPayload,
+    'identity_account',
+  ],
+  verificationFailed: [
+    'IdentityPhoneVerificationFailed',
+    'A wrong phone verification code was submitted; locked is true when that attempt used the last allowed one.',
+    PhoneVerificationFailedPayload,
+    'identity_account',
+  ],
+  changeRequested: [
+    'IdentityPhoneChangeRequested',
+    'A replacement for the verified primary number was requested; the old number stays active until the new one verifies.',
+    PhoneChangeRequestedPayload,
+    'identity_account',
+  ],
+};
 const channels = {
   infraPing: {
     address: INFRA_PING_EVENT_TYPE,
@@ -283,13 +321,29 @@ for (const [k, [name, summary, payload, aggregate]] of Object.entries(EMAIL_MESS
   };
   schemas[name] = typedEnvelope(type, payload);
 }
+for (const [k, [name, summary, payload, aggregate]] of Object.entries(PHONE_MESSAGES)) {
+  const type = PHONE_EVENTS[k];
+  channels[`identity_phone_${k}`] = {
+    address: type,
+    description: `${summary} Published through the transactional outbox (aggregate ${aggregate}); the payload carries identifiers only, never a phone number, a verification code or a hash.`,
+    messages: { [name]: { $ref: `#/components/messages/${name}` } },
+  };
+  operations[`send${name}`] = { action: 'send', channel: { $ref: `#/channels/identity_phone_${k}` }, summary };
+  messages[name] = {
+    name,
+    title: summary,
+    headers: { type: 'object', properties: { 'x-correlation-id': { type: 'string' } } },
+    payload: { $ref: `#/components/schemas/${name}` },
+  };
+  schemas[name] = typedEnvelope(type, payload);
+}
 const asyncapi = {
   asyncapi: '3.0.0',
   info: {
     title: 'BananaGig Events',
     version: '1.0.0',
     description:
-      'Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events, the identity account events and the email verification events exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.',
+      'Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events, the identity account events, the email verification events and the phone verification events exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.',
   },
   defaultContentType: 'application/json',
   channels,

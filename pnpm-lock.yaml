@@ -302,6 +302,12 @@ importers:
       '@bananagig/identity':
         specifier: workspace:*
         version: link:../../packages/identity
+      '@bananagig/testing':
+        specifier: workspace:*
+        version: link:../../packages/testing
+      iovalkey:
+        specifier: ^0.4.0
+        version: 0.4.0(supports-color@8.1.1)
 
   apps/web:
     dependencies:
@@ -391,6 +397,9 @@ importers:
       '@bananagig/platform':
         specifier: workspace:*
         version: link:../platform
+      libphonenumber-js:
+        specifier: 1.13.14
+        version: 1.13.14
     devDependencies:
       '@bananagig/testing':
         specifier: workspace:*
@@ -580,6 +589,9 @@ importers:
       '@bananagig/database':
         specifier: workspace:*
         version: link:../database
+      iovalkey:
+        specifier: ^0.4.0
+        version: 0.4.0(supports-color@8.1.1)
       pg:
         specifier: ^8.23.1
         version: 8.23.1
@@ -4934,6 +4946,9 @@ packages:
   levn@0.4.1:
     resolution: {integrity: sha512-+bT2uH4E5LGE7h/n3evcS/sQlJXCpIp6ym8OWJ5eV6+67Dsql/LaaT7qJBAt2rzfoa/5QBGBhxDix1dMt2kQKQ==}
     engines: {node: '>= 0.8.0'}
+
+  libphonenumber-js@1.13.14:
+    resolution: {integrity: sha512-llihgCcx0BFLksecLP+x1J+6JDE1GsXS1RN/LoPF6qcwpeQcnjj0lcvZxY8AzbEpYwyZWPZW/nDuqkqzm3amiw==}
 
   light-my-request@6.6.0:
     resolution: {integrity: sha512-CHYbu8RtboSIoVsHZ6Ye4cj4Aw/yg2oAFimlF7mNvfDV192LR7nDiKtSIfCuLT7KokPSTn/9kfVLm5OGN0A28A==}
@@ -12327,6 +12342,8 @@ snapshots:
     dependencies:
       prelude-ls: 1.2.1
       type-check: 0.4.0
+
+  libphonenumber-js@1.13.14: {}
 
   light-my-request@6.6.0:
     dependencies:

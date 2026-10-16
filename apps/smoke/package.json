@@ -12,6 +12,8 @@
     "@bananagig/accounts": "workspace:*",
     "@bananagig/contracts": "workspace:*",
     "@bananagig/database": "workspace:*",
-    "@bananagig/identity": "workspace:*"
+    "@bananagig/identity": "workspace:*",
+    "@bananagig/testing": "workspace:*",
+    "iovalkey": "^0.4.0"
   }
 }

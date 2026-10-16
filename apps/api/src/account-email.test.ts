@@ -91,6 +91,8 @@ const makeContext = (over: Partial<AccountContext> = {}): AccountContext => ({
   activeRole: 'CUSTOMER',
   profile: null,
   email: NONE_SUMMARY,
+  phone: { phoneVerificationStatus: 'NONE', primary: null, pending: null },
+  contacts: { emailVerified: false, phoneVerified: false, contactsVerified: false },
   createdAt: T0,
   created: false,
   ...over,
@@ -424,11 +426,11 @@ describe('email API: the account and the client address', () => {
     expect(keysOf(ctx)).toEqual(['clientIp']);
   });
 
-  it('uses the connection address when there is no forwarding header, and the client end of a forwarding chain', async () => {
+  it('uses the connection address when there is no forwarding header, and the entry the trusted proxy wrote (the last) of a forwarding chain (DEBT-0055)', async () => {
     await call('POST', '/email/verification/confirm-code', await webToken(), { code: CODE });
     expect(emailSvc.confirmCode.mock.calls[0]![2]).toEqual({ clientIp: '127.0.0.1' });
     await call('POST', '/email/verification/confirm-code', await webToken(), { code: CODE }, { 'x-forwarded-for': '203.0.113.9, 10.0.0.1' });
-    expect(emailSvc.confirmCode.mock.calls[1]![2]).toEqual({ clientIp: '203.0.113.9' });
+    expect(emailSvc.confirmCode.mock.calls[1]![2]).toEqual({ clientIp: '10.0.0.1' });
   });
 
   it('never takes the client address from the body or a query parameter', async () => {
@@ -1152,9 +1154,9 @@ describe('email routes are registered only when the email service is provided', 
 
 // ====================================================================== GET /account/me
 describe('GET /account/me carries the email state, masked', () => {
-  const ACCOUNT_KEYS = ['accountId', 'activeRole', 'createdAt', 'email', 'primaryRole', 'profile', 'roles', 'status'];
+  const ACCOUNT_KEYS = ['accountId', 'activeRole', 'contacts', 'createdAt', 'email', 'phone', 'primaryRole', 'profile', 'roles', 'status'];
 
-  it('adds exactly one new key, `email`, taken from the account context; the email service is not consulted', async () => {
+  it('carries the `email` key (with the phone keys of ID-003), taken from the account context; the email service is not consulted', async () => {
     const res = await call('GET', '/me', await webToken());
     expect(res.statusCode, res.body).toBe(200);
     const data = (res.json() as { data: Record<string, unknown> }).data;

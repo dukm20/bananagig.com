@@ -131,8 +131,20 @@ Parameters seeded by migrations (through the real change workflow, so they look 
 | `verification.email.max_attempts` | INTEGER (1 to 20) | 5 | same | security | ID-002 (PRD SV-03.01) |
 | `verification.email.requests.max_per_hour` | INTEGER (1 to 1000) | 30 | same | security | ID-002 (engineering assumption, DEBT-0058) |
 | `verification.email.address.max_per_hour` | INTEGER (1 to 100) | 5 | same | security | ID-002 (engineering assumption, DEBT-0058) |
+| `verification.phone.code.length` | INTEGER (4 to 10) | 6 | `SECOND_APPROVER`, CRITICAL, PLATFORM only | security | ID-003 (PRD SV-03.01) |
+| `verification.phone.validity_minutes` | INTEGER (1 to 120) | 10 | same | security | ID-003 (PRD SV-03.01) |
+| `verification.phone.resend_seconds` | INTEGER (0 to 3600) | 30 | same | security | ID-003 (PRD SV-03.01) |
+| `verification.phone.max_per_hour` | INTEGER (1 to 100) | 5 | same | security | ID-003 (PRD SV-03.01) |
+| `verification.phone.max_per_day` | INTEGER (1 to 1000) | 10 | same | security | ID-003 (PRD CU-03.06 reference table) |
+| `verification.phone.max_attempts` | INTEGER (1 to 20) | 5 | same | security | ID-003 (PRD SV-03.01) |
+| `verification.phone.max_accounts_per_number` | INTEGER (1 to 5) | 1 | `SECOND_APPROVER`, CRITICAL, PLATFORM + COUNTRY + MARKET | trust | ID-003 (PRD SV-03.02) |
+| `verification.phone.blocked_line_types` | JSON (array of `LANDLINE`, `VOIP`, `VIRTUAL`, `UNKNOWN`, `HIGH_RISK`; unique, at most 5) | `["VIRTUAL","HIGH_RISK"]` | `SECOND_APPROVER`, CRITICAL, PLATFORM + COUNTRY + MARKET | trust | ID-003 (PRD SV-03.02) |
+| `verification.phone.requests.max_per_hour` | INTEGER (1 to 1000) | 30 | `SECOND_APPROVER`, CRITICAL, PLATFORM only | security | ID-003 (engineering assumption, DEBT-0064) |
+| `verification.phone.number.max_per_hour` | INTEGER (1 to 100) | 5 | same | security | ID-003 (engineering assumption, DEBT-0064) |
 
 CRITICAL parameters are never cached and never served from last-known-good; their consumers fail closed when the registry cannot answer. The consumer (`createVerificationPolicyProvider`) validates every value again with its own bounds.
+
+Two phone parameters are policy, not limits, and permit COUNTRY and MARKET overrides: `verification.phone.max_accounts_per_number` and `verification.phone.blocked_line_types`. The phone policy provider (`createPhonePolicyProvider`, `apps/api/src/modules/account/phone-wiring.ts`) resolves all ten with the context `{ country }` set to the country of the NUMBER being verified (the country the numbering library resolves from the number), so a COUNTRY override beats the PLATFORM value. It does not pass a market: accounts have no market yet, so a MARKET override takes effect only once they do (DEBT-0063). `verification.phone.blocked_line_types` has the data type JSON: its value is an array validated by the JSON schema in the definition, and an empty array means no line-type lookup is made. See `docs/engineering/PHONE_VERIFICATION.md`.
 
 ## Using it from a domain
 

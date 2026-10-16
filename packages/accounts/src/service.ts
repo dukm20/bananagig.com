@@ -20,10 +20,13 @@ import {
   validateProfileName,
   type AccountCreatedPayload,
   type AccountEmailSummaryDto,
+  type AccountPhoneSummaryDto,
+  type ContactsVerificationDto,
   type AccountProfileDto,
   type AccountRolePayload,
   type AccountStatus,
   type AccountStatusChangedPayload,
+  deriveContactsVerification,
   type ExternalIdentityLinkedPayload,
   type RoleGrantSource,
 } from '@bananagig/contracts';
@@ -32,6 +35,7 @@ import { getCorrelationId, log } from '@bananagig/observability';
 import { insertOutboxEvent } from '@bananagig/platform';
 import { AccountError, isDatabaseOutage } from './errors';
 import { loadEmailSummary } from './email-state';
+import { loadPhoneSummary } from './phone-state';
 import { bootstrapRoleCodes, parseVerifiedIdentity, resolveActiveRole, type MembershipView, type VerifiedIdentity } from './identity';
 
 type Row = Record<string, unknown>;
@@ -60,6 +64,10 @@ export interface AccountContext {
   profile: AccountProfileDto | null;
   /** The email contact state (ID-002): the verification status application services read, with the address MASKED. */
   email: AccountEmailSummaryDto;
+  /** The phone contact state (ID-003): the verification status application services read, with the number MASKED. */
+  phone: AccountPhoneSummaryDto;
+  /** Whether the email and the phone are verified, DERIVED from the two summaries (nothing is stored). */
+  contacts: ContactsVerificationDto;
   createdAt: Date;
   /** True only for the call that created the account. */
   created: boolean;
@@ -117,6 +125,19 @@ function guardError(rule: string | undefined): AccountError {
     case 'CHALLENGE_ATTEMPTS':
     case 'CHALLENGE_DELIVERY':
     case 'CHALLENGE_CONSUMPTION':
+    case 'PHONE_INITIAL_WITH_PRIMARY':
+    case 'PHONE_REPLACEMENT_WITHOUT_PRIMARY':
+    case 'PHONE_PRIMARY_NOT_REPLACEABLE':
+    case 'PHONE_PRIMARY_CHANGE':
+    case 'PHONE_STATUS_TRANSITION':
+    case 'PHONE_INVARIANT':
+    case 'PHONE_CHALLENGE_NOT_OPEN':
+    case 'PHONE_CHALLENGE_PURPOSE':
+    case 'PHONE_CHALLENGE_STATE':
+    case 'PHONE_CHALLENGE_CLOSED':
+    case 'PHONE_CHALLENGE_ATTEMPTS':
+    case 'PHONE_CHALLENGE_DELIVERY':
+    case 'PHONE_CHALLENGE_CONSUMPTION':
     case 'ACCOUNT_STATUS_TRANSITION':
     case 'ACCOUNT_HAS_ACTIVE_ROLES':
     case 'ROLE_IN_USE':
@@ -151,10 +172,17 @@ export function mapDbError(err: unknown): never {
     (e.constraint === 'uq_email_contacts__primary_per_account' ||
       e.constraint === 'uq_email_contacts__open_per_account' ||
       e.constraint === 'uq_email_contacts__live_address_per_account' ||
-      e.constraint === 'uq_email_verification_challenges__open_per_contact')
+      e.constraint === 'uq_email_verification_challenges__open_per_contact' ||
+      e.constraint === 'uq_phone_contacts__primary_per_account' ||
+      e.constraint === 'uq_phone_contacts__open_per_account' ||
+      e.constraint === 'uq_phone_contacts__live_number_per_account' ||
+      e.constraint === 'uq_phone_verification_challenges__open_per_contact')
   )
     throw new AccountError('CONFLICT', 'the change conflicted with a concurrent update; repeat the request', { reason: 'CONCURRENT_UPDATE', retryable: true });
   if (e.code === '23505') throw new AccountError('CONFLICT', 'a record with this identity already exists', { reason: 'DUPLICATE', constraint: e.constraint });
+  // the number is already verified on the maximum number of accounts: whoever reaches this point proved control of the phone, so the typed answer is allowed
+  if (e.code === '23000' && ruleOf(e.detail) === 'PHONE_NUMBER_CAP')
+    throw new AccountError('PHONE_UNAVAILABLE', 'this phone number cannot be verified for this account', { reason: 'NUMBER_UNAVAILABLE' });
   if (e.code === '23000') throw guardError(ruleOf(e.detail));
   if (e.code === '23514') throw new AccountError('VALIDATION_FAILED', 'the value violates an account constraint', { constraint: e.constraint });
   if (e.code === '23503') throw new AccountError('VALIDATION_FAILED', 'a referenced record does not exist', { constraint: e.constraint });
@@ -236,6 +264,7 @@ export class AccountService {
         };
     }
     const email = await loadEmailSummary(ex, accountId);
+    const phone = await loadPhoneSummary(ex, accountId);
     return {
       accountId,
       status,
@@ -245,6 +274,8 @@ export class AccountService {
       activeRole,
       profile,
       email,
+      phone,
+      contacts: deriveContactsVerification(email.emailVerificationStatus, phone.phoneVerificationStatus),
       createdAt: a.created_at as Date,
       created: opts.created === true,
     };

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Work with BananaGig authentication and authorization: the Keycloak realm, token validation in the API, the web session, test identities, and the application account (account, external identity link, application roles, active role, core profile, email contact and its verification) that a verified identity maps to.
+Work with BananaGig authentication and authorization: the Keycloak realm, token validation in the API, the web session, test identities, and the application account (account, external identity link, application roles, active role, core profile, email and phone contacts and their verification) that a verified identity maps to.
 
 ## When to use
 
@@ -12,6 +12,7 @@ Work with BananaGig authentication and authorization: the Keycloak realm, token 
 - Writing tests that need a signed-in user.
 - Anything that reads or changes the application account: bootstrap, roles and memberships, the active role, the status machine, the core profile.
 - Anything that reads or changes the email contact or its verification: adding or changing the address, the code and magic link, resend and attempt limits, the trusted-identity-provider rule, the email events and audit, the verification screen.
+- Anything that reads or changes the phone contact or its verification: adding or changing the number, E.164 canonicalization and the country, the SMS code, resend and attempt limits, the accounts-per-number and line-type policy, the SMS and phone-intelligence adapters, the phone events and audit, the derived `contacts` summary, the trusted-proxy hop count behind the source-address limit.
 
 ## Canonical files
 
@@ -22,6 +23,7 @@ Work with BananaGig authentication and authorization: the Keycloak realm, token 
 - `infra/caddy/Caddyfile`, `docs/engineering/IDENTITY.md`
 - Application account (ID-001): `db/migrations/0009_identity_accounts.sql`, `packages/contracts/src/account.ts`, `packages/accounts/src/service.ts`, `packages/accounts/src/identity.ts`, `packages/accounts/src/errors.ts`, `apps/api/src/plugins/account.ts`, `apps/api/src/plugins/strict-body.ts`, `apps/api/src/modules/account/routes.ts`, `docs/engineering/ACCOUNTS.md`
 - Email contact and verification (ID-002): `db/migrations/0010_email_verification.sql`, `packages/contracts/src/email.ts`, `packages/accounts/src/{email-crypto,email-policy,email-state,email-verification}.ts`, `packages/platform/src/{email,rate-limit}.ts`, `apps/api/src/modules/account/{email-routes,email-wiring}.ts`, `apps/web/src/lib/auth/email-handlers.ts`, `apps/web/src/app/verify-email/`, `packages/testing/src/mailpit.ts`, `docs/engineering/EMAIL_VERIFICATION.md`, `docs/engineering/RATE_LIMITING.md`
+- Phone contact and verification (ID-003): `db/migrations/0011_phone_verification.sql`, `packages/contracts/src/phone.ts`, `packages/accounts/src/{phone,phone-policy,phone-state,phone-crypto,phone-verification,verification-crypto,verification-core}.ts`, `packages/platform/src/{sms,phone-intelligence}.ts`, `packages/testing/src/sms.ts`, `apps/api/src/modules/account/{phone-routes,phone-wiring}.ts`, `apps/api/src/app.ts` (`trustHops`), `infra/caddy/Caddyfile`, `docs/engineering/PHONE_VERIFICATION.md`
 
 ## Architecture rules
 
@@ -43,6 +45,15 @@ Work with BananaGig authentication and authorization: the Keycloak realm, token 
 - Sending is two-phase: commit the challenge, deliver through the `EmailSender` port OUTSIDE any transaction, then record the outcome; a failed delivery invalidates its challenge (`DELIVERY_FAILED`) and does not start the cooldown. The identity service never touches SMTP or a template engine: the composition root supplies the sender and the content-registry renderer.
 - Limits are CFG-001 parameters (`verification.email.*`, CRITICAL, read fresh, fail closed when unavailable). The cooldown, hourly and daily caps and the attempt maximum are counted in PostgreSQL per ACCOUNT; the reusable Valkey limiter (ADR-0029) adds source address, target address and device. It fails CLOSED for operations that send mail and open only for confirmation. A refusal never names the dimension.
 - Change email: the new address is `REPLACEMENT_PENDING`; the verified primary stays VERIFIED and primary until the candidate verifies, then the old one is `DISABLED/REPLACED` in the same transaction. Setting the primary again withdraws a pending change; a different address supersedes the pending one. Step-up authentication, the notice to the old address and the screens are later (DEBT-0050).
+- Phone ownership (ADR-0031): BananaGig owns the phone contact (`identity.phone_contacts`); Keycloak is NOT a phone store (no phone claim, never written to Keycloak, a token, an event or a log). A number is VERIFIED only by the SMS code: there is no trusted-provider shortcut and a contact is never created VERIFIED (`source` has the single value `USER_ENTERED`). The lifecycle is the email one (`PENDING`, `REPLACEMENT_PENDING`, `VERIFIED`, `DISABLED`); the verified primary stays active until its replacement verifies.
+- ONE canonical form (`canonicalizePhone` in `packages/accounts/src/phone.ts`): E.164 produced over libphonenumber-js (pinned, `min` metadata). Never write a custom dialing rule or a hardcoded calling code. Input is NFKC-normalized and restricted to digits and punctuation (letters and extensions are refused); the number must be VALID for its numbering plan; the ISO country is resolved FROM THE NUMBER (a +1 416 number is CA), never from the hint; an international number ignores the hint. A national number needs the caller's country or the only ACTIVE country in geography. Then geography decides availability: the country must be ACTIVE and its configured dialing code must equal the number's calling code. No second form (national, formatted) is stored. The number leaves the server only as `maskPhone` (`+*******0142`), to its owner.
+- Delivery and intelligence are ports (ADR-0032). `SmsSender` (`RenderingSmsSender` renders `sms.verification.phone.body` from the content registry, then hands the text to an `SmsTransport`). Adapters: `ValkeyFakeSmsTransport` (`SMS_TRANSPORT=fake`, DEV/TEST only, holds the plaintext code in a Valkey list with a 15-minute TTL, refused in production, read by `FakeSmsInbox`) and `DisabledSmsTransport` (the production default; every send fails as non-retryable `ACCOUNT_PHONE_DELIVERY_FAILED`). `PhoneIntelligence` classifies a number: `FakePhoneIntelligence` (DEV/TEST) picks the line type from the last three digits (901 VOIP, 902 VIRTUAL, 903 LANDLINE, 904 HIGH_RISK, 905 the lookup fails, otherwise MOBILE); `UnknownPhoneIntelligence` (production default) returns UNKNOWN. The lookup fails CLOSED: an error or more than five seconds is `PHONE_RISK_UNAVAILABLE` and nothing is stored or sent.
+- SMS challenge (ADR-0030): the hardened email challenge WITHOUT a magic link. One challenge per send; the code (`verification.phone.code.length` CSPRNG digits) is shown once in the SMS; only an HMAC-SHA-256 bound to the challenge id and keyed with `VERIFICATION_HASH_SECRET` is stored, in its own hash domain `bananagig:phone-code:v1` (a hash can never verify in the other channel); the primitives shared with email are `verification-crypto.ts` and `verification-core.ts`, everything else is per channel. A code of an earlier SMS (superseded by a resend) is answered "used or replaced" and costs no attempt. Lock order: account row, the account's phone contacts, the challenge row, then the advisory lock of the number.
+- Phone limits differ from email: besides the PostgreSQL cooldown, hour, day and attempt counts per ACCOUNT, Valkey counts requests per account, source address and device (`requests.max_per_hour`) AND SMS to one NUMBER across all accounts (`number.max_per_hour`; the key is an HMAC of the E.164, never the raw number), because an SMS costs money and pumping targets a number. Setting the number and sending fail CLOSED when the limiter is unreachable; confirmation fails open. A send refused by the cooldown or a cap is detected BEFORE the limiter is consumed, so a refused request never spends the per-number budget. A refusal never names the dimension.
+- Accounts per number is DATA, not an index (ADR-0031): `verification.phone.max_accounts_per_number` (default 1, overridable per COUNTRY and MARKET). Pending duplicates are always allowed and never counted. At the correct code the service takes `pg_advisory_xact_lock` on the number, counts the OTHER accounts holding it VERIFIED and refuses with `409 ACCOUNT_PHONE_UNAVAILABLE` only AFTER a correct code (before that, add and send answer identically whatever any other account holds: no enumeration, no takeover; recovery is a support process, DEBT-0061). It passes the value in the transaction setting `app.phone_max_accounts`, and the guard trigger takes the same lock and enforces it, with a structural ceiling of 5, so raw SQL cannot exceed it.
+- Line-type policy (`verification.phone.blocked_line_types`, default `["VIRTUAL","HIGH_RISK"]`, MOBILE never blockable): read for the number's country; when the list is not empty the number is classified BEFORE anything is stored or sent (`PHONE_NOT_ACCEPTED` carries no line type). The result is stored on the contact as a snapshot (`line_type`, `line_type_checked_at`) and re-applied at send and confirm without calling the vendor again, so tightening the policy affects pending numbers. An empty list means no lookup at all.
+- Privacy: no code, hash or full number in a log line, an audit `changes` object, an event, an error or a response (only the masked number, ids, statuses, country, line type and attempt numbers); the fake sink is the only place a plaintext code exists and it is DEV/TEST only. `GET /account/me` carries `phone` (masked) and `contacts` (`emailVerified`, `phoneVerified`, `contactsVerified`), DERIVED at read time by `deriveContactsVerification` from the two statuses; there is no `contacts_verified` column, so it cannot drift. ID-003 stores and exposes state and gates nothing (booking and provider onboarding gates will read the summary).
+- Source address (ADR-0033, DEBT-0055): `request.ip` is the address that exactly `TRUSTED_PROXY_HOPS` proxies away from the socket (Fastify `trustProxy` is the function `trustHops`: `hop < hops`), so with 1 hop it is the LAST `X-Forwarded-For` entry, with 0 the socket; the client-chosen leftmost entry is never read. Caddy REPLACES the header (`header_up X-Forwarded-For {remote_host}`), the web server forwards one value (`clientIpOf` takes the last entry) and the API is reachable only through the proxy. Production must set `TRUSTED_PROXY_HOPS` explicitly (configuration requires it for the API role there); outside production it defaults to 1.
 
 ## Implementation pattern
 
@@ -52,6 +63,7 @@ Work with BananaGig authentication and authorization: the Keycloak realm, token 
 4. Need a signed-in user in a test: forged tokens (`createTestKeys`, `signToken`) for unit tests; `authorizationCodeLogin` (real PKCE) or `devAccessToken` for integration tests.
 5. Protect a route that needs the account: `preValidation: [requireAccount({ includeProfile? }), strictBody(Schema)]`, read `request.account` (`activeRole`, `roles`, `status`), never `request.principal.realmRoles`, and never accept an account id or role from the client. A role is granted only by `AccountService.grantRole` from server code; there is no grant endpoint.
 6. Email operation: take the account from `requireAccount()`, validate the body with `strictBody(Schema)` (a code or token is never coerced), call `EmailVerificationService` with `{ clientIp: request.ip }`, map `AccountError` through `toAppError` (429s carry `Retry-After`), answer `no-store`. A new email error code goes into `EMAIL_ERROR_CODES`, `toAppError`, the content seed (`account.email.error.<code>`) and the error-mapping table test.
+7. Phone operation (`apps/api/src/modules/account/phone-routes.ts`): same shape as 6 with `PhoneVerificationService` and `{ clientIp: request.ip }`; a new phone error code goes into `PHONE_ERROR_CODES`, `toAppError`, the content seed (`account.phone.error.<code>`) and the error-mapping table test. A new SMS goes through `RenderingSmsSender` and a managed `sms.*` entry, never a string in code. A new vendor is one `SmsTransport` class (or one `PhoneIntelligence` class) plus the `SMS_TRANSPORT` / `PHONE_INTELLIGENCE` value; the policy that blocks line types stays configuration.
 
 ## Commands
 
@@ -65,6 +77,7 @@ pnpm smoke                                   # includes PKCE login, API auth, we
 ```
 pnpm --filter @bananagig/platform test           # email adapter and rate limiter units; rate-limit.itest.ts needs Valkey (pnpm dev:deps)
 # email integration tests read the delivered message from Mailpit (devtools profile): packages/testing/src/mailpit.ts
+# phone integration tests and the smoke test read the SMS from the Valkey fake sink (SMS_TRANSPORT=fake, Valkey from pnpm dev:deps): packages/testing/src/sms.ts
 
 ## Testing requirements
 
@@ -73,10 +86,11 @@ pnpm --filter @bananagig/platform test           # email adapter and rate limite
 - Web: PKCE verifier matches the challenge, state/nonce/replay checks, cookie attributes, CSRF-safe logout, no browser storage in source.
 - Account: first-request bootstrap with real tokens, N parallel first requests give exactly one account (repeat the run), idempotent grants, active role not held or not active, suspended and closed accounts, admin context refused, strict bodies (coerced-body regression table), status history at commit (transient status, stray row, `from_status` gap), closure audit rows and events, and privacy by log capture (no token, subject or name in the output).
 - Email: canonicalization tables, masking, strict request validation (no coercion), crypto (CSPRNG, keyed hashes, constant-time compare), the trusted-provider table, expiry through crafted rows (never sleeps), single use, the attempt race (concurrent wrong codes never exceed the maximum), code versus link racing, resend racing verify, replacement races, duplicate verified across accounts (including the race), cooldown and hour/day caps with a fake policy, limiter fail-closed versus fail-open, delivery failure, audit/outbox/log scans for the plaintext code, token, hashes and the full address, Mailpit receiving the real message, and the smoke scenario.
+- Phone: canonicalization tables (international and national forms, shared calling codes, extensions and letters refused, idempotence), masking, strict request validation, policy parsing, the shared primitives (with pinned email hash values so the refactor is provably neutral), the SMS and intelligence adapters, the same challenge races as email (attempts never exceed the maximum, resend racing verify), the number cap under concurrency (N parallel verifications of one number end at exactly the cap, with the trigger as the second line), line-type refusals through the fake classifier suffixes, limiter fail-closed on set/send and fail-open on confirm, a refused send not spending the per-number budget, privacy scans (no code, hash or full number in rows, logs, events or responses; the fake sink as the only plaintext), the proxy-trust semantics for 0, 1 and 2 hops, a static test of the Caddyfile, and the smoke scenario (real tokens, fake sink, a spoofed header through Caddy creating no bucket, no number or code in Loki).
 
 ## Data-model considerations
 
-Schema `identity` (migrations 0009 and 0010, nine tables) holds the application account and the email contact; see `docs/engineering/ACCOUNTS.md` and ADR-0025 and ADR-0026. Any change goes through the Data Model Review Gate (database skill). There is no users table and nothing of Keycloak (credentials, tokens, sessions) is stored; contact data is ID-002 and ID-003, address ownership is not modelled.
+Schema `identity` (migrations 0009, 0010 and 0011, eleven tables) holds the application account and the email and phone contacts; see `docs/engineering/ACCOUNTS.md` and ADR-0025 and ADR-0026. Any change goes through the Data Model Review Gate (database skill). There is no users table and nothing of Keycloak (credentials, tokens, sessions) is stored; contact data is ID-002 and ID-003, address ownership is not modelled.
 
 ## Common failure modes
 
@@ -89,6 +103,11 @@ Schema `identity` (migrations 0009 and 0010, nine tables) holds the application 
 - `ACCOUNT_EMAIL_RATE_LIMITED` or `UNAVAILABLE` (reason `RATE_LIMITER_UNAVAILABLE`) on a send: Valkey is the limiter and sends fail closed; `pnpm dev:deps`. `UNAVAILABLE` with reason `POLICY_UNAVAILABLE`: a `verification.email.*` parameter is missing or invalid (CRITICAL parameters never fall back).
 - A code or link that worked a moment ago now says used: a resend supersedes the previous challenge; a repeated successful confirmation is an idempotent success, a superseded one is `ACCOUNT_EMAIL_CODE_USED`.
 - A magic link that does nothing when opened signed out: the fragment does not survive the login redirect; sign in, then open the link again.
+- `ACCOUNT_PHONE_DELIVERY_FAILED` on every send: `SMS_TRANSPORT=disabled` (the production default; no provider exists, DEBT-0059). For development set `SMS_TRANSPORT=fake` and read the code with `FakeSmsInbox`; the fake values are refused in production.
+- `ACCOUNT_PHONE_RISK_UNAVAILABLE` or `ACCOUNT_PHONE_NOT_ACCEPTED` in development: the fake classifier picks the line type from the last three digits (901 VOIP, 902 VIRTUAL, 903 LANDLINE, 904 HIGH_RISK, 905 the lookup fails); with `PHONE_INTELLIGENCE=unknown` every number is UNKNOWN. Both are expected when the market blocks those types.
+- `ACCOUNT_PHONE_INVALID` with reason `COUNTRY_NOT_SUPPORTED` for a well-formed number: its country is not ACTIVE in geography or its configured dialing code differs from the number's calling code. `COUNTRY_REQUIRED`: a national-format number with no country and no ACTIVE default.
+- `ACCOUNT_PHONE_RATE_LIMITED` for a number the user has not tried: the per-number budget counts sends across ALL accounts, regardless of ownership; `UNAVAILABLE` (reason `POLICY_UNAVAILABLE` or `RATE_LIMITER_UNAVAILABLE`) as for email.
+- All users behind the proxy share one source-address bucket, or a spoofed `X-Forwarded-For` creates new buckets: the first means `TRUSTED_PROXY_HOPS` is 0 or too low, the second that it is too high or that something other than the proxy can reach the API; check it against the real topology (ADR-0033).
 
 ## Known BananaGig-specific lessons
 
@@ -100,6 +119,8 @@ Schema `identity` (migrations 0009 and 0010, nine tables) holds the application 
 - The admin client carries `configuration-read`, `configuration-write` and `configuration-approve` plus the original admin role; dev users `admin.dev` and `admin2.dev` hold all of them so second-approver flows can be exercised. These client roles are temporary access control until application RBAC exists (DEBT-0021).
 - Hashing a 6-digit code with plain SHA-256 is reversible from a leaked table in a millisecond: the HMAC key lives outside the database. Counting sends as challenge rows (one per send) removes every counter that could drift. A deferred constraint trigger is the right place for "the whole account is consistent at COMMIT" when a replacement passes through intermediate states (LRN-0035 pattern).
 - The `email_verified` flag of Keycloak is not evidence for BananaGig: an administrator or a realm import sets it. Trust is a function of the brokered provider, not of the flag alone.
+- A calling code is not a country (`+1` is the US and Canada): take the country from the numbering library's resolution of the number, then cross-check availability and the dialing code against geography. A policy that is configuration (accounts per number) cannot be a unique index; see LRN-0039. `trustProxy` as a hop-count function and the proof that the proxy replaces the header: LRN-0040.
+- A refusal that depends on another account's data (`ACCOUNT_PHONE_UNAVAILABLE`) is only safe AFTER the caller has proven control of the number; before that, every answer must be identical whatever any other account holds.
 
 ## Do not
 
@@ -116,11 +137,17 @@ Schema `identity` (migrations 0009 and 0010, nine tables) holds the application 
 - Do not store, log, audit, put in an event or return a plaintext code, token, hash or full address; do not put a token in a query string; do not let a GET change state.
 - Do not hardcode a code length, validity, cooldown, cap or attempt limit; do not make the limiter fail open on an operation that sends mail.
 - Do not replace the verified primary before its replacement verifies, and do not transfer a verified address between accounts.
+- Do not store a phone number in Keycloak or a token, mark a number VERIFIED without the SMS code, or store a second form of the number (national, formatted, as typed).
+- Do not write a custom dialing rule or hardcode a calling code, a country or a default country; use `canonicalizePhone` and geography.
+- Do not enable `SMS_TRANSPORT=fake` or `PHONE_INTELLIGENCE=fake` in a shared or production environment, and do not read the fake sink from production code.
+- Do not hardcode the accounts-per-number, the blocked line types or any phone limit, and do not replace the per-number lock, the count and the guard trigger with a unique index.
+- Do not reveal whether another account holds a number before a correct code, and do not let a refused send consume the per-number budget.
+- Do not use `trustProxy: true` or read the leftmost `X-Forwarded-For` entry; do not publish the API port or put anything but the trusted proxies in front of it.
 
 ## Related ADRs
 
-ADR-0013, ADR-0014, ADR-0015, ADR-0025, ADR-0026, ADR-0027, ADR-0028, ADR-0029
+ADR-0013, ADR-0014, ADR-0015, ADR-0025, ADR-0026, ADR-0027, ADR-0028, ADR-0029, ADR-0030, ADR-0031, ADR-0032, ADR-0033
 
 ## Last reviewed
 
-2026-10-07 (ID-002)
+2026-10-08 (ID-003)

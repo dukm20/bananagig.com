@@ -16,6 +16,8 @@ Choose and write the right test level, and run the same gates CI runs.
 - `packages/testing/src/index.ts`, `packages/testing/src/database.itest.ts`
 - `apps/smoke/src/index.ts`, `.github/workflows/ci.yml`
 - `packages/testing/src/mailpit.ts` (read a delivered email from Mailpit and extract the code and link), `packages/accounts/src/email-verification.itest.ts` and `apps/api/src/account-email.itest.ts` (patterns for races, crafted rows and secret scans)
+- `packages/testing/src/sms.ts` (`@bananagig/testing/sms`: `FakeSmsInbox`, `openFakeSmsInbox`, `extractSmsCode`; the ID-003 counterpart of the Mailpit helper), `apps/api/src/trust-proxy.test.ts` (proxy-trust semantics and the Caddyfile, static)
+- ID-003 phone suites (patterns for crafted rows, guard triggers, races on one number and secret scans): `packages/testing/src/phone-model.itest.ts` (database), `packages/accounts/src/phone-verification.itest.ts` (service), `apps/api/src/account-phone.itest.ts` (HTTP), with unit suites `phone.test.ts`, `phone-policy.test.ts`, `verification-core.test.ts` and `apps/api/src/account-phone.test.ts`
 
 ## Architecture rules
 
@@ -84,13 +86,17 @@ Schema changes also need constraint-violation and rollback tests, and the data-m
 - Time-dependent rules (expiry, cooldown) are tested without sleeping: insert a row with explicit past `created_at`/`expires_at` and hashes computed with the production hash function, or lower the policy through a fake provider. The database clock decides, so never rely on the application clock.
 - Prove "exactly once" with real concurrency: `Promise.all` of the competing calls on separate pool connections, repeated in a loop with fresh accounts, asserting one `changed: true`, ONE audit row and ONE outbox event. Prove "never exceeds the maximum" the same way (N concurrent wrong codes, `attempt_count` ends at the maximum).
 - Secret scans: dump the challenge/contact/audit/outbox rows as JSON and capture every `log` call (`vi.mock('@bananagig/observability')`) and assert the plaintext code, the token, both hashes and the full address are absent; only the masked form and ids may appear.
+- An unchanged integration file that fails on a time comparison or times out may be Docker Desktop clock drift (LRN-0041): compare `date +%s` on the host with `docker exec bananagig-postgres-db date +%s`, and rerun the file alone once they agree. Take both sides of a time comparison from the database clock (`clock_timestamp()`).
+- SMS tests read the REAL message the API "sent" through the Valkey fake sink (`SMS_TRANSPORT=fake`, Valkey from `pnpm dev:deps`, default `redis://127.0.0.1:16379`): `openFakeSmsInbox()` and `inbox.wait(e164)` then `extractSmsCode(message.body)` from `@bananagig/testing/sms` (`FakeSmsInbox`). Use a unique number per test (US test numbers `+1202555xxxx`; the last three digits 901 to 905 select the fake line type, so avoid them unless the test is about line types) and `inbox.clear(e164)` when a test sends twice. The sink holds plaintext codes by design; it is DEV/TEST only and nothing in production code reads it.
+- Do NOT run `pnpm test:integration` while other agents, a running stack or a developer need the dev database untouched: its first step (`scripts/dev.mjs --deps-only`) runs `scripts/migrate.mjs` against the dev database. To run single files use the vitest command with the integration config: `node --env-file-if-exists=.env.host node_modules/vitest/vitest.mjs run -c vitest.integration.config.ts <file>`. `dropStaleTestDatabases` (the integration global setup) now skips a test database whose name embeds the pid of a live process (`bananagig_t_<pid>_...`), so concurrent runs no longer drop each other's databases; a database of a crashed run (dead pid) is still dropped. Prefer one file per concurrent run.
+- Advisory-lock race pattern (the accounts-per-number cap, ID-003): create the accounts, give each a pending contact for the SAME number, then `Promise.all` N verifications (more than the cap, on separate pool connections) and assert the invariants, not the interleaving: exactly `cap` accounts end VERIFIED, the rest get the typed refusal and nothing changed for them, one audit row and one outbox event per success; repeat in a loop with fresh accounts and numbers. Prove the trigger as the second line with raw SQL that ignores the service pre-check and expects `identity_rule:PHONE_NUMBER_CAP`. Mutation-check the test by removing the lock: it must fail.
 
 ## Do not
 
 - Do not point tests at the dev database or leave scratch tables behind.
 - Do not skip failing tests to make a gate pass.
 - Do not call real external services from tests.
-- Do not read verification secrets from the database in a test (they are hashes): take them from the delivered message or the `EmailSender` double.
+- Do not read verification secrets from the database in a test (they are hashes): take them from the delivered message, the fake SMS sink or the `EmailSender` / `SmsSender` double.
 
 ## Related ADRs
 
@@ -98,4 +104,4 @@ ADR-0004, ADR-0006, ADR-0025
 
 ## Last reviewed
 
-2026-10-07 (ID-002)
+2026-10-08 (ID-003)

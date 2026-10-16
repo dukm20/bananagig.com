@@ -64,6 +64,20 @@ const raw = z.object({
    * never in the database or in git (the checked-in value is a development placeholder). Rotating it invalidates every open verification (they expire in minutes).
    */
   VERIFICATION_HASH_SECRET: z.string().min(32).max(256).optional(),
+  /**
+   * How verification SMS leave the system (ID-003). `fake` writes them to a Valkey sink that tests and the smoke test read (DEV/TEST ONLY: the sink holds the
+   * plaintext code, so the setting is refused in production); `disabled` delivers nothing and every send fails as a retryable-false delivery failure until a
+   * provider is chosen. Default: fake outside production, disabled in production.
+   */
+  SMS_TRANSPORT: z.enum(['fake', 'disabled']).optional(),
+  /** Phone line-type / risk lookup (ID-003). `fake` is a deterministic offline classifier (DEV/TEST ONLY); `unknown` classifies every number UNKNOWN (no vendor). */
+  PHONE_INTELLIGENCE: z.enum(['fake', 'unknown']).optional(),
+  /**
+   * The exact number of reverse proxies in front of the API (DEBT-0055). `request.ip` is the address that many hops from the socket: with 1, the last
+   * X-Forwarded-For entry (the one the proxy wrote); with 0, always the socket address. Production must set it explicitly; the API must not be reachable
+   * except through those proxies.
+   */
+  TRUSTED_PROXY_HOPS: z.coerce.number().int().min(0).max(4).optional(),
   CONFIG_LKG_MAX_AGE_SECONDS: z.coerce.number().int().min(60).default(86400),
 });
 
@@ -116,6 +130,10 @@ export interface AppConfig {
     /** Minimum seconds between two updates of external_identities.last_seen_at (0 = every request). */
     lastSeenTouchSeconds: number;
   };
+  sms: { transport: 'fake' | 'disabled' };
+  phoneIntelligence: 'fake' | 'unknown';
+  /** Exact number of trusted reverse proxies in front of the API (0 = trust no forwarding header). */
+  trustedProxyHops: number;
   verification: {
     /** HMAC key for verification codes, magic tokens and abuse-limit dimensions. Never logged, never stored. */
     hashSecret: string;
@@ -205,6 +223,9 @@ export function loadConfig(opts: LoadOptions): Readonly<AppConfig> {
         lastSeenTouchSeconds: e.IDENTITY_LAST_SEEN_TOUCH_SECONDS,
       };
     })(),
+    sms: { transport: e.SMS_TRANSPORT ?? (prod ? 'disabled' : 'fake') },
+    phoneIntelligence: e.PHONE_INTELLIGENCE ?? (prod ? 'unknown' : 'fake'),
+    trustedProxyHops: e.TRUSTED_PROXY_HOPS ?? 1,
     verification: { hashSecret: need('VERIFICATION_HASH_SECRET') },
     apiInternalUrl: need('API_INTERNAL_URL'),
     worker: { id: e.WORKER_ID ?? `${opts.service}-${process.pid}`, concurrency: e.WORKER_CONCURRENCY },
@@ -225,6 +246,13 @@ export function loadConfig(opts: LoadOptions): Readonly<AppConfig> {
       retentionDays: e.OUTBOX_RETENTION_DAYS,
     },
   };
+  if (prod && cfg.sms.transport === 'fake') missing.push('SMS_TRANSPORT: the fake SMS sink holds plaintext codes and is not allowed in production');
+  if (prod && cfg.phoneIntelligence === 'fake') missing.push('PHONE_INTELLIGENCE: the fake classifier is not allowed in production');
+  if (prod && e.TRUSTED_PROXY_HOPS === undefined && (!required || opts.role === 'api'))
+    missing.push('TRUSTED_PROXY_HOPS: required in production (the exact number of reverse proxies in front of the API)');
+  // the published development key must never protect real code hashes and rate-limit keys
+  if (prod && e.VERIFICATION_HASH_SECRET === DEV_DEFAULTS.VERIFICATION_HASH_SECRET)
+    missing.push('VERIFICATION_HASH_SECRET: the development value is not allowed in production');
   if (missing.length) throw new ConfigError(missing);
   return Object.freeze(cfg);
 }

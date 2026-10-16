@@ -1,7 +1,9 @@
 // Connectivity smoke test. Runs inside the Compose network (pnpm smoke) and verifies real
 // round-trips, not just container status. Exits non-zero if any check fails.
 import http from 'node:http';
-import { AccountService } from '@bananagig/accounts';
+import { AccountService, hashDimension } from '@bananagig/accounts';
+import { Redis } from 'iovalkey';
+import { FakeSmsInbox, extractSmsCode } from '@bananagig/testing/sms';
 import {
   ACTIVE_ROLE_HEADER,
   AccountEmailResponse,
@@ -9,11 +11,14 @@ import {
   CORRELATION_HEADER,
   EmailVerifiedResponse,
   ErrorResponse,
+  PhoneVerifiedResponse,
   SetEmailResponse,
+  SetPhoneResponse,
   SystemInfoResponse,
   WhoAmIResponse,
   canonicalizeEmail,
   maskEmail,
+  maskPhone,
 } from '@bananagig/contracts';
 import { createDatabase } from '@bananagig/database';
 import { createTokenVerifier, exchangeAuthorizationCode, oidcEndpoints } from '@bananagig/identity';
@@ -1265,6 +1270,227 @@ await check('Email verification', async () => {
   return `customer.dev ${startedVerified ? 'CHANGE_EMAIL (old primary kept until the new one verified)' : 'INITIAL_EMAIL'}: set (canonical, masked) -> send -> cooldown 429 -> Mailpit message (code + #token link, none in the subject) -> wrong code counted (4 left) -> verified -> /account/me VERIFIED -> repeat by code and link idempotent -> no address, code or token in responses or logs`;
 });
 
+await check('Phone verification', async () => {
+  // Phone contact + SMS verification (ID-003) end to end with REAL Keycloak tokens: add a national-format number, the line-type policy, send, read the SMS from the
+  // fake sink (DEV/TEST only), wrong code counted, verify, derived contacts summary, idempotent repeat, no code or number in responses or Loki, and DEBT-0055:
+  // an X-Forwarded-For spoofed through Caddy creates NO rate-limit bucket. Idempotent across runs: INITIAL_PHONE, then CHANGE_PHONE (the old number stays primary
+  // until the new one verifies); every run uses a fresh number and ends VERIFIED.
+  const assert = (ok: boolean, what: string): void => {
+    if (!ok) throw new Error(what);
+  };
+  const seen: string[] = [];
+  const cid = `smoke-phone-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const flowStart = Date.now() * 1e6;
+  const call = async (method: 'GET' | 'POST', path: string, token: string, body?: unknown) => {
+    const r = await get(`${api}/api/v1${path}`, {
+      method,
+      headers: { authorization: `Bearer ${token}`, [CORRELATION_HEADER]: cid, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    const text = await r.text();
+    seen.push(text, JSON.stringify([...r.headers]));
+    let json: any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = undefined;
+    }
+    return { status: r.status, text, json, headers: r.headers };
+  };
+  const valkey = new Redis(env('VALKEY_URL', 'redis://valkey-cache:6379'), { maxRetriesPerRequest: 2 });
+  valkey.on('error', () => undefined);
+  const inbox = new FakeSmsInbox(valkey);
+  const hashSecret = env('VERIFICATION_HASH_SECRET', 'bananagig-dev-only-verification-hash-key-0001');
+  try {
+    // (1) authenticate customer.dev and read the account state
+    const l = await authorizationCodeLogin(kc, { clientId: 'bananagig-web', redirectUri: WEB_REDIRECT_URI, ...DEV_USERS.customer });
+    const customer = (
+      await exchangeAuthorizationCode({
+        tokenEndpoint: ep.token,
+        clientId: 'bananagig-web',
+        redirectUri: WEB_REDIRECT_URI,
+        code: l.code,
+        codeVerifier: l.verifier,
+      })
+    ).accessToken;
+    const before = AccountResponse.parse((await call('GET', '/account/me', customer)).json).data;
+    assert(['NONE', 'PENDING', 'VERIFIED'].includes(before.phone.phoneVerificationStatus), `unexpected phone state ${before.phone.phoneVerificationStatus}`);
+    assert(
+      before.contacts.emailVerified === (before.email.emailVerificationStatus === 'VERIFIED'),
+      'contacts.emailVerified must be derived from the email state',
+    );
+    const startedVerified = before.phone.phoneVerificationStatus === 'VERIFIED';
+
+    // (2) the line-type / risk policy: a virtual number, a high-risk number and a failing lookup are refused BEFORE anything is stored or sent (fake classifier: last three digits)
+    const fresh = (): { national: string; e164: string } => {
+      for (;;) {
+        const tail = String(Math.floor(Math.random() * 10_000)).padStart(4, '0');
+        if (!['901', '902', '903', '904', '905'].includes(tail.slice(-3))) return { national: `(202) 555-${tail}`, e164: `+1202555${tail}` };
+      }
+    };
+    const withTail = (tail: string) => ({ national: `(202) 555-${String(Math.floor(Math.random() * 10)).padStart(1, '0')}${tail}`, e164: '' });
+    for (const [tail, code, status] of [
+      ['902', 'ACCOUNT_PHONE_NOT_ACCEPTED', 400], // VIRTUAL (VOIP, 901, is not in the default blocklist)
+      ['904', 'ACCOUNT_PHONE_NOT_ACCEPTED', 400],
+      ['905', 'ACCOUNT_PHONE_RISK_UNAVAILABLE', 503],
+    ] as const) {
+      const refused = await call('POST', '/account/phone', customer, { phone: withTail(tail).national, country: 'US' });
+      assert(
+        refused.status === status && refused.json?.error?.code === code,
+        `a number ending ${tail} must be ${status} ${code} (got ${refused.status} ${refused.json?.error?.code})`,
+      );
+    }
+    const unsupported = await call('POST', '/account/phone', customer, { phone: '+44 20 7946 0958' });
+    assert(
+      unsupported.status === 400 && unsupported.json?.error?.details?.reason === 'COUNTRY_NOT_SUPPORTED',
+      'a number of a country that is not ACTIVE must be refused (COUNTRY_NOT_SUPPORTED)',
+    );
+    const garbage = await call('POST', '/account/phone', customer, { phone: 'call me maybe', country: 'US' });
+    assert(garbage.status === 400 && garbage.json?.error?.details?.reason === 'INVALID_CHARACTERS', 'letters in a number must be refused (INVALID_CHARACTERS)');
+    const coerced = await call('POST', '/account/phone', customer, { phone: 2025550142 });
+    assert(coerced.status === 400, 'a numeric phone value must not be coerced (strict body)');
+
+    // (3) DEBT-0055: set the number THROUGH CADDY with a spoofed X-Forwarded-For. Caddy replaces the header, the API trusts exactly one hop, so the spoofed address must
+    //     never become a rate-limit bucket (the real one, the connection address as Caddy sees it, does)
+    const { national, e164 } = fresh();
+    const spoof = '203.0.113.77';
+    const viaCaddy = await new Promise<{ status: number; text: string }>((resolve, reject) => {
+      const payload = JSON.stringify({ phone: national, country: 'US' });
+      const req = http.request(
+        {
+          host: 'caddy-proxy',
+          port: 80,
+          path: '/api/v1/account/phone',
+          method: 'POST',
+          headers: {
+            host: 'app.localhost',
+            authorization: `Bearer ${customer}`,
+            'content-type': 'application/json',
+            'content-length': Buffer.byteLength(payload),
+            'x-forwarded-for': spoof,
+            [CORRELATION_HEADER]: cid,
+          },
+        },
+        (res) => {
+          let text = '';
+          res.on('data', (c) => (text += c));
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, text }));
+        },
+      );
+      req.on('error', reject);
+      req.end(payload);
+    });
+    seen.push(viaCaddy.text);
+    assert(viaCaddy.status === 200, `POST /account/phone through Caddy -> ${viaCaddy.status} ${viaCaddy.text.slice(0, 200)}`);
+    const set = SetPhoneResponse.parse(JSON.parse(viaCaddy.text)).data;
+    const pending = set.phone.pending;
+    if (!pending) throw new Error('no pending number after setting one');
+    assert(
+      set.changed && pending?.maskedPhone === maskPhone(e164) && pending.countryCode === 'US',
+      'the pending number must be canonical (E.164), masked and US',
+    );
+    assert(pending.purpose === (startedVerified ? 'CHANGE_PHONE' : 'INITIAL_PHONE'), `purpose ${pending.purpose}`);
+    if (startedVerified)
+      assert(
+        set.phone.phoneVerificationStatus === 'VERIFIED' && set.phone.primary?.maskedPhone === before.phone.primary?.maskedPhone,
+        'a pending change must leave the verified primary number active',
+      );
+    const ipKeys = await valkey.keys('bananagig:rl:phone-verification:ip:*');
+    const spoofKey = `bananagig:rl:phone-verification:ip:${hashDimension(hashSecret, 'ip', spoof)}`;
+    assert(ipKeys.length > 0, 'the request must have been counted under a source-address bucket');
+    assert(!ipKeys.includes(spoofKey), 'a spoofed X-Forwarded-For created a rate-limit bucket (DEBT-0055)');
+
+    // (4) send; a resend inside the cooldown is refused (429 + Retry-After) and sends nothing
+    await inbox.clear(e164);
+    const send = await call('POST', '/account/phone/verification/send', customer, {});
+    assert(
+      send.status === 200 && send.json.data.codeLength === 6 && send.json.data.validityMinutes === 10,
+      `send -> ${send.status} ${send.text.slice(0, 200)}`,
+    );
+    const tooSoon = await call('POST', '/account/phone/verification/send', customer, {});
+    assert(
+      tooSoon.status === 429 && tooSoon.json?.error?.code === 'ACCOUNT_PHONE_RESEND_TOO_SOON' && Number(tooSoon.headers.get('retry-after')) >= 1,
+      `resend inside the cooldown -> ${tooSoon.status}`,
+    );
+
+    // (5) the SMS arrives in the fake sink: concise, no link, no account id
+    const messages = await inbox.wait(e164, 1, 10_000);
+    assert(messages.length === 1, `exactly one SMS expected (got ${messages.length})`);
+    const body = messages[0]!.body;
+    const code = extractSmsCode(body);
+    assert(!!code && code.length === 6, 'the verification code is missing from the SMS');
+    assert(
+      body.length <= 160 && !/https?:|www\./i.test(body) && !body.includes(before.accountId),
+      'the SMS must be one concise segment without a link or an account id',
+    );
+
+    // (6) a wrong code is counted, the right one verifies; the phone state and the derived contacts summary
+    const wrong = await call('POST', '/account/phone/verification/confirm-code', customer, { code: code === '000000' ? '111111' : '000000' });
+    assert(
+      wrong.status === 400 && wrong.json?.error?.code === 'ACCOUNT_PHONE_CODE_INVALID' && wrong.json.error.details?.attemptsRemaining === 4,
+      `a wrong code must be 400 with 4 attempts left (got ${wrong.status})`,
+    );
+    const verified = await call('POST', '/account/phone/verification/confirm-code', customer, { code });
+    assert(
+      verified.status === 200 && PhoneVerifiedResponse.parse(verified.json).data.changed === true,
+      `confirm-code -> ${verified.status} ${verified.text.slice(0, 200)}`,
+    );
+    const after = AccountResponse.parse((await call('GET', '/account/me', customer)).json).data;
+    assert(
+      after.phone.phoneVerificationStatus === 'VERIFIED' && after.phone.pending === null,
+      `phone state after verification: ${after.phone.phoneVerificationStatus}`,
+    );
+    assert(
+      after.phone.primary?.maskedPhone === maskPhone(e164) && after.phone.primary.countryCode === 'US',
+      'the verified number must be the new primary (masked)',
+    );
+    assert(after.email.emailVerificationStatus === before.email.emailVerificationStatus, 'verifying the phone must not change the email state');
+    assert(
+      after.contacts.phoneVerified === true && after.contacts.emailVerified === (after.email.emailVerificationStatus === 'VERIFIED'),
+      'the contacts summary must be derived from the two states',
+    );
+    assert(after.contacts.contactsVerified === (after.contacts.emailVerified && after.contacts.phoneVerified), 'contactsVerified is both contacts verified');
+
+    // (7) retrying the same verification is safe
+    const again = await call('POST', '/account/phone/verification/confirm-code', customer, { code });
+    assert(
+      again.status === 200 && PhoneVerifiedResponse.parse(again.json).data.changed === false,
+      `repeating the code must be an idempotent success (got ${again.status})`,
+    );
+
+    // (8) no response holds the full number, the national digits or the code
+    const everything = seen.join('\n');
+    assert(!everything.includes(e164) && !everything.includes(e164.slice(1)) && !everything.includes(national), 'a response contains the phone number');
+    assert(!everything.includes(`"code":"${code}"`) && !everything.includes(customer), 'a response contains a secret');
+
+    // (9) no code and no number in the logs once this flow's own lines are searchable in Loki
+    const loki = env('LOKI_URL', 'http://loki-logs:3100');
+    const query = async (q: string) =>
+      (await (
+        await expectOk(`${loki}/loki/api/v1/query_range?query=${encodeURIComponent(q)}&start=${flowStart}&end=${Date.now() * 1e6 + 60e9}&limit=5`)
+      ).json()) as { data: { result: unknown[] } };
+    await retry(
+      async () => {
+        if ((await query(`{service_name="bananagig-api"} | correlationId = \`${cid}\``)).data.result.length < 1)
+          throw new Error('this flow is not in Loki yet');
+      },
+      12,
+      2000,
+    );
+    await sleep(6000);
+    for (const [what, q] of [
+      ['e164 number', `{service_name=~"bananagig-.+"} |= \`${e164}\``],
+      ['national number', `{service_name=~"bananagig-.+"} |= \`${national}\``],
+      ['code', `{service_name=~"bananagig-.+"} |~ \`\\b${code}\\b\``],
+    ] as const)
+      assert((await query(q)).data.result.length === 0, `the ${what} appears in the logs`);
+
+    return `customer.dev ${startedVerified ? 'CHANGE_PHONE (old primary kept until the new one verified)' : 'INITIAL_PHONE'}: national input -> E.164 (US, masked), virtual / high-risk refused, failing lookup 503, inactive country and letters refused, strict body; spoofed X-Forwarded-For through Caddy created no bucket (DEBT-0055); send -> cooldown 429 -> one concise SMS in the fake sink -> wrong code counted (4 left) -> verified -> /account/me VERIFIED, contacts derived, email unchanged -> repeat idempotent -> no number or code in responses or logs`;
+  } finally {
+    valkey.disconnect();
+  }
+});
+
 // Caddy routes are exercised exactly as a browser would reach them (Host header), from inside the network.
 const proxy = (host: string, path: string, method = 'GET'): Promise<{ status: number; body: string }> =>
   new Promise((resolve, reject) => {
@@ -1331,6 +1557,7 @@ const order = [
   'Addresses',
   'Accounts',
   'Email verification',
+  'Phone verification',
   'NATS Events',
   'JetStream',
   'SeaweedFS Storage',

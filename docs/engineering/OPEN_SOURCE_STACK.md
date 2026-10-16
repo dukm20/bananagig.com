@@ -20,6 +20,7 @@ Compose service keys are descriptive role names and container names are `bananag
 | Mailpit | `mailpit-email` | Local SMTP sink and inbox | MIT | https://mailpit.axllent.org | Catches mail so none leaves the machine | SMTP host/port env vars | Local-only |
 | Caddy | `caddy-proxy` | Local reverse proxy | Apache-2.0 | https://caddyserver.com | Tiny config, no TLS setup needed locally | Any HTTP proxy or ingress | Local; production candidate |
 | pg-boss | `worker-service` (library) | Durable background jobs on Postgres | MIT | https://github.com/timgit/pg-boss | No extra broker; transactional with app data | Isolated in the worker | Production candidate |
+| libphonenumber-js 1.13.14 | `api-service` (library in `@bananagig/accounts`) | Phone number parsing, validation and E.164 canonicalization (ID-003) | MIT | https://gitlab.com/catamphetamine/libphonenumber-js | Proven JavaScript port of Google's libphonenumber metadata; zero dependencies; the small `min` metadata is enough (validity, region, no carrier data); no custom dialing rules in BananaGig code (ADR-0031) | Isolated behind `canonicalizePhone`; the stored value is plain E.164 so the library can be replaced without a data migration | Production |
 | Trivy | (not a service; run on demand) | Image and config scanning | Apache-2.0 | https://trivy.dev | Single scanner for images, fs, IaC | Dev/CI tool only | Tooling |
 
 **Not used:** a Kafka-style broker (explicitly excluded). NATS JetStream covers the event backbone.

@@ -6,3 +6,5 @@ export * from './health-server';
 export * from './outbox';
 export * from './email';
 export * from './rate-limit';
+export * from './sms';
+export * from './phone-intelligence';

@@ -18,10 +18,14 @@ export const isEmailAction = (v: string): v is EmailAction => (EMAIL_ACTIONS as 
 const see = (d: AuthDeps, query: string): Response =>
   new Response(null, { status: 303, headers: { location: `${d.cfg.webPublicUrl}/verify-email${query}`, ...NO_STORE } });
 
-/** The first address of a proxy's x-forwarded-for, or undefined. Only the trusted proxy in front of the web server may have set it. */
+/**
+ * The client address the trusted proxy wrote: the LAST entry of x-forwarded-for (the web server sits behind exactly one proxy, Caddy, which replaces the header with the
+ * connection address; a client-chosen first entry is never read, DEBT-0055). Undefined when the header is absent or longer than an address.
+ */
 export function clientIpOf(req: Request): string | undefined {
-  const first = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim();
-  return first && first.length <= 64 ? first : undefined;
+  const entries = req.headers.get('x-forwarded-for')?.split(',');
+  const last = entries?.[entries.length - 1]?.trim();
+  return last && last.length <= 64 ? last : undefined;
 }
 
 async function field(req: Request, name: string): Promise<string | undefined> {

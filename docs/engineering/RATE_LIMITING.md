@@ -1,6 +1,6 @@
 # Rate limiting
 
-The rate-limit foundation (ID-002, ADR-0029) is the facility security-sensitive endpoints share. Email verification uses it now; phone verification (ID-003) and the public address endpoints (DEBT-0030) can use it without changes to the package.
+The rate-limit foundation (ID-002, ADR-0029) is the facility security-sensitive endpoints share. Email verification (ID-002) and phone verification (ID-003) use it; the public address endpoints (DEBT-0030) can use it without changes to the package.
 
 ## Model
 
@@ -12,6 +12,10 @@ The rate-limit foundation (ID-002, ADR-0029) is the facility security-sensitive 
 | source address | `email-verification:ip` | `hashDimension(secret, 'ip', request.ip)` |
 | device or session | `email-verification:device` | `hashDimension(secret, 'device', id)` (no device id exists yet; the service accepts one) |
 | target address | `email-verification:address` | `hashDimension(secret, 'email', canonicalAddress)` |
+| account (phone, ID-003) | `phone-verification:account` | the account id (a uuid) |
+| source address (phone) | `phone-verification:ip` | `hashDimension(secret, 'ip', request.ip)` |
+| device or session (phone) | `phone-verification:device` | `hashDimension(secret, 'device', id)` (no device id exists yet) |
+| target number (phone) | `phone-verification:number` | `hashDimension(secret, 'phone', e164)`: an HMAC of the canonical E.164, never the raw number; counted across all accounts, on send only (setting a number sends nothing) |
 
 Keys are opaque. Raw addresses and IPs never become Valkey keys (`hashDimension` is a keyed, truncated HMAC). A refusal reports only `retryAfterSeconds`; the refusing dimension is never named to a client.
 
@@ -53,8 +57,18 @@ DEBT-0030 stays OPEN: ID-002 does not apply the limiter to the public endpoints.
 
 1. Add the limit parameters (for example `api.public.address.max_per_minute`) through a change request.
 2. Add a Fastify `preHandler` on `/geography/addresses/validate`, `/geography/addresses/format` and the public format and area reads that builds `[{ name: 'public:ip', key: hashDimension(secret, 'ip', request.ip), limit, windowSeconds: 60 }]` and answers `429 RATE_LIMITED` with `Retry-After` (fail open or closed per endpoint: these reads are cheap, so a short outage can fail open with an alert).
-3. Make the client address trustworthy first: the API runs with `trustProxy: true`, which accepts a client-supplied `X-Forwarded-For` (DEBT-0055). Set the exact number of proxy hops before relying on the IP dimension for abuse defense.
+3. Make the client address trustworthy first (DEBT-0055): ID-003 replaced `trustProxy: true` with the exact trusted-hop model described in "Trusted proxy model (DEBT-0055)" below, and the phone buckets use it (`phone-verification:account|ip|device|number` in the table above). DEBT-0055 is RESOLVED by ID-003 apart from these two deployment invariants (see `TECH_DEBT.md`).and of DEBT-0030.
 4. Add integration tests with a real Valkey (the pattern in `packages/platform/src/rate-limit.itest.ts`) and a public-endpoint 429 test.
+
+## Trusted proxy model (DEBT-0055)
+
+Decision: ADR-0033. The source-address dimension counts `request.ip`, so the API must know the real client address and a client must not be able to choose it.
+
+- **Hop count.** `TRUSTED_PROXY_HOPS` (0 to 4) is the exact number of reverse proxies in front of the API. `apps/api/src/app.ts` passes Fastify `trustHops(hops)`, which trusts a hop while `hop < hops`: with 0 hops `request.ip` is the socket address, with 1 hop it is the LAST `X-Forwarded-For` entry (the one the proxy wrote), and a client-chosen leftmost entry is never used. Development defaults to 1; production must set it explicitly (the API refuses to start without it).
+- **The proxy replaces the header.** `infra/caddy/Caddyfile` sets `header_up X-Forwarded-For {remote_host}` on its upstreams, so a client-sent header is discarded rather than appended to. The web server forwards one value (`clientIpOf` in `apps/web/src/lib/auth/email-handlers.ts` takes the last entry) to the API, which trusts that one hop.
+- **The API is reachable only through the proxy.** This is a deployment invariant that code cannot enforce: Compose publishes no API port (only Caddy listens on the host) and production must keep the API on a private network. Behind a CDN plus Caddy the value is 2 and both tiers must replace or append correctly.
+- **How it is tested.** Unit semantics in `apps/api/src/trust-proxy.test.ts` (0, 1 and 2 hops, spoofed chains, IPv6, configuration defaults and the production requirement); a static test of the Caddyfile and the compose files in the same file (header replaced, no published API port); and the `Phone verification` smoke scenario (`apps/smoke/src/index.ts`), which sends a spoofed `X-Forwarded-For` through Caddy and asserts that no rate-limit bucket was created for the spoofed address.
+DEBT-0055 is RESOLVED by ID-003 apart from these two deployment invariants (see `TECH_DEBT.md`).
 
 ## Tests
 

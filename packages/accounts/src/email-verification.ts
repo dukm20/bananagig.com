@@ -36,7 +36,7 @@ import {
 } from '@bananagig/contracts';
 import { sql, type Database, type DatabaseSchema, type Kysely, type Trx } from '@bananagig/database';
 import { getCorrelationId, log } from '@bananagig/observability';
-import { EmailDeliveryError, insertOutboxEvent, RateLimiterUnavailableError, type EmailSender, type RateLimiter, type RateRule } from '@bananagig/platform';
+import { EmailDeliveryError, insertOutboxEvent, type EmailSender, type RateLimiter } from '@bananagig/platform';
 import { generateMagicToken, generateVerificationCode, hashDimension, hashMagicToken, hashVerificationCode, hashesEqual } from './email-crypto';
 import {
   assertEmailVerificationPolicy,
@@ -48,6 +48,7 @@ import {
 import { loadEmailSummary, purposeOfStatus } from './email-state';
 import { AccountError } from './errors';
 import { assertUsable, mapDbError } from './service';
+import { consumeRules, evaluateSendWindows, requestRules } from './verification-core';
 
 type Row = Record<string, unknown>;
 
@@ -145,7 +146,6 @@ const toChallenge = (r: Row): ChallengeRow => ({
 
 const CHALLENGE_COLUMNS = sql`challenge_id, email_contact_id, purpose, code_hash, attempt_count, used_at, invalidation_reason, expires_at, (expires_at <= clock_timestamp()) AS expired`;
 const actorOf = (accountId: string): string => `account:${accountId}`;
-const ceilSeconds = (ms: number): number => Math.max(1, Math.ceil(ms / 1000));
 
 type AttemptOutcome =
   | { kind: 'OK'; result: ConfirmEmailResult }
@@ -181,26 +181,12 @@ export class EmailVerificationService {
    * proceeds (confirmation is bounded by the attempt counter in PostgreSQL). A refusal never says which dimension refused.
    */
   private async limit(mode: 'strict' | 'lenient', accountId: string, ctx: EmailRequestContext, p: EmailVerificationPolicy, address?: string): Promise<void> {
-    const limiter = this.d.rateLimiter;
-    if (!limiter) return;
-    const rules: RateRule[] = [{ name: 'email-verification:account', key: accountId, limit: p.requestsPerHour, windowSeconds: 3600 }];
-    if (ctx.clientIp)
-      rules.push({ name: 'email-verification:ip', key: hashDimension(this.d.hashSecret, 'ip', ctx.clientIp), limit: p.requestsPerHour, windowSeconds: 3600 });
-    if (ctx.deviceId)
-      rules.push({
-        name: 'email-verification:device',
-        key: hashDimension(this.d.hashSecret, 'device', ctx.deviceId),
-        limit: p.requestsPerHour,
-        windowSeconds: 3600,
-      });
+    const rules = requestRules('email-verification', this.d.hashSecret, accountId, ctx, p.requestsPerHour);
     if (address)
       rules.push({ name: 'email-verification:address', key: hashDimension(this.d.hashSecret, 'email', address), limit: p.addressPerHour, windowSeconds: 3600 });
-    try {
-      const decision = await limiter.consume(rules);
-      if (!decision.allowed) throw new AccountError('EMAIL_RATE_LIMITED', 'too many requests', { retryAfterSeconds: decision.retryAfterSeconds });
-    } catch (err) {
-      if (err instanceof AccountError) throw err;
-      if (!(err instanceof RateLimiterUnavailableError)) throw err;
+    const outcome = await consumeRules(this.d.rateLimiter, rules);
+    if (outcome.kind === 'REFUSED') throw new AccountError('EMAIL_RATE_LIMITED', 'too many requests', { retryAfterSeconds: outcome.retryAfterSeconds });
+    if (outcome.kind === 'UNAVAILABLE') {
       if (mode === 'strict') {
         log('error', 'email verification rate limiter unavailable; request refused');
         throw new AccountError('UNAVAILABLE', 'the request cannot be accepted right now', { reason: 'RATE_LIMITER_UNAVAILABLE' });
@@ -360,25 +346,24 @@ export class EmailVerificationService {
         FROM identity.email_verification_challenges c JOIN identity.email_contacts k ON k.email_contact_id = c.email_contact_id
         WHERE k.account_id = ${accountId} AND c.created_at > clock_timestamp() - interval '1 day'`.execute(ex)
     ).rows[0]!;
-    const now = w.now as Date;
-    const lastIssued = (w.last_issued as Date | null) ?? null;
-    const created = ((w.created as Date[] | null) ?? []).filter((t) => t instanceof Date);
-    if (lastIssued) {
-      const waitMs = lastIssued.getTime() + p.resendSeconds * 1000 - now.getTime();
-      if (waitMs > 0) throw new AccountError('EMAIL_RESEND_TOO_SOON', 'a verification email was sent a moment ago', { retryAfterSeconds: ceilSeconds(waitMs) });
-    }
-    const capWait = (windowMs: number, cap: number): number => {
-      const inWindow = created.filter((t) => t.getTime() > now.getTime() - windowMs);
-      if (inWindow.length < cap) return 0;
-      // the slot frees when the (count - cap + 1)-th oldest request leaves the window
-      return inWindow[inWindow.length - cap]!.getTime() + windowMs - now.getTime();
-    };
-    const hourWait = capWait(3_600_000, p.maxPerHour);
-    if (hourWait > 0)
-      throw new AccountError('EMAIL_SEND_LIMIT', 'the hourly limit of verification emails was reached', { retryAfterSeconds: ceilSeconds(hourWait) });
-    const dayWait = capWait(86_400_000, p.maxPerDay);
-    if (dayWait > 0)
-      throw new AccountError('EMAIL_SEND_LIMIT', 'the daily limit of verification emails was reached', { retryAfterSeconds: ceilSeconds(dayWait) });
+    const refusal = evaluateSendWindows({
+      lastIssued: (w.last_issued as Date | null) ?? null,
+      created: ((w.created as Date[] | null) ?? []).filter((t) => t instanceof Date),
+      now: w.now as Date,
+      resendSeconds: p.resendSeconds,
+      maxPerHour: p.maxPerHour,
+      maxPerDay: p.maxPerDay,
+    });
+    if (!refusal) return;
+    const retryAfterSeconds = refusal.retryAfterSeconds;
+    if (refusal.kind === 'COOLDOWN') throw new AccountError('EMAIL_RESEND_TOO_SOON', 'a verification email was sent a moment ago', { retryAfterSeconds });
+    throw new AccountError(
+      'EMAIL_SEND_LIMIT',
+      refusal.kind === 'HOUR_CAP' ? 'the hourly limit of verification emails was reached' : 'the daily limit of verification emails was reached',
+      {
+        retryAfterSeconds,
+      },
+    );
   }
 
   /**

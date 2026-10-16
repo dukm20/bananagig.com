@@ -4,6 +4,7 @@
 import { z } from 'zod';
 import { Locale } from './content';
 import { AccountEmailSummaryDto, EMAIL_ERROR_CODES } from './email';
+import { AccountPhoneSummaryDto, ContactsVerificationDto, PHONE_ERROR_CODES } from './phone';
 import { envelope } from './envelope';
 import { IanaTimeZone } from './geography';
 import { containsForbiddenText } from './text';
@@ -129,6 +130,10 @@ export const AccountDto = z.object({
   profile: AccountProfileDto.nullable(),
   /** Email contact state (ID-002): the verification status application services read, with the address MASKED. */
   email: AccountEmailSummaryDto,
+  /** Phone contact state (ID-003): the verification status application services read, with the number MASKED. */
+  phone: AccountPhoneSummaryDto,
+  /** Whether the email and the phone are verified, DERIVED from the two states above (nothing is stored; future gates read it). */
+  contacts: ContactsVerificationDto,
   createdAt: z.string(),
 });
 export type AccountDto = z.infer<typeof AccountDto>;
@@ -179,5 +184,6 @@ export const ACCOUNT_ERROR_CODES = [
   'INVALID_STATE',
   'UNAVAILABLE',
   ...EMAIL_ERROR_CODES,
+  ...PHONE_ERROR_CODES,
 ] as const;
 export type AccountErrorCode = (typeof ACCOUNT_ERROR_CODES)[number];

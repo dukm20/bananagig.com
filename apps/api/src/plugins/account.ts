@@ -7,7 +7,7 @@
 import type { FastifyInstance, preHandlerAsyncHookHandler } from 'fastify';
 import fp from 'fastify-plugin';
 import { ACTIVE_ROLE_HEADER } from '@bananagig/contracts';
-import type { AccountContext, AccountService, EmailVerificationService } from '@bananagig/accounts';
+import type { AccountContext, AccountService, EmailVerificationService, PhoneVerificationService } from '@bananagig/accounts';
 import { AppError } from '../errors';
 import { toAppError } from '../modules/account/dto';
 import { requireAuthenticated } from './auth';
@@ -21,13 +21,19 @@ declare module 'fastify' {
     accounts: AccountService;
     /** The email contact and its verification (ID-002); present when the email routes are registered. */
     emailVerification: EmailVerificationService;
+    /** The phone contact and its verification (ID-003); present when the phone routes are registered. */
+    phoneVerification: PhoneVerificationService;
   }
 }
 
 export const accountPlugin = fp(
-  async (app: FastifyInstance, opts: { accounts: AccountService; emailVerification?: EmailVerificationService }): Promise<void> => {
+  async (
+    app: FastifyInstance,
+    opts: { accounts: AccountService; emailVerification?: EmailVerificationService; phoneVerification?: PhoneVerificationService },
+  ): Promise<void> => {
     app.decorate('accounts', opts.accounts);
     if (opts.emailVerification) app.decorate('emailVerification', opts.emailVerification);
+    if (opts.phoneVerification) app.decorate('phoneVerification', opts.phoneVerification);
     app.decorateRequest('account', undefined);
   },
 );

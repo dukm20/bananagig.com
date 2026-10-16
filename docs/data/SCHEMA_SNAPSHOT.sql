@@ -607,14 +607,17 @@ CREATE TABLE identity.account_audit_events (
   reason text,
   correlation_id text NOT NULL,
   email_contact_id uuid,
+  phone_contact_id uuid,
   CONSTRAINT pk_account_audit_events PRIMARY KEY (audit_event_id),
   CONSTRAINT fk_account_audit_events__account_email_contact FOREIGN KEY (account_id, email_contact_id) REFERENCES identity.email_contacts(account_id, email_contact_id) ON DELETE RESTRICT,
   CONSTRAINT fk_account_audit_events__account_id FOREIGN KEY (account_id) REFERENCES identity.accounts(account_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_account_audit_events__account_phone_contact FOREIGN KEY (account_id, phone_contact_id) REFERENCES identity.phone_contacts(account_id, phone_contact_id) ON DELETE RESTRICT,
   CONSTRAINT fk_account_audit_events__role_id FOREIGN KEY (role_id) REFERENCES identity.roles(role_id) ON DELETE RESTRICT,
-  CONSTRAINT ck_account_audit_events__action CHECK ((action = ANY (ARRAY['ACCOUNT_CREATED'::text, 'EXTERNAL_IDENTITY_LINKED'::text, 'ROLE_GRANTED'::text, 'ROLE_ACTIVATED'::text, 'ROLE_DEACTIVATED'::text, 'PRIMARY_ROLE_CHANGED'::text, 'PROFILE_UPDATED'::text, 'EMAIL_ADDED'::text, 'EMAIL_CHANGE_REQUESTED'::text, 'EMAIL_VERIFICATION_REQUESTED'::text, 'EMAIL_VERIFICATION_FAILED'::text, 'EMAIL_VERIFICATION_LOCKED'::text, 'EMAIL_VERIFIED'::text, 'EMAIL_PRIMARY_CHANGED'::text]))),
+  CONSTRAINT ck_account_audit_events__action CHECK ((action = ANY (ARRAY['ACCOUNT_CREATED'::text, 'EXTERNAL_IDENTITY_LINKED'::text, 'ROLE_GRANTED'::text, 'ROLE_ACTIVATED'::text, 'ROLE_DEACTIVATED'::text, 'PRIMARY_ROLE_CHANGED'::text, 'PROFILE_UPDATED'::text, 'EMAIL_ADDED'::text, 'EMAIL_CHANGE_REQUESTED'::text, 'EMAIL_VERIFICATION_REQUESTED'::text, 'EMAIL_VERIFICATION_FAILED'::text, 'EMAIL_VERIFICATION_LOCKED'::text, 'EMAIL_VERIFIED'::text, 'EMAIL_PRIMARY_CHANGED'::text, 'PHONE_ADDED'::text, 'PHONE_CHANGE_REQUESTED'::text, 'PHONE_VERIFICATION_REQUESTED'::text, 'PHONE_VERIFICATION_FAILED'::text, 'PHONE_VERIFICATION_LOCKED'::text, 'PHONE_VERIFIED'::text, 'PHONE_PRIMARY_CHANGED'::text]))),
   CONSTRAINT ck_account_audit_events__actor CHECK (((length(btrim(actor)) > 0) AND (length(actor) <= 200))),
   CONSTRAINT ck_account_audit_events__changes_object CHECK (((changes IS NULL) OR (jsonb_typeof(changes) = 'object'::text))),
   CONSTRAINT ck_account_audit_events__email_contact CHECK (((action ~~ 'EMAIL\_%'::text) = (email_contact_id IS NOT NULL))),
+  CONSTRAINT ck_account_audit_events__phone_contact CHECK (((action ~~ 'PHONE\_%'::text) = (phone_contact_id IS NOT NULL))),
   CONSTRAINT ck_account_audit_events__role CHECK (((action ~~ 'ROLE\_%'::text) = (role_id IS NOT NULL)))
 );
 CREATE INDEX idx_account_audit_events__account ON identity.account_audit_events USING btree (account_id, occurred_at DESC);
@@ -765,6 +768,69 @@ CREATE TABLE identity.external_identities (
   CONSTRAINT ck_external_identities__provider_type CHECK ((provider_type = 'KEYCLOAK'::text)),
   CONSTRAINT ck_external_identities__subject CHECK (((length(btrim(provider_subject)) > 0) AND (length(provider_subject) <= 255) AND (provider_subject !~ '[\u0001-\u001F\u007F]'::text)))
 );
+
+CREATE TABLE identity.phone_contacts (
+  phone_contact_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  account_id uuid NOT NULL,
+  phone_e164 text NOT NULL,
+  country_code character(2) NOT NULL,
+  status text NOT NULL,
+  is_primary boolean NOT NULL DEFAULT false,
+  source text NOT NULL,
+  line_type text,
+  line_type_checked_at timestamp with time zone,
+  verified_at timestamp with time zone,
+  disabled_at timestamp with time zone,
+  disabled_reason text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_phone_contacts PRIMARY KEY (phone_contact_id),
+  CONSTRAINT uq_phone_contacts__account_contact UNIQUE (account_id, phone_contact_id),
+  CONSTRAINT fk_phone_contacts__account_id FOREIGN KEY (account_id) REFERENCES identity.accounts(account_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_phone_contacts__country_code FOREIGN KEY (country_code) REFERENCES geography.countries(iso_alpha2) ON DELETE RESTRICT,
+  CONSTRAINT ck_phone_contacts__country_code CHECK ((country_code ~ '^[A-Z]{2}$'::text)),
+  CONSTRAINT ck_phone_contacts__disabled CHECK ((((status = 'DISABLED'::text) = (disabled_at IS NOT NULL)) AND ((status = 'DISABLED'::text) = (disabled_reason IS NOT NULL)))),
+  CONSTRAINT ck_phone_contacts__disabled_reason CHECK (((disabled_reason IS NULL) OR (disabled_reason = ANY (ARRAY['REPLACED'::text, 'SUPERSEDED'::text])))),
+  CONSTRAINT ck_phone_contacts__line_type CHECK (((line_type IS NULL) OR (line_type = ANY (ARRAY['MOBILE'::text, 'LANDLINE'::text, 'VOIP'::text, 'VIRTUAL'::text, 'UNKNOWN'::text, 'HIGH_RISK'::text])))),
+  CONSTRAINT ck_phone_contacts__line_type_pair CHECK (((line_type IS NULL) = (line_type_checked_at IS NULL))),
+  CONSTRAINT ck_phone_contacts__phone_e164 CHECK ((phone_e164 ~ '^\+[1-9][0-9]{6,14}$'::text)),
+  CONSTRAINT ck_phone_contacts__primary_is_verified CHECK (((NOT is_primary) OR (status = 'VERIFIED'::text))),
+  CONSTRAINT ck_phone_contacts__source CHECK ((source = 'USER_ENTERED'::text)),
+  CONSTRAINT ck_phone_contacts__status CHECK ((status = ANY (ARRAY['PENDING'::text, 'VERIFIED'::text, 'REPLACEMENT_PENDING'::text, 'DISABLED'::text]))),
+  CONSTRAINT ck_phone_contacts__verified_at CHECK ((((status <> 'VERIFIED'::text) OR (verified_at IS NOT NULL)) AND ((status <> ALL (ARRAY['PENDING'::text, 'REPLACEMENT_PENDING'::text])) OR (verified_at IS NULL))))
+);
+CREATE INDEX idx_phone_contacts__verified_number ON identity.phone_contacts USING btree (phone_e164) WHERE (status = 'VERIFIED'::text);
+CREATE UNIQUE INDEX uq_phone_contacts__live_number_per_account ON identity.phone_contacts USING btree (account_id, phone_e164) WHERE (status <> 'DISABLED'::text);
+CREATE UNIQUE INDEX uq_phone_contacts__open_per_account ON identity.phone_contacts USING btree (account_id) WHERE (status = ANY (ARRAY['PENDING'::text, 'REPLACEMENT_PENDING'::text]));
+CREATE UNIQUE INDEX uq_phone_contacts__primary_per_account ON identity.phone_contacts USING btree (account_id) WHERE is_primary;
+
+CREATE TABLE identity.phone_verification_challenges (
+  challenge_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  phone_contact_id uuid NOT NULL,
+  purpose text NOT NULL,
+  code_hash text NOT NULL,
+  expires_at timestamp with time zone NOT NULL,
+  used_at timestamp with time zone,
+  attempt_count integer NOT NULL DEFAULT 0,
+  invalidated_at timestamp with time zone,
+  invalidation_reason text,
+  delivery_status text NOT NULL DEFAULT 'PENDING'::text,
+  last_sent_at timestamp with time zone,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  correlation_id text NOT NULL,
+  CONSTRAINT pk_phone_verification_challenges PRIMARY KEY (challenge_id),
+  CONSTRAINT fk_phone_verification_challenges__phone_contact_id FOREIGN KEY (phone_contact_id) REFERENCES identity.phone_contacts(phone_contact_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_phone_verification_challenges__attempts CHECK ((attempt_count >= 0)),
+  CONSTRAINT ck_phone_verification_challenges__closed_once CHECK (((used_at IS NULL) OR (invalidated_at IS NULL))),
+  CONSTRAINT ck_phone_verification_challenges__code_hash CHECK ((code_hash ~ '^[0-9a-f]{64}$'::text)),
+  CONSTRAINT ck_phone_verification_challenges__correlation CHECK (((length(btrim(correlation_id)) > 0) AND (length(correlation_id) <= 200))),
+  CONSTRAINT ck_phone_verification_challenges__delivery CHECK (((delivery_status = ANY (ARRAY['PENDING'::text, 'SENT'::text, 'FAILED'::text])) AND ((delivery_status = 'SENT'::text) = (last_sent_at IS NOT NULL)))),
+  CONSTRAINT ck_phone_verification_challenges__expiry CHECK ((expires_at > created_at)),
+  CONSTRAINT ck_phone_verification_challenges__invalidated CHECK ((((invalidated_at IS NULL) = (invalidation_reason IS NULL)) AND ((invalidation_reason IS NULL) OR (invalidation_reason = ANY (ARRAY['SUPERSEDED'::text, 'LOCKED'::text, 'CONTACT_DISABLED'::text, 'DELIVERY_FAILED'::text]))))),
+  CONSTRAINT ck_phone_verification_challenges__purpose CHECK ((purpose = ANY (ARRAY['INITIAL_PHONE'::text, 'CHANGE_PHONE'::text])))
+);
+CREATE INDEX idx_phone_verification_challenges__contact_created ON identity.phone_verification_challenges USING btree (phone_contact_id, created_at DESC);
+CREATE UNIQUE INDEX uq_phone_verification_challenges__open_per_contact ON identity.phone_verification_challenges USING btree (phone_contact_id) WHERE ((used_at IS NULL) AND (invalidated_at IS NULL));
 
 CREATE TABLE identity.roles (
   role_id uuid NOT NULL DEFAULT gen_random_uuid(),

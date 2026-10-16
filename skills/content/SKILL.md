@@ -97,6 +97,7 @@ Any change to `content.*` goes through the Data Model Review Gate (normalization
 - Audit rows carry `locale` only for `LOCALE_*` actions (`ck_audit_events__subject`); version actions reach the locale through the version. Seeded versions (migration 0006) emit no outbox events and have five audit rows each.
 - Web locale negotiation uses the public active-locale list (`GET /api/v1/content/locales`, memoized 30 s per process); `<html lang>` is still static (DEBT-0026).
 - Email copy (ID-002): an email is two entries, `<key>.subject` (EMAIL_SUBJECT, single line, no secret in it) and `<key>.body` (EMAIL_BODY, rendered to sanitized HTML); a plain-text alternative is derived from that HTML (`htmlToPlainText` in `@bananagig/platform`). Credentials in variables (a code, a link) are typed (`STRING`, `URL`) and marked `SENSITIVE_PERSONAL`. A link destination built from a variable (`[text]({verification_url})`) is validated at render time; the fragment form `#token=` passes. Seed entries WITH variables by inserting `content.entry_variables` before the version in the lifecycle `DO` block (a required variable cannot be added once the entry has versions); every seeded body must render with its example values (test it with `ContentService.render`, the SQL seed bypasses the authoring validation).
+- SMS copy (ID-003): one entry `sms.<name>.body` of content type `PLAIN_TEXT` (no HTML, no subject), kept concise enough for one short message, with NO link and no account identifier; credentials and counts are typed variables (`verification_code` STRING `SENSITIVE_PERSONAL`, `expiry_minutes` COUNT, rendered with an ICU `plural`). The sender passes the variables it has and the renderer FILTERS them per entry (`createContentSmsRenderer` keeps only the names the resolved entry defines), because the registry is strict about variables the entry does not define; test the filter with a variable the entry lacks. Screen and error copy for the phone flow is seeded the same way as the email copy (`account.phone.verify.*`, `account.phone.status.*`, `account.phone.error.*`, 33 entries in migration 0011).
 
 ## Do not
 
@@ -115,4 +116,4 @@ ADR-0018, ADR-0019, ADR-0020, ADR-0021, ADR-0022 (builds on ADR-0001, ADR-0003, 
 
 ## Last reviewed
 
-2026-10-07 (ID-002)
+2026-10-08 (ID-003)

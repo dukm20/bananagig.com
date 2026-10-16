@@ -44,6 +44,13 @@ describe('loadConfig', () => {
 });
 
 describe('loadConfig: VERIFICATION_HASH_SECRET (ID-002)', () => {
+  it('refuses the published development key in production (ID-003 review)', () => {
+    const dev = 'bananagig-dev-only-verification-hash-key-0001';
+    expect(() => loadConfig({ service: 't', env: { NODE_ENV: 'production', VERIFICATION_HASH_SECRET: dev } })).toThrow(
+      /development value is not allowed in production/,
+    );
+    expect(loadConfig({ service: 't', env: { VERIFICATION_HASH_SECRET: dev } }).verification.hashSecret).toBe(dev); // development keeps it
+  });
   // A deployment value is built from pieces so no line of this file looks like a committed credential.
   const explicitKey = 'explicit-hash-key-'.concat('0123456789abcdef'.repeat(2));
   const prodApi = {
@@ -53,6 +60,8 @@ describe('loadConfig: VERIFICATION_HASH_SECRET (ID-002)', () => {
     KEYCLOAK_URL: 'http://keycloak-auth:8080',
     KEYCLOAK_PUBLIC_URL: 'https://auth.example.com',
     WEB_PUBLIC_URL: 'https://app.example.com',
+    // required in production for the api role since ID-003 (DEBT-0055)
+    TRUSTED_PROXY_HOPS: '1',
   };
   const configErrorIssues = (fn: () => unknown): string[] => {
     try {
@@ -218,5 +227,209 @@ describe('redactConfig: VERIFICATION_HASH_SECRET (ID-002)', () => {
     const cfg = loadConfig({ service: 't', env: { VERIFICATION_HASH_SECRET: explicitKey } });
     redactConfig(cfg);
     expect(cfg.verification.hashSecret).toBe(explicitKey);
+  });
+});
+
+// ====================================================================== ID-003: SMS_TRANSPORT, PHONE_INTELLIGENCE, TRUSTED_PROXY_HOPS
+describe('loadConfig: SMS_TRANSPORT and PHONE_INTELLIGENCE (ID-003)', () => {
+  const hashKey = 'prod-hash-key-'.concat('0123456789abcdef'.repeat(2));
+  // every setting a production process with no role (the strictest set) needs, so the tests below isolate the variable under test
+  const prodAll = {
+    NODE_ENV: 'production',
+    DATABASE_URL: 'postgres://u:pw@db:5432/d',
+    VALKEY_URL: 'redis://valkey:6379',
+    NATS_URL: 'nats://nats:4222',
+    S3_ENDPOINT: 'http://s3:8333',
+    S3_ACCESS_KEY: 'access',
+    S3_SECRET_KEY: 'shh-value',
+    OPENSEARCH_URL: 'http://search:9200',
+    FLAGD_HOST: 'flagd',
+    OTEL_EXPORTER_OTLP_ENDPOINT: 'http://otel:4318',
+    SMTP_HOST: 'smtp',
+    KEYCLOAK_URL: 'http://keycloak-auth:8080',
+    KEYCLOAK_PUBLIC_URL: 'https://auth.example.com',
+    WEB_PUBLIC_URL: 'https://app.example.com',
+    API_INTERNAL_URL: 'http://api-service:3000',
+    VERIFICATION_HASH_SECRET: hashKey,
+    TRUSTED_PROXY_HOPS: '1',
+  };
+  const issuesOf = (fn: () => unknown): string[] => {
+    try {
+      fn();
+    } catch (err) {
+      expect(err).toBeInstanceOf(ConfigError);
+      return (err as ConfigError).issues;
+    }
+    throw new Error('expected loadConfig to throw a ConfigError');
+  };
+
+  it('has a loadable production baseline for these tests', () => {
+    const cfg = loadConfig({ service: 't', env: prodAll });
+    expect(cfg.env).toBe('production');
+  });
+
+  describe('defaults', () => {
+    it('defaults to the fake SMS transport and the fake phone intelligence in development', () => {
+      const cfg = loadConfig({ service: 't', env: {} });
+      expect(cfg.sms).toEqual({ transport: 'fake' });
+      expect(cfg.phoneIntelligence).toBe('fake');
+    });
+    it('defaults to fake in the test environment', () => {
+      const cfg = loadConfig({ service: 't', env: { NODE_ENV: 'test' } });
+      expect(cfg.env).toBe('test');
+      expect(cfg.sms.transport).toBe('fake');
+      expect(cfg.phoneIntelligence).toBe('fake');
+    });
+    it('defaults to disabled SMS and unknown phone intelligence in production', () => {
+      const cfg = loadConfig({ service: 't', env: prodAll });
+      expect(cfg.sms.transport).toBe('disabled');
+      expect(cfg.phoneIntelligence).toBe('unknown');
+    });
+    it('treats empty values as unset', () => {
+      const dev = loadConfig({ service: 't', env: { SMS_TRANSPORT: '', PHONE_INTELLIGENCE: '' } });
+      expect(dev.sms.transport).toBe('fake');
+      expect(dev.phoneIntelligence).toBe('fake');
+      const prod = loadConfig({ service: 't', env: { ...prodAll, SMS_TRANSPORT: '', PHONE_INTELLIGENCE: '' } });
+      expect(prod.sms.transport).toBe('disabled');
+      expect(prod.phoneIntelligence).toBe('unknown');
+    });
+    it.each(['web', 'api', 'worker', 'tool'] as const)('applies the development defaults for the %s role', (role) => {
+      const cfg = loadConfig({ service: 't', role, env: {} });
+      expect(cfg.sms.transport).toBe('fake');
+      expect(cfg.phoneIntelligence).toBe('fake');
+    });
+  });
+
+  describe('SMS_TRANSPORT', () => {
+    it.each(['fake', 'disabled'] as const)('accepts %s outside production', (value) => {
+      expect(loadConfig({ service: 't', env: { SMS_TRANSPORT: value } }).sms.transport).toBe(value);
+      expect(loadConfig({ service: 't', env: { NODE_ENV: 'test', SMS_TRANSPORT: value } }).sms.transport).toBe(value);
+    });
+    it('accepts disabled in production', () => {
+      expect(loadConfig({ service: 't', env: { ...prodAll, SMS_TRANSPORT: 'disabled' } }).sms.transport).toBe('disabled');
+    });
+    it.each(['twilio', 'FAKE', 'Disabled', 'true', 'none', 'smtp', ' fake'])('rejects the unknown value %j and names the variable', (value) => {
+      expect(() => loadConfig({ service: 't', env: { SMS_TRANSPORT: value } })).toThrow(/SMS_TRANSPORT/);
+      expect(issuesOf(() => loadConfig({ service: 't', env: { SMS_TRANSPORT: value } })).join('\n')).toMatch(/SMS_TRANSPORT/);
+    });
+    it('refuses the fake transport in production and the ConfigError names the variable', () => {
+      const issues = issuesOf(() => loadConfig({ service: 't', env: { ...prodAll, SMS_TRANSPORT: 'fake' } }));
+      expect(issues.some((i) => i.startsWith('SMS_TRANSPORT'))).toBe(true);
+      expect(issues.join('\n')).toMatch(/plaintext codes/);
+    });
+    it.each(['web', 'api', 'worker', 'tool'] as const)('refuses the fake transport in production for the %s role', (role) => {
+      const env = { ...prodAll, SMS_TRANSPORT: 'fake' };
+      expect(() => loadConfig({ service: 't', role, env })).toThrow(/SMS_TRANSPORT/);
+    });
+    it('does not refuse the fake transport outside production', () => {
+      expect(() => loadConfig({ service: 't', env: { SMS_TRANSPORT: 'fake' } })).not.toThrow();
+    });
+  });
+
+  describe('PHONE_INTELLIGENCE', () => {
+    it.each(['fake', 'unknown'] as const)('accepts %s outside production', (value) => {
+      expect(loadConfig({ service: 't', env: { PHONE_INTELLIGENCE: value } }).phoneIntelligence).toBe(value);
+      expect(loadConfig({ service: 't', env: { NODE_ENV: 'test', PHONE_INTELLIGENCE: value } }).phoneIntelligence).toBe(value);
+    });
+    it('accepts unknown in production', () => {
+      expect(loadConfig({ service: 't', env: { ...prodAll, PHONE_INTELLIGENCE: 'unknown' } }).phoneIntelligence).toBe('unknown');
+    });
+    it.each(['twilio', 'FAKE', 'Unknown', 'none', 'disabled', 'true'])('rejects the unknown value %j and names the variable', (value) => {
+      expect(() => loadConfig({ service: 't', env: { PHONE_INTELLIGENCE: value } })).toThrow(/PHONE_INTELLIGENCE/);
+    });
+    it('refuses the fake classifier in production and the ConfigError names the variable', () => {
+      const issues = issuesOf(() => loadConfig({ service: 't', env: { ...prodAll, PHONE_INTELLIGENCE: 'fake' } }));
+      expect(issues.some((i) => i.startsWith('PHONE_INTELLIGENCE'))).toBe(true);
+    });
+    it.each(['web', 'api', 'worker', 'tool'] as const)('refuses the fake classifier in production for the %s role', (role) => {
+      expect(() => loadConfig({ service: 't', role, env: { ...prodAll, PHONE_INTELLIGENCE: 'fake' } })).toThrow(/PHONE_INTELLIGENCE/);
+    });
+    it('reports both fake settings together in one ConfigError', () => {
+      const issues = issuesOf(() => loadConfig({ service: 't', env: { ...prodAll, SMS_TRANSPORT: 'fake', PHONE_INTELLIGENCE: 'fake' } }));
+      expect(issues.filter((i) => /^(SMS_TRANSPORT|PHONE_INTELLIGENCE)/.test(i))).toHaveLength(2);
+    });
+    it('the two settings are independent', () => {
+      const cfg = loadConfig({ service: 't', env: { SMS_TRANSPORT: 'disabled', PHONE_INTELLIGENCE: 'fake' } });
+      expect(cfg.sms.transport).toBe('disabled');
+      expect(cfg.phoneIntelligence).toBe('fake');
+      const cfg2 = loadConfig({ service: 't', env: { SMS_TRANSPORT: 'fake', PHONE_INTELLIGENCE: 'unknown' } });
+      expect(cfg2.sms.transport).toBe('fake');
+      expect(cfg2.phoneIntelligence).toBe('unknown');
+    });
+  });
+
+  describe('TRUSTED_PROXY_HOPS', () => {
+    it('defaults to 1 outside production', () => {
+      expect(loadConfig({ service: 't', env: {} }).trustedProxyHops).toBe(1);
+      expect(loadConfig({ service: 't', env: { NODE_ENV: 'test' } }).trustedProxyHops).toBe(1);
+    });
+    it.each(['0', '1', '2', '3', '4'])('accepts the numeric string %s', (value) => {
+      expect(loadConfig({ service: 't', env: { TRUSTED_PROXY_HOPS: value } }).trustedProxyHops).toBe(Number(value));
+    });
+    it('keeps an explicit 0 (does not fall back to the default of 1)', () => {
+      expect(loadConfig({ service: 't', env: { TRUSTED_PROXY_HOPS: '0' } }).trustedProxyHops).toBe(0);
+      expect(loadConfig({ service: 't', env: { ...prodAll, TRUSTED_PROXY_HOPS: '0' } }).trustedProxyHops).toBe(0);
+    });
+    it.each(['5', '-1', '1.5', 'abc', '10', '100', '0.5', '1e1x', 'one', '--1'])('rejects %j and names the variable', (value) => {
+      expect(() => loadConfig({ service: 't', env: { TRUSTED_PROXY_HOPS: value } })).toThrow(/TRUSTED_PROXY_HOPS/);
+      expect(issuesOf(() => loadConfig({ service: 't', env: { TRUSTED_PROXY_HOPS: value } })).join('\n')).toMatch(/TRUSTED_PROXY_HOPS/);
+    });
+    it('rejects out-of-range values in production too', () => {
+      expect(() => loadConfig({ service: 't', env: { ...prodAll, TRUSTED_PROXY_HOPS: '5' } })).toThrow(/TRUSTED_PROXY_HOPS/);
+      expect(() => loadConfig({ service: 't', env: { ...prodAll, TRUSTED_PROXY_HOPS: '-1' } })).toThrow(/TRUSTED_PROXY_HOPS/);
+    });
+    it('is REQUIRED in production for the api role', () => {
+      const { TRUSTED_PROXY_HOPS: _hops, ...without } = prodAll;
+      const issues = issuesOf(() => loadConfig({ service: 'a', role: 'api', env: without }));
+      expect(issues.some((i) => i.startsWith('TRUSTED_PROXY_HOPS'))).toBe(true);
+      expect(issues.join('\n')).toMatch(/TRUSTED_PROXY_HOPS: required in production/);
+    });
+    it('is REQUIRED in production when no role is given (the strictest set)', () => {
+      const { TRUSTED_PROXY_HOPS: _hops, ...without } = prodAll;
+      const issues = issuesOf(() => loadConfig({ service: 't', env: without }));
+      expect(issues.some((i) => i.startsWith('TRUSTED_PROXY_HOPS'))).toBe(true);
+    });
+    it.each(['worker', 'web', 'tool'] as const)('is NOT required in production for the %s role', (role) => {
+      const { TRUSTED_PROXY_HOPS: _hops, ...without } = prodAll;
+      expect(() => loadConfig({ service: 't', role, env: without })).not.toThrow();
+      expect(loadConfig({ service: 't', role, env: without }).trustedProxyHops).toBe(1);
+    });
+    it('does not require it for the api role when it is set, including 0', () => {
+      for (const value of ['0', '1', '4']) {
+        const cfg = loadConfig({ service: 'a', role: 'api', env: { ...prodAll, TRUSTED_PROXY_HOPS: value } });
+        expect(cfg.trustedProxyHops).toBe(Number(value));
+      }
+    });
+    it('treats an empty value as unset: still required for the api role in production', () => {
+      expect(() => loadConfig({ service: 'a', role: 'api', env: { ...prodAll, TRUSTED_PROXY_HOPS: '' } })).toThrow(/TRUSTED_PROXY_HOPS/);
+    });
+    it('lists it together with the other missing api settings', () => {
+      const issues = issuesOf(() => loadConfig({ service: 'a', role: 'api', env: { NODE_ENV: 'production' } }));
+      expect(issues.some((i) => i.startsWith('DATABASE_URL'))).toBe(true);
+      expect(issues.some((i) => i.startsWith('TRUSTED_PROXY_HOPS'))).toBe(true);
+    });
+  });
+
+  describe('redactConfig', () => {
+    it('keeps the new fields readable', () => {
+      const cfg = loadConfig({ service: 't', env: { SMS_TRANSPORT: 'disabled', PHONE_INTELLIGENCE: 'unknown', TRUSTED_PROXY_HOPS: '2' } });
+      const out = redactConfig(cfg) as { sms: { transport: string }; phoneIntelligence: string; trustedProxyHops: number };
+      expect(out.sms).toEqual({ transport: 'disabled' });
+      expect(out.phoneIntelligence).toBe('unknown');
+      expect(out.trustedProxyHops).toBe(2);
+    });
+    it('keeps the development defaults readable too', () => {
+      const out = redactConfig(loadConfig({ service: 't', env: {} })) as { sms: { transport: string }; phoneIntelligence: string; trustedProxyHops: number };
+      expect(out.sms.transport).toBe('fake');
+      expect(out.phoneIntelligence).toBe('fake');
+      expect(out.trustedProxyHops).toBe(1);
+    });
+    it('does not mask the new fields while still masking credentials in the same pass', () => {
+      const cfg = loadConfig({ service: 't', env: { DATABASE_URL: 'postgres://u:pw@h:5432/d', S3_SECRET_KEY: 'shh', SMS_TRANSPORT: 'disabled' } });
+      const text = JSON.stringify(redactConfig(cfg));
+      expect(text).toContain('"transport":"disabled"');
+      expect(text).not.toContain('pw@');
+      expect(text).not.toContain('shh');
+    });
   });
 });

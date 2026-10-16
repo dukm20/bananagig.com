@@ -529,15 +529,19 @@ describe('isTokenShape', () => {
   });
 });
 
-// ====================================================================== the source of email-crypto.ts
-describe('the source of email-crypto.ts', () => {
-  const source = readFileSync(fileURLToPath(new URL('./email-crypto.ts', import.meta.url)), 'utf8');
-  // comments are removed first: the header comment mentions Math.random on purpose
-  const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+// ====================================================================== the source of the crypto modules
+// email-crypto.ts keeps the email hash domains; the channel-neutral primitives (CSPRNG code, HMAC, constant-time compare) live in verification-crypto.ts (ADR-0030)
+describe('the source of email-crypto.ts and verification-crypto.ts', () => {
+  const read = (name: string): string =>
+    readFileSync(fileURLToPath(new URL(name, import.meta.url)), 'utf8')
+      // comments are removed first: the header comments mention Math.random on purpose
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+  const code = `${read('./email-crypto.ts')}\n${read('./verification-crypto.ts')}`;
 
   it('compares secrets with timingSafeEqual', () => {
     expect(code).toMatch(/\btimingSafeEqual\s*\(/);
-    expect(code).toMatch(/import\s*\{[^}]*\btimingSafeEqual\b[^}]*\}\s*from\s*'node:crypto'/);
+    expect(read('./verification-crypto.ts')).toMatch(/import\s*\{[^}]*\btimingSafeEqual\b[^}]*\}\s*from\s*'node:crypto'/);
   });
   it('draws randomness from node:crypto only: no Math.random, no Date-based or other non-CSPRNG source', () => {
     expect(code).not.toMatch(/Math\s*\.\s*random/);

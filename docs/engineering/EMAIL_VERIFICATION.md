@@ -6,6 +6,8 @@ Requirements served: CU-03.04 to CU-03.06 (verify email by code or link, resend,
 
 Email is personal data. No code, token, hash or full address appears in a log line, an audit `changes` object, an event, an error or an API response. The API returns the address MASKED (`c***@b***.localhost`) to its owner only.
 
+ID-003 (phone verification, `docs/engineering/PHONE_VERIFICATION.md`) moved the channel-neutral primitives into `packages/accounts/src/verification-crypto.ts` (the numeric code, the keyed hash, the constant-time comparison) and `packages/accounts/src/verification-core.ts` (the resend and cap windows, the request rate rules, the limiter outcome) so both channels share them (ADR-0030). No email behaviour and no email hash value changed. The source address the email limits count now comes from the exact trusted-proxy model (ADR-0033, `docs/engineering/RATE_LIMITING.md`) instead of `trustProxy: true`.
+
 ## Scope
 
 In scope: the email contact tables, the canonical form, the verification challenge (code and magic link), the resend and attempt limits, the reusable rate-limit foundation, the `EmailSender` port with the SMTP/Mailpit adapter, the managed copy and configuration, five authenticated API operations, the account-level `emailVerificationStatus`, the trusted-identity-provider policy, five outbox events, audit, and the `/verify-email` web page.

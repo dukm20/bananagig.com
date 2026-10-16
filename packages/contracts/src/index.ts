@@ -115,3 +115,4 @@ export * from './address';
 export * from './integer';
 export * from './account';
 export * from './email';
+export * from './phone';

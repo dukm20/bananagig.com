@@ -19,6 +19,8 @@ export const accountDto = (roles: AccountDto['roles'] = [CUSTOMER_ROLE], over: P
   activeRole: roles[0]?.code ?? null,
   profile: null,
   email: { emailVerificationStatus: 'NONE', primary: null, pending: null },
+  phone: { phoneVerificationStatus: 'NONE', primary: null, pending: null },
+  contacts: { emailVerified: false, phoneVerified: false, contactsVerified: false },
   createdAt: '2026-01-02T03:04:05.000Z',
   ...over,
 });

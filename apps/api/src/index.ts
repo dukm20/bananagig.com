@@ -1,10 +1,23 @@
 import { loadConfig, redactConfig } from '@bananagig/config';
 import { createDatabase } from '@bananagig/database';
 import { createDbTelemetry, getCorrelationId, registerPoolMetrics, initObservability, log, shutdownObservability } from '@bananagig/observability';
-import { NatsClient, SmtpEmailSender, ValkeyRateLimiter, closeValkey, createS3, createValkey, runDiagnostics } from '@bananagig/platform';
+import {
+  DisabledSmsTransport,
+  FakePhoneIntelligence,
+  NatsClient,
+  RenderingSmsSender,
+  SmtpEmailSender,
+  UnknownPhoneIntelligence,
+  ValkeyFakeSmsTransport,
+  ValkeyRateLimiter,
+  closeValkey,
+  createS3,
+  createValkey,
+  runDiagnostics,
+} from '@bananagig/platform';
 import { ConfigurationService, ValkeyConfigCache } from '@bananagig/configuration';
 import { ContentService } from '@bananagig/content';
-import { AccountService, EmailVerificationService } from '@bananagig/accounts';
+import { AccountService, EmailVerificationService, PhoneVerificationService } from '@bananagig/accounts';
 import {
   AddressService,
   GeographyService,
@@ -15,6 +28,7 @@ import {
 } from '@bananagig/geography';
 import { createTokenVerifier } from '@bananagig/identity';
 import { buildApp } from './app';
+import { createContentSmsRenderer, createPhoneCountryDirectory, createPhonePolicyProvider } from './modules/account/phone-wiring';
 import { createContentEmailRenderer, createVerificationLinkBuilder, createVerificationPolicyProvider } from './modules/account/email-wiring';
 
 const cfg = loadConfig({ service: 'bananagig-api', role: 'api' });
@@ -104,6 +118,23 @@ const emailVerification = new EmailVerificationService({
   rateLimiter: new ValkeyRateLimiter(valkey),
 });
 
+// Phone verification (ID-003): BananaGig-owned phone contact state. The limits and the country/market policy come from the configuration registry (CFG-001), the SMS text
+// from the content registry (CFG-002), the countries from geography, the delivery from the SmsSender port (the Valkey sink in dev/CI, nothing in production until a
+// provider is chosen: DEBT-0059) and the line type from the PhoneIntelligence port (a deterministic fake in dev/CI, UNKNOWN in production until a vendor is chosen:
+// DEBT-0060). Configuration refuses the fake adapters in production.
+const phoneVerification = new PhoneVerificationService({
+  database,
+  policy: createPhonePolicyProvider(configuration),
+  sender: new RenderingSmsSender(
+    createContentSmsRenderer(content),
+    cfg.sms.transport === 'fake' ? new ValkeyFakeSmsTransport(valkey, cfg.env) : new DisabledSmsTransport(),
+  ),
+  intelligence: cfg.phoneIntelligence === 'fake' ? new FakePhoneIntelligence() : new UnknownPhoneIntelligence(),
+  countries: createPhoneCountryDirectory(geography),
+  hashSecret: cfg.verification.hashSecret,
+  rateLimiter: new ValkeyRateLimiter(valkey),
+});
+
 const app = await buildApp({
   cfg,
   verifier,
@@ -113,6 +144,7 @@ const app = await buildApp({
   address,
   accounts,
   emailVerification,
+  phoneVerification,
   // Critical for serving requests: Postgres only. Valkey/NATS/OpenSearch/flagd outages must not take the API down.
   readiness: async () => ({ postgres: (await database.health()).ok ? 'up' : 'down' }),
   diagnostics: () => runDiagnostics(adapters),

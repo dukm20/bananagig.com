@@ -11,8 +11,10 @@ import {
   CORRELATION_HEADER,
   ErrorResponse,
   emailErrorMessageKey,
+  phoneErrorMessageKey,
   type AccountErrorCode,
   type EmailErrorCode,
+  type PhoneErrorCode,
 } from '@bananagig/contracts';
 import { AccountError, AccountService, type AccountContext } from '@bananagig/accounts';
 import type { Database } from '@bananagig/database';
@@ -57,6 +59,8 @@ const makeContext = (over: Partial<AccountContext> = {}): AccountContext => ({
   activeRole: 'CUSTOMER',
   profile: null,
   email: { emailVerificationStatus: 'NONE', primary: null, pending: null },
+  phone: { phoneVerificationStatus: 'NONE', primary: null, pending: null },
+  contacts: { emailVerified: false, phoneVerified: false, contactsVerified: false },
   createdAt: T0,
   created: false,
   ...over,
@@ -84,7 +88,7 @@ const call = async (method: Method, url: string, token?: string, payload?: unkno
 const errorOf = (r: { json: () => unknown }) => ErrorResponse.parse(r.json()).error;
 const dataOf = (r: { json: () => unknown }) => AccountResponse.parse(r.json()).data;
 const keysOf = (o: object) => Object.keys(o).sort();
-const ACCOUNT_KEYS = ['accountId', 'activeRole', 'createdAt', 'email', 'primaryRole', 'profile', 'roles', 'status'];
+const ACCOUNT_KEYS = ['accountId', 'activeRole', 'contacts', 'createdAt', 'email', 'phone', 'primaryRole', 'profile', 'roles', 'status'];
 const raw = (v: unknown): string => JSON.stringify(v);
 
 /** The identity every service call must carry: the verified token's, never anything the client wrote. */
@@ -254,6 +258,8 @@ describe('GET /account/me', () => {
       activeRole: 'CUSTOMER',
       profile: PROFILE,
       email: { emailVerificationStatus: 'NONE', primary: null, pending: null },
+      phone: { phoneVerificationStatus: 'NONE', primary: null, pending: null },
+      contacts: { emailVerified: false, phoneVerified: false, contactsVerified: false },
       createdAt: '2026-01-01T00:00:00.000Z',
     });
     expect(keysOf(body.meta)).toEqual(['correlationId']);
@@ -804,6 +810,19 @@ describe('account API error mapping', () => {
     EMAIL_UNAVAILABLE: [409, 'CONFLICT'],
     EMAIL_DELIVERY_FAILED: [503, 'DEPENDENCY'],
     EMAIL_RATE_LIMITED: [429, 'RATE_LIMIT'],
+    PHONE_INVALID: [400, 'VALIDATION'],
+    PHONE_NOT_PENDING: [409, 'CONFLICT'],
+    PHONE_CODE_INVALID: [400, 'VALIDATION'],
+    PHONE_CODE_EXPIRED: [400, 'VALIDATION'],
+    PHONE_CODE_USED: [400, 'VALIDATION'],
+    PHONE_VERIFICATION_LOCKED: [429, 'RATE_LIMIT'],
+    PHONE_RESEND_TOO_SOON: [429, 'RATE_LIMIT'],
+    PHONE_SEND_LIMIT: [429, 'RATE_LIMIT'],
+    PHONE_UNAVAILABLE: [409, 'CONFLICT'],
+    PHONE_NOT_ACCEPTED: [400, 'VALIDATION'],
+    PHONE_RISK_UNAVAILABLE: [503, 'DEPENDENCY'],
+    PHONE_DELIVERY_FAILED: [503, 'DEPENDENCY'],
+    PHONE_RATE_LIMITED: [429, 'RATE_LIMIT'],
   };
   it('covers every AccountError code', () => {
     expect(Object.keys(expected).sort()).toEqual([...ACCOUNT_ERROR_CODES].sort());
@@ -844,11 +863,22 @@ describe('account API error mapping', () => {
         // a delivery failure never echoes the service text or details: a fixed message, the retryable flag and the managed message key
         expect(errorOf(r).message, where).toBe('The verification email could not be sent');
         expect(errorOf(r).details, where).toEqual({ retryable: false, messageKey: 'account.email.error.delivery_failed' });
+      } else if (code === 'PHONE_RISK_UNAVAILABLE') {
+        // the lookup failure is always retryable and never echoes the service text or details
+        expect(errorOf(r).message, where).toBe('The phone number could not be checked right now');
+        expect(errorOf(r).details, where).toEqual({ retryable: true, messageKey: 'account.phone.error.risk_unavailable' });
+      } else if (code === 'PHONE_DELIVERY_FAILED') {
+        expect(errorOf(r).message, where).toBe('The verification text could not be sent');
+        expect(errorOf(r).details, where).toEqual({ retryable: false, messageKey: 'account.phone.error.delivery_failed' });
       } else {
         expect(errorOf(r).message, where).toBe(`${code} happened`);
         // the email codes (except the issue-based EMAIL_INVALID) also carry the key of their managed message
         const key =
-          code.startsWith('EMAIL_') && code !== 'EMAIL_INVALID' ? { messageKey: emailErrorMessageKey(code as Exclude<EmailErrorCode, 'EMAIL_INVALID'>) } : {};
+          code.startsWith('EMAIL_') && code !== 'EMAIL_INVALID'
+            ? { messageKey: emailErrorMessageKey(code as Exclude<EmailErrorCode, 'EMAIL_INVALID'>) }
+            : code.startsWith('PHONE_') && code !== 'PHONE_INVALID'
+              ? { messageKey: phoneErrorMessageKey(code as Exclude<PhoneErrorCode, 'PHONE_INVALID'>) }
+              : {};
         expect(errorOf(r).details, where).toEqual({ reason: 'SOME_REASON', status: 'SUSPENDED', ...key });
       }
     };

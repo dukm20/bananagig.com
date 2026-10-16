@@ -156,6 +156,27 @@ describe('session page account (ID-001)', () => {
     expect(html).not.toContain('/auth/active-role');
   });
 
+  it('renders with the phone and contacts fields of the account and ignores them: no phone, no masked number, no contact word on the page', async () => {
+    signedIn();
+    const plain = await render();
+    api.account = accountDto([CUSTOMER_ROLE], {
+      phone: {
+        phoneVerificationStatus: 'VERIFIED',
+        primary: { maskedPhone: '+*******0142', countryCode: 'US', verifiedAt: '2026-02-03T04:05:06.000Z', source: 'USER_ENTERED' },
+        pending: null,
+      },
+      contacts: { emailVerified: true, phoneVerified: true, contactsVerified: true },
+    });
+    const html = await render();
+    expect(html).toContain(`<dt>Registry account id</dt><dd>${ACCOUNT_ID}</dd>`);
+    expect(html).toContain('<dt>Registry account status</dt><dd>Registry status active</dd>');
+    expect(html).not.toContain('Registry account unavailable');
+    for (const literal of ['0142', '+*', 'maskedPhone', 'USER_ENTERED', 'phone', 'Phone', 'contacts', 'verified']) expect(html, literal).not.toContain(literal);
+    // the page is exactly the one of an account without phone data, and asks the registry for no phone copy
+    expect(html).toBe(plain);
+    for (const call of stub.calls) expect((call.body as { keys: string[] }).keys.filter((k) => k.includes('phone'))).toEqual([]);
+  });
+
   it('never exposes a token: not in the page, in a form, or in an attribute', async () => {
     signedIn();
     bothRoles();

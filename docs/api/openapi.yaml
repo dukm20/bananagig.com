@@ -21967,7 +21967,7 @@ paths:
   /api/v1/account/me:
     get:
       operationId: getAccountMe
-      summary: "The caller's own application account: id, status, ACTIVE application roles, preferred (primary) role, the role this request acts as, the core profile and the email verification state (status NONE, PENDING or VERIFIED, with the address masked). The account is created on the first authenticated request. The role named in the x-active-role header is accepted only when the account holds it as an ACTIVE role"
+      summary: "The caller's own application account: id, status, ACTIVE application roles, preferred (primary) role, the role this request acts as, the core profile, the email and phone verification states (status NONE, PENDING or VERIFIED, addresses and numbers masked) and the derived contacts summary (email verified, phone verified, both). The account is created on the first authenticated request. The role named in the x-active-role header is accepted only when the account holds it as an ACTIVE role"
       tags: &a11
         - account
       description: Application roles come from PostgreSQL, not from Keycloak. The admin identity context has no application account (403). A suspended or closed account is refused (403).
@@ -22111,6 +22111,90 @@ paths:
                           - primary
                           - pending
                         additionalProperties: false
+                      phone:
+                        type: object
+                        properties:
+                          phoneVerificationStatus:
+                            type: string
+                            enum:
+                              - NONE
+                              - PENDING
+                              - VERIFIED
+                          primary:
+                            anyOf:
+                              - type: object
+                                properties:
+                                  maskedPhone:
+                                    type: string
+                                  countryCode:
+                                    type: string
+                                  verifiedAt:
+                                    type: string
+                                  source:
+                                    type: string
+                                    enum:
+                                      - USER_ENTERED
+                                required:
+                                  - maskedPhone
+                                  - countryCode
+                                  - verifiedAt
+                                  - source
+                                additionalProperties: false
+                              - type: "null"
+                          pending:
+                            anyOf:
+                              - type: object
+                                properties:
+                                  maskedPhone:
+                                    type: string
+                                  countryCode:
+                                    type: string
+                                  purpose:
+                                    type: string
+                                    enum:
+                                      - INITIAL_PHONE
+                                      - CHANGE_PHONE
+                                  status:
+                                    type: string
+                                    enum:
+                                      - PENDING
+                                      - REPLACEMENT_PENDING
+                                  lastSentAt:
+                                    type:
+                                      - string
+                                      - "null"
+                                  expiresAt:
+                                    type:
+                                      - string
+                                      - "null"
+                                required:
+                                  - maskedPhone
+                                  - countryCode
+                                  - purpose
+                                  - status
+                                  - lastSentAt
+                                  - expiresAt
+                                additionalProperties: false
+                              - type: "null"
+                        required:
+                          - phoneVerificationStatus
+                          - primary
+                          - pending
+                        additionalProperties: false
+                      contacts:
+                        type: object
+                        properties:
+                          emailVerified:
+                            type: boolean
+                          phoneVerified:
+                            type: boolean
+                          contactsVerified:
+                            type: boolean
+                        required:
+                          - emailVerified
+                          - phoneVerified
+                          - contactsVerified
+                        additionalProperties: false
                       createdAt:
                         type: string
                     required:
@@ -22121,6 +22205,8 @@ paths:
                       - activeRole
                       - profile
                       - email
+                      - phone
+                      - contacts
                       - createdAt
                     additionalProperties: false
                   meta:
@@ -22538,6 +22624,90 @@ paths:
                           - primary
                           - pending
                         additionalProperties: false
+                      phone:
+                        type: object
+                        properties:
+                          phoneVerificationStatus:
+                            type: string
+                            enum:
+                              - NONE
+                              - PENDING
+                              - VERIFIED
+                          primary:
+                            anyOf:
+                              - type: object
+                                properties:
+                                  maskedPhone:
+                                    type: string
+                                  countryCode:
+                                    type: string
+                                  verifiedAt:
+                                    type: string
+                                  source:
+                                    type: string
+                                    enum:
+                                      - USER_ENTERED
+                                required:
+                                  - maskedPhone
+                                  - countryCode
+                                  - verifiedAt
+                                  - source
+                                additionalProperties: false
+                              - type: "null"
+                          pending:
+                            anyOf:
+                              - type: object
+                                properties:
+                                  maskedPhone:
+                                    type: string
+                                  countryCode:
+                                    type: string
+                                  purpose:
+                                    type: string
+                                    enum:
+                                      - INITIAL_PHONE
+                                      - CHANGE_PHONE
+                                  status:
+                                    type: string
+                                    enum:
+                                      - PENDING
+                                      - REPLACEMENT_PENDING
+                                  lastSentAt:
+                                    type:
+                                      - string
+                                      - "null"
+                                  expiresAt:
+                                    type:
+                                      - string
+                                      - "null"
+                                required:
+                                  - maskedPhone
+                                  - countryCode
+                                  - purpose
+                                  - status
+                                  - lastSentAt
+                                  - expiresAt
+                                additionalProperties: false
+                              - type: "null"
+                        required:
+                          - phoneVerificationStatus
+                          - primary
+                          - pending
+                        additionalProperties: false
+                      contacts:
+                        type: object
+                        properties:
+                          emailVerified:
+                            type: boolean
+                          phoneVerified:
+                            type: boolean
+                          contactsVerified:
+                            type: boolean
+                        required:
+                          - emailVerified
+                          - phoneVerified
+                          - contactsVerified
+                        additionalProperties: false
                       createdAt:
                         type: string
                     required:
@@ -22548,6 +22718,8 @@ paths:
                       - activeRole
                       - profile
                       - email
+                      - phone
+                      - contacts
                       - createdAt
                     additionalProperties: false
                   meta:
@@ -22981,6 +23153,90 @@ paths:
                           - primary
                           - pending
                         additionalProperties: false
+                      phone:
+                        type: object
+                        properties:
+                          phoneVerificationStatus:
+                            type: string
+                            enum:
+                              - NONE
+                              - PENDING
+                              - VERIFIED
+                          primary:
+                            anyOf:
+                              - type: object
+                                properties:
+                                  maskedPhone:
+                                    type: string
+                                  countryCode:
+                                    type: string
+                                  verifiedAt:
+                                    type: string
+                                  source:
+                                    type: string
+                                    enum:
+                                      - USER_ENTERED
+                                required:
+                                  - maskedPhone
+                                  - countryCode
+                                  - verifiedAt
+                                  - source
+                                additionalProperties: false
+                              - type: "null"
+                          pending:
+                            anyOf:
+                              - type: object
+                                properties:
+                                  maskedPhone:
+                                    type: string
+                                  countryCode:
+                                    type: string
+                                  purpose:
+                                    type: string
+                                    enum:
+                                      - INITIAL_PHONE
+                                      - CHANGE_PHONE
+                                  status:
+                                    type: string
+                                    enum:
+                                      - PENDING
+                                      - REPLACEMENT_PENDING
+                                  lastSentAt:
+                                    type:
+                                      - string
+                                      - "null"
+                                  expiresAt:
+                                    type:
+                                      - string
+                                      - "null"
+                                required:
+                                  - maskedPhone
+                                  - countryCode
+                                  - purpose
+                                  - status
+                                  - lastSentAt
+                                  - expiresAt
+                                additionalProperties: false
+                              - type: "null"
+                        required:
+                          - phoneVerificationStatus
+                          - primary
+                          - pending
+                        additionalProperties: false
+                      contacts:
+                        type: object
+                        properties:
+                          emailVerified:
+                            type: boolean
+                          phoneVerified:
+                            type: boolean
+                          contactsVerified:
+                            type: boolean
+                        required:
+                          - emailVerified
+                          - phoneVerified
+                          - contactsVerified
+                        additionalProperties: false
                       createdAt:
                         type: string
                     required:
@@ -22991,6 +23247,8 @@ paths:
                       - activeRole
                       - profile
                       - email
+                      - phone
+                      - contacts
                       - createdAt
                     additionalProperties: false
                   meta:
