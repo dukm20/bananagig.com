@@ -1,6 +1,6 @@
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createIsolatedDatabase, rejection, type IsolatedDatabase } from './index';
+import { createIsolatedDatabase, rejection, type IsolatedDatabase, createTestPool } from './index';
 
 // Migration 0007 creates the geography schema and seeds launch reference data (US, USD, four US time zones, the US display-name
 // content entry and the PLANNED market la-oc). These tests prove the seeded state from zero and, against the REAL triggers and
@@ -10,7 +10,7 @@ let pool: pg.Pool;
 let seq = 0;
 beforeAll(async () => {
   iso = await createIsolatedDatabase();
-  pool = new pg.Pool({ connectionString: iso.url, max: 8 });
+  pool = createTestPool(iso.url, 8);
 });
 afterAll(async () => {
   await pool?.end();

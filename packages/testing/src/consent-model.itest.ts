@@ -24,7 +24,7 @@ import {
   SHA256_HEX_PATTERN,
   WITHDRAWAL_POLICIES,
 } from '../../contracts/src/consent';
-import { createIsolatedDatabase, rejection, sleep, type IsolatedDatabase } from './index';
+import { createIsolatedDatabase, rejection, sleep, type IsolatedDatabase, createTestPool } from './index';
 
 // Migration 0013 adds the account's relationship to the legal documents of the content registry: identity.consent_purposes (what can be consented to, bound to
 // exactly ONE LEGAL entry), identity.consent_events (ONE append-only table that is both the immutable acceptance record and the history, every event bound to
@@ -44,9 +44,9 @@ let seq = 0;
 beforeAll(async () => {
   iso = await createIsolatedDatabase();
   seed = await createIsolatedDatabase();
-  pool = new pg.Pool({ connectionString: iso.url, max: 10 });
-  racePool = new pg.Pool({ connectionString: iso.url, max: 30 });
-  seedPool = new pg.Pool({ connectionString: seed.url, max: 4 });
+  pool = createTestPool(iso.url, 10);
+  racePool = createTestPool(iso.url, 30);
+  seedPool = createTestPool(seed.url, 4);
 });
 afterAll(async () => {
   await pool?.end();
@@ -2345,8 +2345,8 @@ describe('I. real concurrency: one winner per history position, the share locks 
 
     it('MUTATION CHECK: with the FOR SHARE lock removed from the guard in a scratch database the same interleaving does NOT block (the test above would fail)', async () => {
       const scratch = await createIsolatedDatabase();
-      const sp = new pg.Pool({ connectionString: scratch.url, max: 6 });
-      const srace = new pg.Pool({ connectionString: scratch.url, max: 6 });
+      const sp = createTestPool(scratch.url, 6);
+      const srace = createTestPool(scratch.url, 6);
       try {
         const def = ((await sp.query("SELECT pg_get_functiondef('identity.guard_consent_events'::regproc) AS d")).rows[0] as { d: string }).d;
         const needle = 'PERFORM 1 FROM content.versions WHERE version_id = NEW.version_id FOR SHARE;';
@@ -3230,7 +3230,7 @@ describe('L. data comments: tables, columns, the function and the new constraint
 describe('M. end to end on the seeded purposes: publish a LEGAL version through the real lifecycle, accept it, see the rules', () => {
   it('accepts a published version of the seeded Terms of Service, refuses the Privacy Policy with it, refuses a withdrawal, and records the audit row', async () => {
     const db = await createIsolatedDatabase();
-    const p = new pg.Pool({ connectionString: db.url, max: 4 });
+    const p = createTestPool(db.url, 4);
     try {
       const entryId = (await p.query("SELECT entry_id FROM content.entries WHERE key = 'legal.terms_of_service'")).rows[0].entry_id as string;
       const privacyEntry = (await p.query("SELECT entry_id FROM content.entries WHERE key = 'legal.privacy_policy'")).rows[0].entry_id as string;

@@ -823,3 +823,33 @@ ADR-0037, ADR-0038.
 
 ### Known follow-up
 DEBT-0076 to DEBT-0081 (no flow requires consent yet, unconfirmed policy defaults, no re-acceptance notification or console or export, no regional engine or cross-language equivalence, other purposes not seeded, residuals including the DORMANT rate limit that must exist before the first withdrawable purpose). Push and confirm CI is green (the Consent smoke scenario has not run in CI). Legal must publish the first versions of the Terms of Service and Privacy Policy before any flow can require consent; until then required purposes are DOCUMENT_UNAVAILABLE.
+
+## ID-005 (CI follow-up fix) — 2026-10-16
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(ID-005)"` (the `fix(ID-005)` commit).
+Summary: CI run 38977469935 for `b07e161` failed in the integration step with two unhandled PostgreSQL 57P01 errors attributed to `consent-model.itest.ts`; no assertion failed. The ID-005 report said the integration tests passed: that was true locally only, and the race needs a slower runner than the development machine.
+
+### Delivered
+- Root cause found and reproduced: `pg-pool` `end()` resolves before the server has seen the clients leave, the idle-client error listener re-emits on the pool, and a pool without an `error` listener makes that an uncaught exception. The next `DROP DATABASE ... WITH (FORCE)` of the teardown triggers it. A 30-connection pool, `end()` and an immediate forced drop gave 520 uncaught errors in 60 repetitions without a listener and none with one.
+- `createTestPool(url, max)` in `packages/testing/src/index.ts` (pool with an `error` listener) used by all seven model integration files (consent, security, phone, email, identity, address, geography); `createIsolatedDatabase().drop()` waits up to 5 s for the database's sessions to leave before it forces the drop.
+- LRN-0051 and a rule in `skills/testing/SKILL.md`.
+
+### Schema
+No change (no migration, latest stays 0013).
+
+### Contracts
+No change.
+
+### Tests
+The seven changed files (2208 tests) passed twice in a row locally. The CI result of the fix is not known until the user pushes it.
+
+### Skills updated
+`skills/testing` (use `createTestPool`, never a bare `new pg.Pool`, in an integration test; LRN-0051).
+
+### ADRs
+None required.
+
+### Known follow-up
+None. No schema, API or behaviour change. The same commit also carries the uncommitted ID-004 session-watermark follow-up that was in the working tree (`SecurityService` login check against the identity provider's session start; ADR-0034, `SESSIONS_AND_MFA.md`, identity and web skills, smoke), committed at the user's request.
+

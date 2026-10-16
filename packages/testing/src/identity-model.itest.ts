@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createIsolatedDatabase, rejection, sleep, type IsolatedDatabase } from './index';
+import { createIsolatedDatabase, rejection, sleep, type IsolatedDatabase, createTestPool } from './index';
 
 // Migration 0009 creates the identity schema (roles, accounts, account_roles, external_identities, account_status_history, account_profiles,
 // account_audit_events), their guard triggers and the deferred status-history trigger, and seeds the two roles and 17 content entries. These tests drive the
@@ -15,7 +15,7 @@ let CUSTOMER: string;
 let PROVIDER: string;
 beforeAll(async () => {
   iso = await createIsolatedDatabase();
-  pool = new pg.Pool({ connectionString: iso.url, max: 10 });
+  pool = createTestPool(iso.url, 10);
   CUSTOMER = (await q<{ role_id: string }>("SELECT role_id FROM identity.roles WHERE code = 'CUSTOMER'"))[0]!.role_id;
   PROVIDER = (await q<{ role_id: string }>("SELECT role_id FROM identity.roles WHERE code = 'PROVIDER'"))[0]!.role_id;
 });

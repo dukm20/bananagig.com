@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createIsolatedDatabase, rejection, sleep, type IsolatedDatabase } from './index';
+import { createIsolatedDatabase, rejection, sleep, type IsolatedDatabase, createTestPool } from './index';
 
 // Migration 0011 adds the BananaGig-owned phone contact (identity.phone_contacts), one verification challenge per SMS send
 // (identity.phone_verification_challenges), the audit extension (phone_contact_id + seven PHONE_* actions), the guard triggers (including the cap on the number of
@@ -15,8 +15,8 @@ let racePool: pg.Pool;
 let seq = 0;
 beforeAll(async () => {
   iso = await createIsolatedDatabase();
-  pool = new pg.Pool({ connectionString: iso.url, max: 10 });
-  racePool = new pg.Pool({ connectionString: iso.url, max: 24 });
+  pool = createTestPool(iso.url, 10);
+  racePool = createTestPool(iso.url, 24);
 });
 afterAll(async () => {
   await pool?.end();

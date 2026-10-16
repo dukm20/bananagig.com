@@ -1,6 +1,6 @@
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createIsolatedDatabase, rejection, type IsolatedDatabase } from './index';
+import { createIsolatedDatabase, rejection, type IsolatedDatabase, createTestPool } from './index';
 
 // Migration 0008 adds the address model: administrative areas, versioned effective-dated address formats with ordered fields, and the ONE canonical
 // immutable address, and seeds the United States (51 areas, format v1, field label copy). These tests drive the REAL tables, constraints and guard
@@ -12,7 +12,7 @@ let seq = 0;
 let letter = 0;
 beforeAll(async () => {
   iso = await createIsolatedDatabase();
-  pool = new pg.Pool({ connectionString: iso.url, max: 8 });
+  pool = createTestPool(iso.url, 8);
 });
 afterAll(async () => {
   await pool?.end();

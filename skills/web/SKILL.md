@@ -87,7 +87,7 @@ The web app has no database access and no data-model impact. Needing data means 
 - Do not render tokens, put them in URLs, or build GET endpoints that change state (logout and the role switch are POST with an Origin check).
 - Do not store the active role in a cookie, URL or browser storage, trust it without the API validating it, import `@bananagig/accounts`, or treat the Keycloak realm roles of the session as application roles.
 - Do not put a one-time code or token in a query string, a redirect URL, a cookie or a log line, and do not let a GET request change state.
-- Do not put the device secret, a session id of Keycloak, an access token or a submitted value in a URL, redirect, cookie value (other than the device cookie itself), Valkey record or log; do not claim in copy that a trusted browser skips a verification code.
+- Do not put the device secret, a Keycloak session id, or a submitted value in a URL, redirect, cookie value (other than the device cookie itself), Valkey record or log. An access token may be stored only in the protected server-side Valkey session record required by the authentication flow; never put it in a browser-visible or unrelated record. Do not claim in copy that a trusted browser skips a verification code.
 - Do not honour a `kc_action` without the enrollment marker, trust an `acr_values` the browser sent, or start a second step-up round trip from the callback.
 - Do not offer an Accept control for text you did not verify to be the version in force, build the form from anything but that verified document, or let a page or a GET record a consent.
 

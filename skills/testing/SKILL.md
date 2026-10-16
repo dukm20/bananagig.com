@@ -32,6 +32,7 @@ Choose and write the right test level, and run the same gates CI runs.
 
 1. Prefer a unit test with `app.inject()` / fakes; add an integration test when behaviour depends on Postgres or NATS semantics (transactions, locks, queues).
 2. Use `createIsolatedDatabase()` from `@bananagig/testing`: it migrates a fresh `bananagig_t_*` database from zero and `drop()` removes it in `afterAll`. Create scratch tables inside it freely. Stale databases from crashed runs are removed by the integration global setup.
+   Create every pool of an integration test with `createTestPool(url, max)`, never `new pg.Pool`: `pool.end()` returns before the server has seen the clients leave, and the `DROP DATABASE ... WITH (FORCE)` that follows can deliver 57P01 to a closing idle client, which without a pool `error` listener is an uncaught exception that fails the run although every test passed (LRN-0051).
 3. Add a smoke check only for new infrastructure connectivity.
 4. Before finalizing run the full gate set below.
 

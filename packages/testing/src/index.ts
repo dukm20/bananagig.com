@@ -19,6 +19,17 @@ export const urlForDatabase = (name: string, base = adminUrl()): string => {
   return u.toString();
 };
 
+/**
+ * A pg.Pool for a test that never crashes the run. pg-pool re-emits the error of an IDLE client on the pool, and an 'error' event without a listener is an
+ * uncaught exception: when `pool.end()` resolves it has only SENT the terminate message, so the FATAL 57P01 ("terminating connection due to administrator
+ * command") of a `DROP DATABASE ... WITH (FORCE)` that follows at once can still reach a client that is closing. That is harmless at teardown, so it is swallowed.
+ */
+export function createTestPool(connectionString: string, max: number): pg.Pool {
+  const pool = new pg.Pool({ connectionString, max });
+  pool.on('error', () => undefined);
+  return pool;
+}
+
 export interface IsolatedDatabase {
   name: string;
   url: string;
@@ -47,6 +58,12 @@ export async function createIsolatedDatabase(opts: { migrate?: boolean; database
     const a = new pg.Client({ connectionString: adminUrl() });
     await a.connect();
     try {
+      // pool.end() returns before the server has seen the clients leave: give the sessions a moment to go on their own before FORCE terminates what is left
+      for (let n = 0; n < 100; n++) {
+        const { rows } = await a.query('SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = $1', [name]);
+        if (rows[0].n === 0) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
       await a.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
     } finally {
       await a.end();

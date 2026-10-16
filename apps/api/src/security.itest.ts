@@ -185,6 +185,9 @@ const nextIp = (): string => {
 };
 const appNow = (): number => Math.floor(Date.now() / 1000);
 
+/** Seconds after the sign-out-everywhere watermark at which a login is unambiguously later: within 2 s of it the identity provider must confirm the session start (SecurityService.firstSight; covered in security-service.itest.ts). */
+const LATER_THAN_SKEW = 5;
+
 async function mint(a: Pick<Actor, 'sub'>, o: MintOptions = {}): Promise<Tok> {
   const sid = o.sid === null ? undefined : (o.sid ?? randomUUID());
   const authTime = o.authTime === null ? undefined : (o.authTime ?? appNow() - 5);
@@ -999,7 +1002,7 @@ describe('sign out everywhere (revoke-all) and the revocation watermark', () => 
     expect(await writes()).toEqual(before);
 
     // a login after the sign-out has a later auth_time and is a normal new session
-    const later = await mint(a, { authTime: Math.ceil(wm) + 1 });
+    const later = await mint(a, { authTime: Math.ceil(wm) + LATER_THAN_SKEW });
     ok(await me(a, { as: later }));
     expect(await sessionRowOf(later.sid)).toBeDefined();
     // the current session (seen before, auth_time older than the watermark) is governed by its own row and keeps working
@@ -1017,7 +1020,7 @@ describe('sign out everywhere (revoke-all) and the revocation watermark', () => 
     ok(await revokeAll(a, { includeCurrent: false }), OP.revokeAll);
     revoked(await me(a, { as: seen })); // revoked by its row
     const keep = (await watermarkOf(a.accountId))!;
-    const next = await login(a, { authTime: Math.ceil(keep) + 1 });
+    const next = await login(a, { authTime: Math.ceil(keep) + LATER_THAN_SKEW });
     // a LATER revoke-all moves the watermark forward only
     ok(await revokeAll(a, {}), OP.revokeAll);
     revoked(await me(a, { as: next }));
@@ -1042,8 +1045,8 @@ describe('sign out everywhere (revoke-all) and the revocation watermark', () => 
     ok(await revokeAll(a, { includeCurrent: true }), OP.revokeAll);
     revoked(await me(a));
     const wm = (await watermarkOf(a.accountId))!;
-    revoked(await me(a, { as: await mint(a, { sid: a.t0.sid, authTime: Math.ceil(wm) + 5 }) }));
-    ok(await me(a, { as: await mint(a, { authTime: Math.ceil(wm) + 1 }) }));
+    revoked(await me(a, { as: await mint(a, { sid: a.t0.sid, authTime: Math.ceil(wm) + LATER_THAN_SKEW }) }));
+    ok(await me(a, { as: await mint(a, { authTime: Math.ceil(wm) + LATER_THAN_SKEW }) }));
   });
 
   it('a refused first sight does not poison the account: the user can still revoke-all from a working session and list sessions', async () => {

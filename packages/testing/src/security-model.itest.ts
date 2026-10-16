@@ -19,7 +19,7 @@ import {
   securityActivityLabelKey,
   securityErrorMessageKey,
 } from '../../contracts/src/security';
-import { createIsolatedDatabase, rejection, sleep, type IsolatedDatabase } from './index';
+import { createIsolatedDatabase, rejection, sleep, type IsolatedDatabase, createTestPool } from './index';
 
 // Migration 0012 adds the BananaGig-owned application session registry (identity.application_sessions), the device registry with the trusted-browser window
 // (identity.account_devices), the revocation watermark (identity.accounts.sessions_not_before), the audit extension (sixteen security actions, a session reference
@@ -34,8 +34,8 @@ let racePool: pg.Pool;
 let seq = 0;
 beforeAll(async () => {
   iso = await createIsolatedDatabase();
-  pool = new pg.Pool({ connectionString: iso.url, max: 10 });
-  racePool = new pg.Pool({ connectionString: iso.url, max: 24 });
+  pool = createTestPool(iso.url, 10);
+  racePool = createTestPool(iso.url, 24);
 });
 afterAll(async () => {
   await pool?.end();

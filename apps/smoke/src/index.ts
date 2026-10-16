@@ -1790,8 +1790,12 @@ await check('Sessions and security', async () => {
   };
   const seen: string[] = []; // every response body and header block: searched for secrets at the end
   const secretsOf = new Map<string, string[]>(); // what -> values that must appear in no response and no log line
+  const logSecretsOf = new Map<string, string[]>();
   const guard = (what: string, ...values: (string | undefined)[]): void => {
     secretsOf.set(what, [...(secretsOf.get(what) ?? []), ...values.filter((v): v is string => typeof v === 'string' && v.length >= 8)]);
+  };
+  const guardLogs = (what: string, ...values: (string | undefined)[]): void => {
+    logSecretsOf.set(what, [...(logSecretsOf.get(what) ?? []), ...values.filter((v): v is string => typeof v === 'string' && v.length >= 8)]);
   };
   const cid = `smoke-security-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const flowStart = Date.now() * 1e6;
@@ -2247,7 +2251,8 @@ await check('Sessions and security', async () => {
       assert(unknownReply.status === 202, `(10) an unknown address must get 202, got ${unknownReply.status}`);
       PasswordResetAcceptedResponse.parse(unknownReply.json);
       assert(invalidReply.status === 202 && invalidReply.text === unknownReply.text, '(10) an invalid address must get the same 202 body');
-      guard('email address', unknown, primary, keycloakEmail);
+      guard('email address', unknown);
+      guardLogs('email address', primary, keycloakEmail);
       if (!primary) {
         return {
           recorded: false,
@@ -2537,7 +2542,7 @@ await check('Sessions and security', async () => {
   );
   await sleep(6000); // the log exporter batches (5 s): give the last lines of the flow time to arrive before asserting an absence
   const apps = '{service_name=~"bananagig-(api|web|worker)"}';
-  for (const [what, values] of [...secretsOf, ['raw user agent', rawUserAgentParts]] as [string, string[]][]) {
+  for (const [what, values] of [...secretsOf, ...logSecretsOf, ['raw user agent', rawUserAgentParts]] as [string, string[]][]) {
     const unique = [...new Set(values)];
     if (unique.length === 0) continue;
     // one query per group: the alternation of RE2-safe tokens (everything guarded is base64url, hex, a uuid, an address or a short code)

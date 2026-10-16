@@ -1259,3 +1259,29 @@ Before adding a lock to a guard trigger, list the lock order of every other writ
 
 ### Evidence
 `db/migrations/0013_consent.sql` (`identity.guard_consent_events`: account, purpose, then version; the comment on the lock order), `docs/engineering/CONSENT.md` (Database-enforced eligibility), DEBT-0081.
+
+## LRN-0051 — A test pool needs an `error` listener: `pool.end()` returns before the server has seen the clients leave, and a following `DROP DATABASE ... WITH (FORCE)` can deliver 57P01 to an idle client
+
+Date: 2026-10-16
+Checkpoint: ID-005
+Domain: testing / PostgreSQL
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/testing/SKILL.md
+
+### Context
+CI run 38977469935 for ID-005 failed in the integration step with "Vitest caught 2 unhandled errors" (`error: terminating connection due to administrator command`, SQLSTATE 57P01) attributed to `consent-model.itest.ts`, while every assertion passed. The file had passed locally many times, also under CPU load.
+
+### Learning
+pg-pool's `end()` resolves as soon as its client list is empty; it does not wait for the connections to close. The idle-client error listener stays attached to a client that is being ended, and it re-emits the error on the POOL. A pool without an `error` listener turns that into an uncaught exception. Test teardown ends the pools and then force-drops the database, so on a slow runner the FATAL 57P01 of the drop reaches a client that is still closing. Reproduced deterministically with a 30-connection pool, `end()` and an immediate `DROP DATABASE ... WITH (FORCE)`: 520 uncaught 57P01 over 60 repetitions without a listener, none with one. The larger and busier the pool, the likelier the hit, which is why a fast local machine never showed it.
+
+### Why it matters
+It is a failure with no failing test and no stack inside the test file, only "this error originated in" a file that was merely running when it fired. Local green runs prove nothing about it.
+
+### Reuse rule
+Create every `pg.Pool` in a test with `createTestPool(url, max)` from `@bananagig/testing` (it swallows pool errors) and let `createIsolatedDatabase().drop()` wait for the sessions to drain before it forces the drop. Never build a bare `new pg.Pool` in an `*.itest.ts`.
+
+### Evidence
+`packages/testing/src/index.ts` (`createTestPool`, the drain loop in `drop`), `node_modules/pg-pool/index.js` (`makeIdleListener`, `end`), CI run 38977469935.
+

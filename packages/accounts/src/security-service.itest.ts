@@ -881,16 +881,56 @@ describe('the revocation watermark (sessions_not_before)', () => {
     expect(await snapshot(a.id)).toEqual(before);
   });
 
-  it('allows a clock skew of 2 seconds: refused only when authTime + 2 s is before the watermark', async () => {
+  it('requires provider confirmation for auth_time within two seconds of the watermark', async () => {
     const a = await newAccount();
     const cur = await login(a);
     await svc.revokeAllSessions(cur.cur, { includeCurrent: false });
-    const fw = Math.floor(await wEpoch(a.id));
+    const watermark = (await watermarkOf(a.id))!;
+    const fw = Math.floor(epochSec(watermark));
     await fails(svc.observeSession({ accountId: a.id, keycloakSessionId: newSid(), authTime: fw - 3 }), 'SESSION_REVOKED');
-    await fails(svc.observeSession({ accountId: a.id, keycloakSessionId: newSid(), authTime: fw - 2 }), 'SESSION_REVOKED');
-    expect((await svc.observeSession({ accountId: a.id, keycloakSessionId: newSid(), authTime: fw - 1 })).created).toBe(true);
-    expect((await svc.observeSession({ accountId: a.id, keycloakSessionId: newSid(), authTime: fw })).created).toBe(true);
-    expect((await svc.observeSession({ accountId: a.id, keycloakSessionId: newSid(), authTime: fw + 1 })).created).toBe(true);
+    const unconfirmedSid = newSid();
+    await fails(svc.observeSession({ accountId: a.id, keycloakSessionId: unconfirmedSid, authTime: fw }), 'SESSION_REVOKED');
+    expect(await sessionBySid(unconfirmedSid)).toBeUndefined();
+
+    const oldSid = newSid();
+    provider.addSession(a.subject, oldSid, new Date(watermark.getTime() - 1));
+    await fails(svc.observeSession({ accountId: a.id, keycloakSessionId: oldSid, authTime: fw - 1 }), 'SESSION_REVOKED');
+    expect(await sessionBySid(oldSid)).toBeUndefined();
+
+    const sameSecondSid = newSid();
+    provider.addSession(a.subject, sameSecondSid, new Date(Math.floor(watermark.getTime() / 1000) * 1000 + 999));
+    await fails(svc.observeSession({ accountId: a.id, keycloakSessionId: sameSecondSid, authTime: fw }), 'SESSION_REVOKED');
+    expect(await sessionBySid(sameSecondSid)).toBeUndefined();
+
+    const newSidAtProvider = newSid();
+    provider.addSession(a.subject, newSidAtProvider, new Date(watermark.getTime() + 2000));
+    expect((await svc.observeSession({ accountId: a.id, keycloakSessionId: newSidAtProvider, authTime: fw })).created).toBe(true);
+
+    expect((await svc.observeSession({ accountId: a.id, keycloakSessionId: newSid(), authTime: fw + 5 })).created).toBe(true);
+  });
+
+  it('does not hold the account lock while checking an ambiguous first sight with Keycloak', async () => {
+    const a = await newAccount();
+    const cur = await login(a);
+    await svc.revokeAllSessions(cur.cur, { includeCurrent: false });
+    const watermark = (await watermarkOf(a.id))!;
+    const sid = newSid();
+    provider.addSession(a.subject, sid, new Date(watermark.getTime() + 5000));
+    const callsBefore = provider.callsOf('listSessions').length;
+    const release = provider.hold('listSessions');
+    const observation = svc.observeSession({ accountId: a.id, keycloakSessionId: sid, authTime: Math.floor(epochSec(watermark)) }).then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+    try {
+      for (let i = 0; i < 100 && provider.callsOf('listSessions').length === callsBefore; i++) await sleep(10);
+      expect(provider.callsOf('listSessions')).toHaveLength(callsBefore + 1);
+      await within(1000, svc.revokeAllSessions(cur.cur, { includeCurrent: true }), 'revoke-all while first sight waits for Keycloak');
+    } finally {
+      release();
+    }
+    const observed = await observation;
+    expect('error' in observed && codeOf(observed.error)).toBe('SESSION_REVOKED');
   });
 
   it('a first sight WITHOUT auth_time (or with an unusable one) is refused when a watermark exists', async () => {

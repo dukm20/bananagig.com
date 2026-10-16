@@ -264,6 +264,21 @@ export class SecurityService implements SecurityOperations {
     return (r.rows[0]?.provider_subject as string | undefined) ?? null;
   }
 
+  private async providerSessionStartedAt(accountId: string, sessionId: string): Promise<Date | null> {
+    const provider = this.d.identityProvider;
+    if (!provider.available) return null;
+    const subject = await this.subjectOf(this.db, accountId).catch(mapDbError);
+    if (!subject) return null;
+    try {
+      const session = (await provider.listSessions(subject)).find((s) => s.id === sessionId);
+      const startedAt = session?.startedAt;
+      return startedAt instanceof Date && Number.isFinite(startedAt.getTime()) ? startedAt : null;
+    } catch (err) {
+      log('warn', 'identity provider session start could not be read', { code: errorCode(err) });
+      return null;
+    }
+  }
+
   private async currentSession(ex: Executor, current: CurrentSession, lock = false): Promise<SessionRow | null> {
     const rows = lock
       ? await sql<Row>`SELECT application_session_id, account_id, keycloak_session_id, account_device_id, revoked_at IS NOT NULL AS revoked, revocation_reason
@@ -337,20 +352,35 @@ export class SecurityService implements SecurityOperations {
   }
 
   /** First sight of a session: serialized with revoke-all through the account row (FOR SHARE here, FOR UPDATE there). Two concurrent first requests create ONE row. */
-  private firstSight(input: SessionObservation): Promise<ObservedSession> {
+  private async firstSight(input: SessionObservation): Promise<ObservedSession> {
     const authTime =
       typeof input.authTime === 'number' && Number.isFinite(input.authTime) && input.authTime > 0 && input.authTime < 4_102_444_800 ? input.authTime : null;
+    const watermarkBeforeLock = (
+      await sql<Row>`SELECT sessions_not_before FROM identity.accounts WHERE account_id = ${input.accountId}`.execute(this.db).catch(mapDbError)
+    ).rows[0]?.sessions_not_before as Date | null | undefined;
+    let providerStartedAt: Date | null = null;
+    if (watermarkBeforeLock && authTime !== null) {
+      const authDeltaMs = authTime * 1000 - watermarkBeforeLock.getTime();
+      if (authDeltaMs >= -2000 && authDeltaMs <= 2000) providerStartedAt = await this.providerSessionStartedAt(input.accountId, input.keycloakSessionId);
+    }
     return this.tx(async (trx) => {
       const acc = (
-        await sql<Row>`SELECT status,
-            (sessions_not_before IS NOT NULL AND (${authTime}::double precision IS NULL OR to_timestamp(${authTime}::double precision) + interval '2 seconds' < sessions_not_before)) AS refused
+        await sql<Row>`SELECT status, sessions_not_before
           FROM identity.accounts WHERE account_id = ${input.accountId} FOR SHARE`.execute(trx)
       ).rows[0];
       if (!acc) throw new AccountError('NOT_FOUND', 'the account does not exist');
       assertUsable(acc.status as AccountStatus);
-      // authenticated before the account's latest "sign out everywhere" (or not provably after it): the identity provider session existed, the API had not seen it.
-      // auth_time is whole seconds and comes from another clock: a 2 second skew tolerance (a login within 2 s before the watermark is accepted)
-      if (acc.refused === true) throw sessionRevoked();
+      const watermark = (acc.sessions_not_before as Date | null) ?? null;
+      if (watermark) {
+        if (authTime === null) throw sessionRevoked();
+        const authDeltaMs = authTime * 1000 - watermark.getTime();
+        if (authDeltaMs < -2000) throw sessionRevoked();
+        if (authDeltaMs <= 2000) {
+          // Provider start times have whole-second precision; reserve a full second so an earlier
+          // start within the reported second cannot pass the watermark.
+          if (!providerStartedAt || providerStartedAt.getTime() - 1000 < watermark.getTime()) throw sessionRevoked();
+        }
+      }
 
       const cid = getCorrelationId() ?? randomUUID();
       const inserted = (
