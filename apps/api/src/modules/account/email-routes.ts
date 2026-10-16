@@ -32,7 +32,11 @@ const failures = {
 const meta = (req: FastifyRequest) => ({ correlationId: req.correlationId });
 const run = async <T>(fn: () => Promise<T>): Promise<T> => fn().catch(toAppError);
 /** Facts for the abuse limits: the client address as Fastify resolves it (trustProxy). Hashed by the service; never stored or logged. */
-const requestContext = (req: FastifyRequest) => ({ clientIp: req.ip });
+const requestContext = (req: FastifyRequest) => {
+  // the application device of the session (ID-004) feeds the per-device rate-limit dimension; absent without the security layer or before the browser registered
+  const deviceId = req.securitySession?.accountDeviceId ?? undefined;
+  return deviceId === undefined ? { clientIp: req.ip } : { clientIp: req.ip, deviceId };
+};
 
 export async function accountEmailRoutes(app: FastifyInstance): Promise<void> {
   const tags = ['account'];

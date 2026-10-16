@@ -9,13 +9,25 @@ import {
   AddressFormatResponse,
   AddressValidationResponse,
   AdministrativeAreaListResponse,
+  DeviceRemovedResponse,
+  DeviceTrustResponse,
   EmailVerificationSentResponse,
   EmailVerifiedResponse,
   FormatAddressResponse,
   LocaleListResponse,
+  MfaEnrollmentResponse,
+  PasswordResetAcceptedResponse,
+  RegisteredSessionResponse,
   ResolveContentResponse,
   ResolveManyContentResponse,
+  SecurityActivityResponse,
+  SecurityDevicesResponse,
+  SecurityOverviewResponse,
+  SecuritySessionsResponse,
+  SessionRevokedResponse,
+  SessionsRevokedAllResponse,
   SetEmailResponse,
+  SignedOutResponse,
   SystemInfoResponse,
   WhoAmIResponse,
   type AccountDto,
@@ -25,13 +37,27 @@ import {
   type AddressValidationResultDto,
   type AdministrativeAreaListDto,
   type ContentContext,
+  type DeviceRemovedDto,
+  type DeviceTrustDto,
   type EmailVerificationSentDto,
   type EmailVerifiedDto,
   type FormattedAddressDto,
   type LocaleDto,
+  type MfaEnrollmentDto,
+  type MfaMethod,
   type NormalizedAddressDto,
+  type PasswordResetAcceptedDto,
+  type RegisteredSessionDto,
+  type RegisterSessionRequest,
   type ResolvedContentDto,
+  type SecurityActivityDto,
+  type SecurityDevicesDto,
+  type SecurityOverviewDto,
+  type SecuritySessionsDto,
+  type SessionRevokedDto,
+  type SessionsRevokedAllDto,
   type SetEmailResultDto,
+  type SignedOutDto,
   type SystemInfo,
   type UpdateProfileRequest,
   type WhoAmI,
@@ -83,7 +109,7 @@ export interface AccountCallOptions {
   activeRole?: string;
   /**
    * The browser's address as seen by the web server (the first entry of the proxy's x-forwarded-for). Forwarded as x-forwarded-for so the API's abuse
-   * limits count real clients and not the web server itself. Only the email verification calls use it.
+   * limits count real clients and not the web server itself. Only the email verification calls and the public password-reset request use it.
    */
   clientIp?: string;
 }
@@ -102,7 +128,7 @@ export function createApiClient(opts: ApiClientOptions) {
     path: string,
     parse: (json: unknown) => T,
     body?: unknown,
-    extra: { method?: 'GET' | 'POST' | 'PUT'; headers?: Record<string, string> } = {},
+    extra: { method?: 'GET' | 'POST' | 'PUT' | 'DELETE'; headers?: Record<string, string> } = {},
   ): Promise<{ data: T; correlationId: string | undefined }> {
     const headers: Record<string, string> = { accept: 'application/json', ...extra.headers };
     const cid = opts.correlationId?.();
@@ -203,6 +229,93 @@ export function createApiClient(opts: ApiClientOptions) {
           { token },
           { method: 'POST', headers: emailHeaders(o) },
         )
+      ).data;
+    },
+    // ---------------------------------------------------------------- account security (ID-004): sessions, browsers, MFA, activity, password reset
+    /** POST /api/v1/account/security/sessions/current: tells the API which browser (device secret, coarse user agent) this login came from. The secret is sent in the body only. */
+    async registerSession(input: RegisterSessionRequest, o: AccountCallOptions = {}): Promise<RegisteredSessionDto> {
+      return (
+        await request('/account/security/sessions/current', (j) => RegisteredSessionResponse.parse(j).data, input, { method: 'POST', headers: roleHeader(o) })
+      ).data;
+    },
+    /** GET /api/v1/account/security: second-factor state, step-up state, current session and the policy the owner sees. */
+    async getSecurityOverview(o: AccountCallOptions = {}): Promise<SecurityOverviewDto> {
+      return (await request('/account/security', (j) => SecurityOverviewResponse.parse(j).data, undefined, { headers: roleHeader(o) })).data;
+    },
+    /** GET /api/v1/account/security/sessions: the caller's sessions (current first). */
+    async listSecuritySessions(o: AccountCallOptions = {}): Promise<SecuritySessionsDto> {
+      return (await request('/account/security/sessions', (j) => SecuritySessionsResponse.parse(j).data, undefined, { headers: roleHeader(o) })).data;
+    },
+    /** DELETE /api/v1/account/security/sessions/:sessionId: signs one session out (an unknown or foreign id is 404). */
+    async revokeSecuritySession(sessionId: string, o: AccountCallOptions = {}): Promise<SessionRevokedDto> {
+      return (
+        await request(`/account/security/sessions/${encodeURIComponent(sessionId)}`, (j) => SessionRevokedResponse.parse(j).data, undefined, {
+          method: 'DELETE',
+          headers: roleHeader(o),
+        })
+      ).data;
+    },
+    /** POST /api/v1/account/security/sessions/revoke-all: signs out every other session (`includeCurrent: true` signs this one out too). */
+    async revokeAllSecuritySessions(input: { includeCurrent?: boolean } = {}, o: AccountCallOptions = {}): Promise<SessionsRevokedAllDto> {
+      return (
+        await request('/account/security/sessions/revoke-all', (j) => SessionsRevokedAllResponse.parse(j).data, input, {
+          method: 'POST',
+          headers: roleHeader(o),
+        })
+      ).data;
+    },
+    /** POST /api/v1/account/security/sessions/current/sign-out: ends the application session of this request (best effort at logout). */
+    async signOutCurrentSession(o: AccountCallOptions = {}): Promise<SignedOutDto> {
+      return (
+        await request('/account/security/sessions/current/sign-out', (j) => SignedOutResponse.parse(j).data, {}, { method: 'POST', headers: roleHeader(o) })
+      ).data;
+    },
+    /** GET /api/v1/account/security/devices: the caller's browsers with their trusted-browser state. */
+    async listSecurityDevices(o: AccountCallOptions = {}): Promise<SecurityDevicesDto> {
+      return (await request('/account/security/devices', (j) => SecurityDevicesResponse.parse(j).data, undefined, { headers: roleHeader(o) })).data;
+    },
+    /** POST /api/v1/account/security/devices/current/trust: trusts this browser (needs a recent authentication: 401 STEP_UP_REQUIRED otherwise). */
+    async trustCurrentDevice(o: AccountCallOptions = {}): Promise<DeviceTrustDto> {
+      return (
+        await request('/account/security/devices/current/trust', (j) => DeviceTrustResponse.parse(j).data, {}, { method: 'POST', headers: roleHeader(o) })
+      ).data;
+    },
+    /** DELETE /api/v1/account/security/devices/current/trust: stops trusting this browser. */
+    async untrustCurrentDevice(o: AccountCallOptions = {}): Promise<DeviceTrustDto> {
+      return (
+        await request('/account/security/devices/current/trust', (j) => DeviceTrustResponse.parse(j).data, undefined, {
+          method: 'DELETE',
+          headers: roleHeader(o),
+        })
+      ).data;
+    },
+    /** DELETE /api/v1/account/security/devices/:deviceId: forgets a browser and signs out its sessions. */
+    async removeSecurityDevice(deviceId: string, o: AccountCallOptions = {}): Promise<DeviceRemovedDto> {
+      return (
+        await request(`/account/security/devices/${encodeURIComponent(deviceId)}`, (j) => DeviceRemovedResponse.parse(j).data, undefined, {
+          method: 'DELETE',
+          headers: roleHeader(o),
+        })
+      ).data;
+    },
+    /** GET /api/v1/account/security/activity: the security timeline, newest first (`before` is the `nextBefore` of the previous page). */
+    async listSecurityActivity(q: { limit?: number; before?: string } = {}, o: AccountCallOptions = {}): Promise<SecurityActivityDto> {
+      const query = new URLSearchParams();
+      if (q.limit !== undefined) query.set('limit', String(q.limit));
+      if (q.before !== undefined) query.set('before', q.before);
+      const qs = query.size > 0 ? `?${query.toString()}` : '';
+      return (await request(`/account/security/activity${qs}`, (j) => SecurityActivityResponse.parse(j).data, undefined, { headers: roleHeader(o) })).data;
+    },
+    /** POST /api/v1/account/security/mfa/enrollment: records the request and names the Keycloak action to start (needs a recent authentication). Nothing secret is returned. */
+    async startMfaEnrollment(method: MfaMethod, o: AccountCallOptions = {}): Promise<MfaEnrollmentDto> {
+      return (
+        await request('/account/security/mfa/enrollment', (j) => MfaEnrollmentResponse.parse(j).data, { method }, { method: 'POST', headers: roleHeader(o) })
+      ).data;
+    },
+    /** POST /api/v1/auth/password-reset (public): always the same 202 body. A rate limit is an ApiError (429). The address travels in the body only. */
+    async requestPasswordReset(email: string, o: AccountCallOptions = {}): Promise<PasswordResetAcceptedDto> {
+      return (
+        await request('/auth/password-reset', (j) => PasswordResetAcceptedResponse.parse(j).data, { email }, { method: 'POST', headers: emailHeaders(o) })
       ).data;
     },
     /** GET /api/v1/system/info */

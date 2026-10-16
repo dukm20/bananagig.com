@@ -1,5 +1,6 @@
 // Connectivity smoke test. Runs inside the Compose network (pnpm smoke) and verifies real
 // round-trips, not just container status. Exits non-zero if any check fails.
+import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import http from 'node:http';
 import { AccountService, hashDimension } from '@bananagig/accounts';
 import { Redis } from 'iovalkey';
@@ -9,11 +10,23 @@ import {
   AccountEmailResponse,
   AccountResponse,
   CORRELATION_HEADER,
+  DeviceRemovedResponse,
+  DeviceTrustResponse,
   EmailVerifiedResponse,
   ErrorResponse,
+  MfaEnrollmentResponse,
+  PasswordResetAcceptedResponse,
   PhoneVerifiedResponse,
+  RegisteredSessionResponse,
+  SecurityActivityResponse,
+  SecurityDevicesResponse,
+  SecurityOverviewResponse,
+  SecuritySessionsResponse,
+  SessionRevokedResponse,
+  SessionsRevokedAllResponse,
   SetEmailResponse,
   SetPhoneResponse,
+  SignedOutResponse,
   SystemInfoResponse,
   WhoAmIResponse,
   canonicalizeEmail,
@@ -21,7 +34,17 @@ import {
   maskPhone,
 } from '@bananagig/contracts';
 import { createDatabase } from '@bananagig/database';
-import { createTokenVerifier, exchangeAuthorizationCode, oidcEndpoints } from '@bananagig/identity';
+import {
+  buildAuthorizeUrl,
+  codeChallengeS256,
+  createTokenVerifier,
+  exchangeAuthorizationCode,
+  generateCodeVerifier,
+  kcActionStatusFromCallback,
+  oidcEndpoints,
+  randomToken,
+  refreshTokenSet,
+} from '@bananagig/identity';
 import {
   ADMIN_REDIRECT_URI,
   authorizationCodeLogin,
@@ -359,6 +382,57 @@ const verifier = createTokenVerifier({
   webClientId: 'bananagig-web',
   adminClientId: 'bananagig-admin',
 });
+
+// ---- Keycloak admin REST (master realm, dev admin credentials: the same source as the 'Keycloak Auth' check) for the 'Sessions and security' scenario.
+// provider.dev is password-only in the realm file; the scenario enrols a second factor for it and ALWAYS removes it again. A run that died before its cleanup would
+// leave that user challenged for a code and break every login below, so the leftovers of such a run are removed first.
+const kcMasterToken = async (): Promise<string> => {
+  const res = await get(`${kcUrl}/realms/master/protocol/openid-connect/token`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'password',
+      client_id: 'admin-cli',
+      username: env('KEYCLOAK_ADMIN', 'admin'),
+      password: env('KEYCLOAK_ADMIN_PASSWORD', 'admin_dev_only'),
+    }),
+  });
+  const token = ((await res.json().catch(() => ({}))) as { access_token?: string }).access_token;
+  if (!res.ok || !token) throw new Error(`Keycloak master admin token -> HTTP ${res.status} (KEYCLOAK_ADMIN / KEYCLOAK_ADMIN_PASSWORD)`);
+  return token;
+};
+const kcRealmAdmin = async (token: string, path: string, method = 'GET'): Promise<{ status: number; json: unknown }> => {
+  const res = await get(`${kcUrl}/admin/realms/bananagig${path}`, { method, headers: { authorization: `Bearer ${token}` } });
+  const text = await res.text();
+  let json: unknown;
+  try {
+    json = text ? JSON.parse(text) : undefined;
+  } catch {
+    json = text;
+  }
+  return { status: res.status, json };
+};
+/** Removes the TOTP and recovery-code credentials of a dev user (the realm file defines none). Returns how many were removed. */
+const removeSecondFactors = async (username: string): Promise<number> => {
+  const token = await kcMasterToken();
+  const id = ((await kcRealmAdmin(token, `/users?username=${encodeURIComponent(username)}&exact=true`)).json as { id?: string }[] | undefined)?.[0]?.id;
+  if (!id) throw new Error(`Keycloak user ${username} not found`);
+  const credentials = ((await kcRealmAdmin(token, `/users/${id}/credentials`)).json ?? []) as { id: string; type: string }[];
+  let removed = 0;
+  for (const c of credentials.filter((x) => x.type === 'otp' || x.type === 'recovery-authn-codes')) {
+    const del = await kcRealmAdmin(token, `/users/${id}/credentials/${c.id}`, 'DELETE');
+    if (del.status !== 204) throw new Error(`removing a ${c.type} credential of ${username} -> HTTP ${del.status}`);
+    removed++;
+  }
+  return removed;
+};
+let healedSecondFactors = 0;
+try {
+  healedSecondFactors = await removeSecondFactors(DEV_USERS.provider.username);
+} catch {
+  // Keycloak admin not reachable with these credentials: the checks below report the real problem
+}
+
 let customerToken = '';
 await check('Keycloak Auth token flow', async () => {
   customerToken = await devAccessToken(kc, 'customer'); // DEV/TEST-only client
@@ -1491,6 +1565,977 @@ await check('Phone verification', async () => {
   }
 });
 
+// ---------------------------------------------------------------- Sessions and security (ID-004)
+// A scripted browser for the Keycloak pages the shared helpers do not cover: the OTP page, the numbered recovery-code page and the application-initiated actions
+// (kc_action) that enrol a TOTP credential or generate recovery codes. Forms are parsed and posted; no browser is involved. Nothing it reads is printed or logged.
+const totpAt = (secret: string, counter: number): string => {
+  // RFC 6238 / HmacSHA1, 6 digits, 30 s. Keycloak uses the ASCII bytes of the stored secret string as the HMAC key.
+  const buf = Buffer.alloc(8);
+  buf.writeBigUInt64BE(BigInt(counter));
+  const h = createHmac('sha1', Buffer.from(secret, 'utf8')).update(buf).digest();
+  const o = h[h.length - 1]! & 0xf;
+  const code = (((h[o]! & 0x7f) << 24) | (h[o + 1]! << 16) | (h[o + 2]! << 8) | h[o + 3]!) % 1_000_000;
+  return String(code).padStart(6, '0');
+};
+// Keycloak accepts the counters c-1..c+1 and refuses a counter at or below the last accepted one: remember the last counter used per secret and wait for the next
+// 30 s window when the three codes of one window are spent. `exact` (enrolment) uses the current window.
+const lastTotpCounter = new Map<string, number>();
+const nextTotp = async (secret: string, o: { exact?: boolean } = {}): Promise<string> => {
+  for (;;) {
+    const c = Math.floor(Date.now() / 30_000);
+    const pick = o.exact ? c : Math.max(c - 1, (lastTotpCounter.get(secret) ?? 0) + 1);
+    if (pick <= c + 1) {
+      lastTotpCounter.set(secret, pick);
+      return totpAt(secret, pick);
+    }
+    await sleep(1000);
+  }
+};
+
+class KcJar {
+  private c = new Map<string, string>();
+  absorb(res: Response): void {
+    for (const line of res.headers.getSetCookie()) {
+      const [pair] = line.split(';');
+      const i = pair!.indexOf('=');
+      const name = pair!.slice(0, i).trim();
+      const value = pair!.slice(i + 1).trim();
+      if (!value || /max-age=0/i.test(line)) this.c.delete(name);
+      else this.c.set(name, value);
+    }
+  }
+  header(): string {
+    return [...this.c].map(([k, v]) => `${k}=${v}`).join('; ');
+  }
+}
+const htmlDecode = (s: string): string =>
+  s
+    .replace(/&amp;/g, '&')
+    .replace(/&#x3d;/gi, '=')
+    .replace(/&#61;/g, '=')
+    .replace(/&quot;/g, '"');
+const htmlField = (html: string, name: string): string => {
+  const tag = html.match(new RegExp(`<input[^>]*name="${name}"[^>]*>`))?.[0] ?? '';
+  return htmlDecode(tag.match(/value="([^"]*)"/)?.[1] ?? '');
+};
+type KcPage =
+  'login' | 'login-password-only' | 'select-credential' | 'otp' | 'recovery-code' | 'configure-totp' | 'configure-recovery' | 'action-proceed' | 'other';
+const kcPage = (html: string): KcPage => {
+  const names = new Set([...html.matchAll(/name="([^"]+)"/g)].map((m) => m[1]!));
+  if (names.has('password') && names.has('username')) return 'login';
+  if (names.has('password') && !names.has('username')) return 'login-password-only';
+  if (/id="kc-select-credential-form"/.test(html)) return 'select-credential';
+  if (names.has('otp')) return 'otp';
+  if (names.has('recoveryCodeInput')) return 'recovery-code';
+  if (names.has('totpSecret')) return 'configure-totp';
+  if (names.has('generatedRecoveryAuthnCodes')) return 'configure-recovery';
+  if (/<a [^>]*href="[^"]*action-token\?key=/.test(html) && !/<form/.test(html)) return 'action-proceed';
+  return 'other';
+};
+interface KcCreds {
+  user: string;
+  pw: string;
+  /** Answer for the OTP page. Without it (and without `recovery`) the driver stops at that page: nothing is consumed. */
+  otp?: () => Promise<string>;
+  /** Answer the OTP page with a recovery code instead: "Try another way", then the code Keycloak asks for by number. */
+  recovery?: (n: number) => string;
+  /** Complete the CONFIGURE_TOTP / CONFIGURE_RECOVERY_AUTHN_CODES page when the (kc_action) flow reaches it. */
+  enrol?: 'totp' | 'recovery';
+  stopAt?: readonly KcPage[];
+}
+interface KcResult {
+  done: boolean;
+  /** The callback URL (carrying the code) when the flow completed. */
+  location?: string;
+  kind?: KcPage;
+  /** The server re-rendered the page that was just answered (a refusal). */
+  rejected?: boolean;
+  /** The Keycloak-generated TOTP secret and recovery codes of an enrolment: held in memory only, scanned for at the end, never printed. */
+  totpSecret?: string;
+  recoveryCodes?: string[];
+  jar: KcJar;
+  verifier: string;
+}
+const kcRewrite = (u: string): string => u.replace(kc.publicUrl!.replace(/\/$/, ''), kcUrl.replace(/\/$/, ''));
+async function kcDrive(startUrl: string, c: KcCreds, jar: KcJar): Promise<Omit<KcResult, 'verifier'>> {
+  let url = startUrl;
+  let lastPosted: KcPage | undefined;
+  let curExec: string | undefined;
+  let pending: Response | undefined;
+  const out: Omit<KcResult, 'verifier'> = { done: false, jar };
+  const post = async (action: string, body: Record<string, string>): Promise<Response> => {
+    const r = await fetch(kcRewrite(action), {
+      method: 'POST',
+      redirect: 'manual',
+      signal: AbortSignal.timeout(15_000),
+      headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: jar.header() },
+      body: new URLSearchParams(body),
+    });
+    jar.absorb(r);
+    return r;
+  };
+  for (let i = 0; i < 18; i++) {
+    const r = pending ?? (await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(15_000), headers: { cookie: jar.header() } }));
+    if (!pending) jar.absorb(r);
+    pending = undefined;
+    const loc = r.headers.get('location');
+    if (loc) {
+      if (loc.startsWith(WEB_REDIRECT_URI)) return { ...out, done: true, location: loc };
+      url = kcRewrite(new URL(loc, url).toString());
+      continue;
+    }
+    const html = await r.text();
+    const kind = kcPage(html);
+    const action = htmlDecode(html.match(/<form[^>]*\baction="([^"]+)"/i)?.[1] ?? '');
+    if (kind === 'action-proceed') {
+      url = kcRewrite(htmlDecode(html.match(/<a [^>]*href="([^"]*action-token\?key=[^"]*)"/)![1]!));
+      continue;
+    }
+    if (c.stopAt?.includes(kind) || !action) return { ...out, kind };
+    if (kind === lastPosted) return { ...out, kind, rejected: true }; // never hammer: brute-force protection counts every failure
+    let body: Record<string, string>;
+    if (kind === 'login') body = { username: c.user, password: c.pw, credentialId: '' };
+    else if (kind === 'login-password-only') body = { password: c.pw, credentialId: '' };
+    else if (kind === 'otp' && c.recovery) {
+      const forms = [...html.matchAll(/<form[\s\S]*?<\/form>/g)].map((m) => m[0]);
+      const tryAnother = forms.find((f) => /name="tryAnotherWay"/.test(f));
+      if (!tryAnother) return { ...out, kind };
+      pending = await post(htmlDecode(tryAnother.match(/action="([^"]+)"/)![1]!), { tryAnotherWay: 'on' });
+      curExec = htmlDecode(action).match(/execution=([^&]+)/)?.[1];
+      continue;
+    } else if (kind === 'select-credential') {
+      const forms = [...html.matchAll(/<form[\s\S]*?<\/form>/g)].map((m) => m[0]);
+      const pick = forms.map((f) => f.match(/name="authenticationExecution" value="([^"]+)"/)?.[1]).find((id) => id && id !== curExec);
+      if (!pick) return { ...out, kind };
+      pending = await post(action, { authenticationExecution: pick });
+      continue;
+    } else if (kind === 'otp') {
+      if (!c.otp) return { ...out, kind };
+      body = { otp: await c.otp(), selectedCredentialId: html.match(/name="selectedCredentialId"[^>]*value="([^"]*)"/)?.[1] ?? '' };
+    } else if (kind === 'recovery-code') {
+      if (!c.recovery) return { ...out, kind };
+      body = { recoveryCodeInput: c.recovery(Number(html.match(/Recovery code #(\d+)/)?.[1] ?? 0)) }; // Keycloak asks for a NUMBERED code, in order
+    } else if (kind === 'configure-totp' && c.enrol === 'totp') {
+      out.totpSecret = htmlField(html, 'totpSecret');
+      body = { totp: await nextTotp(out.totpSecret, { exact: true }), totpSecret: out.totpSecret, userLabel: 'smoke authenticator' };
+    } else if (kind === 'configure-recovery' && c.enrol === 'recovery') {
+      const generated = htmlField(html, 'generatedRecoveryAuthnCodes');
+      out.recoveryCodes = generated.split(',');
+      body = {
+        generatedRecoveryAuthnCodes: generated,
+        generatedAt: htmlField(html, 'generatedAt'),
+        userLabel: 'Recovery codes',
+        kcRecoveryCodesConfirmationCheck: 'on',
+      };
+    } else return { ...out, kind };
+    lastPosted = kind;
+    pending = await post(action, body);
+  }
+  return out;
+}
+/** Starts an Authorization Code + PKCE request for bananagig-web (the URL builder the web server uses) and drives the login. */
+const kcWebLogin = async (c: KcCreds, o: { kcAction?: 'CONFIGURE_TOTP' | 'CONFIGURE_RECOVERY_AUTHN_CODES'; jar?: KcJar } = {}): Promise<KcResult> => {
+  const verifier = generateCodeVerifier();
+  const url = buildAuthorizeUrl({
+    authorizationEndpoint: ep.authorization,
+    clientId: 'bananagig-web',
+    redirectUri: WEB_REDIRECT_URI,
+    state: randomToken(16),
+    nonce: randomToken(16),
+    codeChallenge: codeChallengeS256(verifier),
+    kcAction: o.kcAction,
+  });
+  return { ...(await kcDrive(kcRewrite(url), c, o.jar ?? new KcJar())), verifier };
+};
+const kcTokens = async (l: KcResult) => {
+  if (!l.done || !l.location)
+    throw new Error(`the login did not reach the callback (it stopped at the ${l.kind ?? 'unknown'} page${l.rejected ? ', refused' : ''})`);
+  const code = new URL(l.location).searchParams.get('code');
+  if (!code) throw new Error('the callback carried no code');
+  return exchangeAuthorizationCode({ tokenEndpoint: ep.token, clientId: 'bananagig-web', redirectUri: WEB_REDIRECT_URI, code, codeVerifier: l.verifier });
+};
+
+await check('Sessions and security', async () => {
+  // Application sessions, devices, MFA status, sign out everywhere, the security timeline and the public password-reset request (ID-004) end to end with REAL Keycloak
+  // tokens (Authorization Code + PKCE, bananagig-web) and real HTTP. customer.dev only creates and revokes sessions; the second factor is enrolled for provider.dev
+  // (kc_action=CONFIGURE_TOTP / CONFIGURE_RECOVERY_AUTHN_CODES) and ALWAYS removed again in a finally block through the Keycloak admin REST API (master realm, dev
+  // credentials KEYCLOAK_ADMIN / KEYCLOAK_ADMIN_PASSWORD), so later runs and the other scenarios log in with a password only. Every run uses fresh sessions and
+  // browsers (random device secrets) and ends with the same state: customer.dev with every session revoked except one signed-in session, provider.dev password-only.
+  const assert = (ok: boolean, what: string): void => {
+    if (!ok) throw new Error(what);
+  };
+  const seen: string[] = []; // every response body and header block: searched for secrets at the end
+  const secretsOf = new Map<string, string[]>(); // what -> values that must appear in no response and no log line
+  const guard = (what: string, ...values: (string | undefined)[]): void => {
+    secretsOf.set(what, [...(secretsOf.get(what) ?? []), ...values.filter((v): v is string => typeof v === 'string' && v.length >= 8)]);
+  };
+  const cid = `smoke-security-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const flowStart = Date.now() * 1e6;
+  const notes: string[] = [];
+  type Reply = { status: number; text: string; json: any; headers: Headers }; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const call = async (
+    method: 'GET' | 'POST' | 'DELETE',
+    path: string,
+    token?: string,
+    o: { body?: unknown; headers?: Record<string, string> } = {},
+  ): Promise<Reply> => {
+    const r = await get(`${api}/api/v1${path}`, {
+      method,
+      headers: {
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        [CORRELATION_HEADER]: cid,
+        ...(o.body !== undefined ? { 'content-type': 'application/json' } : {}),
+        ...o.headers,
+      },
+      ...(o.body !== undefined ? { body: JSON.stringify(o.body) } : {}),
+    });
+    const text = await r.text();
+    seen.push(text, JSON.stringify([...r.headers]));
+    let json: any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = undefined;
+    }
+    return { status: r.status, text, json, headers: r.headers };
+  };
+  const ok = <T>(r: Reply, schema: { parse: (x: unknown) => { data: T } }, what: string): T => {
+    assert(r.status === 200, `${what} -> ${r.status} ${r.json?.error?.code ?? ''} ${r.text.slice(0, 160)}`);
+    return schema.parse(r.json).data;
+  };
+  const refusal = (r: Reply, status: number, code: string, what: string): void =>
+    assert(
+      r.status === status && r.json?.error?.code === code,
+      `${what}: expected ${status} ${code}, got ${r.status} ${r.json?.error?.code ?? r.text.slice(0, 120)}`,
+    );
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+  interface Login {
+    token: string;
+    refreshToken: string;
+    sid: string;
+    authTime: number | undefined;
+    acr: string | undefined;
+  }
+  const loginOf = async (tokens: { accessToken: string; refreshToken: string }): Promise<Login> => {
+    const p = await verifier.verifyAccessToken(tokens.accessToken);
+    assert(!!p.sessionId, 'the access token carries no sid claim (the application session is keyed by it)');
+    guard('access token (signature)', tokens.accessToken.split('.')[2]?.slice(0, 64));
+    guard('refresh token (signature)', tokens.refreshToken.split('.').pop()?.slice(0, 64));
+    guard('Keycloak session id', p.sessionId);
+    guard('Keycloak subject', p.subject);
+    return { token: tokens.accessToken, refreshToken: tokens.refreshToken, sid: p.sessionId!, authTime: p.authTime, acr: p.acr };
+  };
+  /** A new, independent Keycloak session (its own cookie jar): password only. */
+  const signIn = async (user: 'customer' | 'provider'): Promise<Login> => {
+    const l = await authorizationCodeLogin(kc, { clientId: 'bananagig-web', redirectUri: WEB_REDIRECT_URI, ...DEV_USERS[user] });
+    return loginOf(
+      await exchangeAuthorizationCode({
+        tokenEndpoint: ep.token,
+        clientId: 'bananagig-web',
+        redirectUri: WEB_REDIRECT_URI,
+        code: l.code,
+        codeVerifier: l.verifier,
+      }),
+    );
+  };
+  /** The first authenticated request of a login: the API creates its application session. Returns the application session id. */
+  const seenBy = async (s: Login, what: string): Promise<string> => {
+    const sessions = ok(await call('GET', '/account/security/sessions', s.token), SecuritySessionsResponse, `${what}: GET /account/security/sessions`);
+    const current = sessions.sessions.filter((x) => x.current);
+    assert(current.length === 1 && current[0]!.status === 'ACTIVE' && uuid.test(current[0]!.sessionId), `${what}: exactly one ACTIVE current session expected`);
+    return current[0]!.sessionId;
+  };
+  const sessionsOf = async (s: Login, what: string) => ok(await call('GET', '/account/security/sessions', s.token), SecuritySessionsResponse, what);
+  const revoked = (r: Reply, what: string): void => {
+    refusal(r, 401, 'SESSION_REVOKED', what);
+    assert(/^Bearer /.test(r.headers.get('www-authenticate') ?? ''), `${what}: the 401 must carry a Bearer challenge`);
+  };
+
+  const userAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+  const rawUserAgentParts = ['AppleWebKit', 'Macintosh', 'Chrome/126'];
+
+  // ------------------------------------------------------------------------------------------------------ customer.dev: sessions
+  // (1) the first authenticated request creates the application session of that login: listed as current, first
+  const a = await signIn('customer');
+  assert(a.authTime !== undefined && Math.abs(Date.now() / 1000 - a.authTime) < 300, 'the web token must carry a recent auth_time');
+  const listA1 = await sessionsOf(a, '(1) first request');
+  assert(listA1.sessions[0]!.current === true, '(1) the current session must be listed first');
+  assert(
+    listA1.sessions.every((s) => s.status === 'ACTIVE'),
+    '(1) only active sessions are listed',
+  );
+  const idA = listA1.sessions[0]!.sessionId;
+  const knownBeforeB = new Set(listA1.sessions.map((s) => s.sessionId));
+  const meA = AccountResponse.parse((await call('GET', '/account/me', a.token)).json).data;
+  assert(/^[0-9a-f-]{36}$/.test(meA.accountId), 'GET /account/me did not return an account');
+
+  // (2) a second independent login: a different Keycloak session (sid) and a second application session
+  const b = await signIn('customer');
+  assert(b.sid !== a.sid, '(2) the second login must be a different Keycloak session');
+  const idB = await seenBy(b, '(2) second login');
+  assert(idB !== idA, '(2) two Keycloak sessions must be two application sessions');
+  const listA2 = await sessionsOf(a, '(2) list after the second login');
+  assert(
+    listA2.sessions.length >= 2 && listA2.sessions[0]!.sessionId === idA && listA2.sessions[0]!.current,
+    '(2) the list from token A must start with its own session',
+  );
+  const sessionB = listA2.sessions.find((s) => s.sessionId === idB);
+  assert(
+    !!sessionB && !sessionB.current && sessionB.status === 'ACTIVE' && !knownBeforeB.has(idB),
+    '(2) the second session must be listed as another, active session',
+  );
+
+  // (3) revoke B with A: B is refused on its very next request (its access token is still valid for minutes), A keeps working, Keycloak's session ends too
+  const revokeStart = Date.now();
+  const revokeB = ok(await call('DELETE', `/account/security/sessions/${idB}`, a.token), SessionRevokedResponse, '(3) revoke B');
+  assert(revokeB.changed && !revokeB.current && revokeB.sessionId === idB, '(3) the revocation must report a changed, non-current session');
+  assert(
+    revokeB.keycloak === 'ENDED',
+    `(3) the Keycloak session of B must be ended, got ${revokeB.keycloak} (is KEYCLOAK_SECURITY_CLIENT_SECRET set for the API container?)`,
+  );
+  const bAfter = await call('GET', '/account/me', b.token);
+  const refusedAfterMs = Date.now() - revokeStart;
+  revoked(bAfter, '(3) B after its revocation');
+  assert(refusedAfterMs < 2000, `(3) the revoked session must be refused at once (took ${refusedAfterMs} ms)`);
+  assert((await call('GET', '/account/me', a.token)).status === 200, '(3) revoking B must not touch A');
+  const refreshOfB = await refreshTokenSet({ tokenEndpoint: ep.token, clientId: 'bananagig-web', refreshToken: b.refreshToken }).then(
+    () => 'accepted',
+    () => 'refused',
+  );
+  assert(refreshOfB === 'refused', '(3) the refresh token of B must stop working once its Keycloak session is ended');
+  const again = ok(await call('DELETE', `/account/security/sessions/${idB}`, a.token), SessionRevokedResponse, '(3) revoke B again');
+  assert(!again.changed, '(3) revoking a revoked session is an idempotent no-op');
+  refusal(await call('DELETE', `/account/security/sessions/${randomUUID()}`, a.token), 404, 'ACCOUNT_SESSION_NOT_FOUND', '(3) unknown session id');
+  assert((await call('DELETE', '/account/security/sessions/not-a-uuid', a.token)).status === 400, '(3) a malformed session id must be a 400');
+
+  // (4) register the browser of A: a random 43-character secret and a user agent; only the coarse families come back
+  const deviceSecret = randomBytes(32).toString('base64url');
+  assert(deviceSecret.length === 43, 'device secret shape');
+  guard('device secret', deviceSecret);
+  const registered = ok(
+    await call('POST', '/account/security/sessions/current', a.token, { body: { device: deviceSecret, userAgent } }),
+    RegisteredSessionResponse,
+    '(4) register the browser',
+  );
+  assert(
+    registered.sessionId === idA && !!registered.deviceId && uuid.test(registered.deviceId) && !registered.deviceTrusted,
+    '(4) the browser must be registered, untrusted',
+  );
+  const deviceId = registered.deviceId!;
+  const reregistered = ok(
+    await call('POST', '/account/security/sessions/current', a.token, { body: { device: deviceSecret, userAgent } }),
+    RegisteredSessionResponse,
+    '(4) register again',
+  );
+  assert(reregistered.deviceId === deviceId, '(4) the same browser secret must be the same device');
+  for (const [what, body] of [
+    ['an extra field', { device: deviceSecret, extra: true }],
+    ['a short secret', { device: 'short' }],
+    ['a numeric secret', { device: 1234567890 }],
+  ] as const)
+    assert((await call('POST', '/account/security/sessions/current', a.token, { body })).status === 400, `(4) ${what} must be a 400`);
+  const devices = ok(await call('GET', '/account/security/devices', a.token), SecurityDevicesResponse, '(4) list the browsers');
+  const mine = devices.devices.find((d) => d.deviceId === deviceId);
+  assert(
+    !!mine && mine.current && mine.device.browser === 'CHROME' && mine.device.os === 'MACOS' && mine.device.deviceClass === 'DESKTOP' && !mine.trusted,
+    `(4) the browser must be shown as CHROME / MACOS / DESKTOP, current, untrusted (got ${JSON.stringify(mine)})`,
+  );
+  const currentRow = (await sessionsOf(a, '(4) list with the browser')).sessions[0]!;
+  assert(
+    currentRow.deviceId === deviceId && currentRow.device?.browser === 'CHROME',
+    '(4) the session list must show the coarse browser of the current session',
+  );
+
+  // (5) trust the current browser: a login within the policy window passes the step-up guard; the window is session.trusted_browser_days
+  const overviewA = ok(await call('GET', '/account/security', a.token), SecurityOverviewResponse, '(5) overview');
+  assert(
+    overviewA.mfa.available,
+    '(5) mfa.available is false: the API cannot read Keycloak (KEYCLOAK_SECURITY_CLIENT_SECRET missing or wrong in the API container)',
+  );
+  assert(
+    !overviewA.mfa.totpConfigured && !overviewA.mfa.recoveryCodesConfigured && !overviewA.stepUp.mfaSatisfied,
+    '(5) customer.dev must have no second factor',
+  );
+  assert(
+    overviewA.stepUp.authenticatedAt !== null &&
+      overviewA.stepUp.recentUntil !== null &&
+      Math.abs(Date.parse(overviewA.stepUp.recentUntil) - Date.parse(overviewA.stepUp.authenticatedAt) - overviewA.policy.stepUpValidMinutes * 60_000) < 1500,
+    '(5) recentUntil must be auth_time + security.step_up_valid_minutes',
+  );
+  assert(
+    overviewA.currentSession.deviceId === deviceId && !overviewA.currentSession.deviceTrusted,
+    '(5) the overview must show the registered, untrusted browser',
+  );
+  assert(
+    (await call('POST', '/account/security/devices/current/trust', a.token, { body: { unexpected: true } })).status === 400,
+    '(5) trust takes no body: a field must be a 400',
+  );
+  const trusted = ok(await call('POST', '/account/security/devices/current/trust', a.token), DeviceTrustResponse, '(5) trust the browser');
+  assert(trusted.trusted && trusted.deviceId === deviceId && trusted.trustedUntil !== null, '(5) the browser must be trusted');
+  const trustedDays = (Date.parse(trusted.trustedUntil!) - Date.now()) / 86_400_000;
+  assert(
+    Math.abs(trustedDays - overviewA.policy.trustedBrowserDays) < 0.01,
+    `(5) trusted until ${trustedDays.toFixed(3)} days ahead, session.trusted_browser_days is ${overviewA.policy.trustedBrowserDays}`,
+  );
+  const overviewTrusted = ok(await call('GET', '/account/security', a.token), SecurityOverviewResponse, '(5) overview after trusting');
+  assert(
+    overviewTrusted.currentSession.deviceTrusted && Date.parse(overviewTrusted.currentSession.trustedUntil ?? '') === Date.parse(trusted.trustedUntil ?? ''),
+    '(5) the overview must show the trust window',
+  );
+  const untrusted = ok(await call('DELETE', '/account/security/devices/current/trust', a.token), DeviceTrustResponse, '(5) untrust');
+  assert(!untrusted.trusted && untrusted.trustedUntil === null, '(5) untrust clears the window');
+  assert(
+    !ok(await call('DELETE', '/account/security/devices/current/trust', a.token), DeviceTrustResponse, '(5) untrust again').trusted,
+    '(5) untrust is idempotent',
+  );
+  assert(ok(await call('POST', '/account/security/devices/current/trust', a.token), DeviceTrustResponse, '(5) trust again').trusted, '(5) trust again');
+
+  // (5b) the step-up refusal. A real token cannot be aged inside a smoke run (the window is minutes), so it is exercised only on request: SMOKE_STEP_UP_AGING=1
+  // lowers security.step_up_valid_minutes to 1 through the real second-approver workflow, waits until the login of A is older than that, expects
+  // 401 STEP_UP_REQUIRED with the RFC 9470 challenge, shows that a fresh login of the same browser passes, and ALWAYS restores the configured value.
+  let caller = a; // the session that signs out the others below (A, or the fresh login of the same browser after the aging check)
+  let stepUpNote = 'step-up refusal NOT exercised (SMOKE_STEP_UP_AGING=1 enables it); the guard accepted a fresh login';
+  if (env('SMOKE_STEP_UP_AGING', '') === '1') {
+    const original = overviewA.policy.stepUpValidMinutes;
+    const adminAccess = async (user: 'admin' | 'admin2'): Promise<string> => {
+      const l = await authorizationCodeLogin(kc, { clientId: 'bananagig-admin', redirectUri: ADMIN_REDIRECT_URI, ...DEV_USERS[user] });
+      return (
+        await exchangeAuthorizationCode({
+          tokenEndpoint: ep.token,
+          clientId: 'bananagig-admin',
+          redirectUri: ADMIN_REDIRECT_URI,
+          code: l.code,
+          codeVerifier: l.verifier,
+        })
+      ).accessToken;
+    };
+    const setWindow = async (minutes: number): Promise<void> => {
+      const [x, y] = [await adminAccess('admin'), await adminAccess('admin2')];
+      const cfg = async (token: string, path: string, body: unknown) => {
+        const r = await get(`${api}/api/v1/configuration${path}`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const json = (await r.json().catch(() => ({}))) as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+        assert(r.status === 200 || r.status === 201, `POST /configuration${path} -> ${r.status} ${json?.error?.code ?? ''}`);
+        return json;
+      };
+      const change = (
+        await cfg(x, '/change-requests', {
+          parameterKey: 'security.step_up_valid_minutes',
+          scopeType: 'PLATFORM',
+          scopeRef: null,
+          value: minutes,
+          reason: 'smoke: step-up aging check (restored by the same run)',
+        })
+      ).data.changeRequestId as string;
+      await cfg(x, `/change-requests/${change}/submit`, {});
+      await cfg(y, `/change-requests/${change}/approve`, {});
+      await cfg(x, `/change-requests/${change}/publish`, {});
+    };
+    try {
+      await setWindow(1);
+      const ageMs = a.authTime! * 1000 + 62_000 - Date.now();
+      if (ageMs > 0) await sleep(ageMs);
+      let refused: Reply | undefined;
+      for (let i = 0; i < 30 && refused === undefined; i++) {
+        const r = await call('POST', '/account/security/devices/current/trust', a.token); // the configuration read may be cached for a few seconds
+        if (r.status === 401) refused = r;
+        else await sleep(4000);
+      }
+      assert(refused !== undefined, '(5b) the aged login was never refused (is the configuration cache TTL longer than two minutes?)');
+      refusal(refused!, 401, 'STEP_UP_REQUIRED', '(5b) trust with an aged login');
+      assert(
+        refused!.json.error.details?.requirement === 'RECENT_AUTHENTICATION' && refused!.json.error.details?.maxAgeSeconds === 60,
+        `(5b) the details must name RECENT_AUTHENTICATION and max age 60 (got ${JSON.stringify(refused!.json.error.details)})`,
+      );
+      const challenge = refused!.headers.get('www-authenticate') ?? '';
+      assert(
+        /error="insufficient_user_authentication"/.test(challenge) && /max_age="60"/.test(challenge),
+        `(5b) RFC 9470 challenge expected, got ${challenge}`,
+      );
+      refusal(
+        await call('POST', '/account/security/mfa/enrollment', a.token, { body: { method: 'TOTP' } }),
+        401,
+        'STEP_UP_REQUIRED',
+        '(5b) MFA enrolment with an aged login',
+      );
+      assert((await call('GET', '/account/security', a.token)).status === 200, '(5b) reads are not step-up guarded');
+      const fresh = await signIn('customer'); // the same browser signs in again: same secret, new login
+      await seenBy(fresh, '(5b) fresh login');
+      ok(
+        await call('POST', '/account/security/sessions/current', fresh.token, { body: { device: deviceSecret, userAgent } }),
+        RegisteredSessionResponse,
+        '(5b) register',
+      );
+      assert(
+        ok(await call('POST', '/account/security/devices/current/trust', fresh.token), DeviceTrustResponse, '(5b) trust after a fresh login').trusted,
+        '(5b) a fresh login passes',
+      );
+      caller = fresh; // A is old by now (its access token lives 5 minutes): the same browser continues with the fresh login
+      stepUpNote = 'step-up refusal exercised: aged login -> 401 STEP_UP_REQUIRED (RECENT_AUTHENTICATION, max_age 60, RFC 9470 challenge), fresh login passes';
+    } finally {
+      await setWindow(original);
+      const probe = await signIn('customer');
+      await seenBy(probe, '(5b) probe');
+      let restored = false;
+      for (let i = 0; i < 30 && !restored; i++) {
+        restored = (await call('GET', '/account/security', probe.token)).json?.data?.policy?.stepUpValidMinutes === original;
+        if (!restored) await sleep(4000);
+      }
+      assert(
+        restored,
+        `security.step_up_valid_minutes was lowered for the check and could NOT be confirmed restored to ${original}: restore it in the configuration console`,
+      );
+    }
+  }
+
+  // (7a) sign out everywhere else: C is another session (it also has no registered browser), F is a login the API has never seen
+  const c = await signIn('customer');
+  const idC = await seenBy(c, '(7a) C');
+  refusal(
+    await call('POST', '/account/security/devices/current/trust', c.token),
+    409,
+    'ACCOUNT_DEVICE_REQUIRED',
+    '(7a) trusting a session without a registered browser',
+  );
+  const f = await signIn('customer');
+  await sleep(2600); // the revocation watermark tolerates 2 s of auth_time (one-second resolution): F must be clearly older than the revocation
+  const revokeOthers = ok(
+    await call('POST', '/account/security/sessions/revoke-all', caller.token, { body: { includeCurrent: false } }),
+    SessionsRevokedAllResponse,
+    '(7a) sign out everywhere else',
+  );
+  const revokeOthersAt = Date.now();
+  assert(
+    revokeOthers.revokedCount >= 1 && revokeOthers.keycloak !== 'UNAVAILABLE',
+    `(7a) revoked ${revokeOthers.revokedCount}, keycloak ${revokeOthers.keycloak}`,
+  );
+  revoked(await call('GET', '/account/me', c.token), '(7a) C after sign out everywhere else');
+  assert(Date.now() - revokeOthersAt < 2000, '(7a) C must be refused at once');
+  assert((await call('GET', '/account/me', caller.token)).status === 200, '(7a) the current session must be kept');
+  revoked(await call('GET', '/account/me', f.token), '(7a) F, a Keycloak session the API had not seen yet, authenticated before the revocation');
+  const e = await signIn('customer'); // the watermark must not block a NEW login
+  const idE = await seenBy(e, '(7a) a new login after the revocation');
+  assert(idE !== idA, '(7a) a new login is a new session');
+  assert(
+    (await sessionsOf(e, '(7a) list from E')).sessions.every((s) => s.sessionId !== idC),
+    '(7a) a revoked session is not listed as active',
+  );
+
+  // remove the browser of A from another session: its sessions go with it
+  const removed = ok(await call('DELETE', `/account/security/devices/${deviceId}`, e.token), DeviceRemovedResponse, '(7a) remove the browser');
+  assert(removed.changed && removed.sessionsRevoked >= 1, `(7a) removing the browser must revoke its session (revoked ${removed.sessionsRevoked})`);
+  revoked(await call('GET', '/account/me', caller.token), '(7a) the session of the removed browser');
+  assert(
+    !ok(await call('GET', '/account/security/devices', e.token), SecurityDevicesResponse, '(7a) list').devices.some((d) => d.deviceId === deviceId),
+    '(7a) a removed browser is not listed',
+  );
+  assert(
+    !ok(await call('DELETE', `/account/security/devices/${deviceId}`, e.token), DeviceRemovedResponse, '(7a) remove again').changed,
+    '(7a) removing twice is idempotent',
+  );
+  refusal(await call('DELETE', `/account/security/devices/${randomUUID()}`, e.token), 404, 'ACCOUNT_DEVICE_NOT_FOUND', '(7a) unknown browser id');
+
+  // (7b) sign out everywhere including this session: every token is refused, a NEW login works afterwards
+  const g = await signIn('customer');
+  const h = await signIn('customer');
+  await seenBy(g, '(7b) G');
+  await seenBy(h, '(7b) H');
+  const revokeAll = ok(
+    await call('POST', '/account/security/sessions/revoke-all', g.token, { body: { includeCurrent: true } }),
+    SessionsRevokedAllResponse,
+    '(7b) sign out everywhere',
+  );
+  assert(revokeAll.revokedCount >= 3, `(7b) G, H and E must be revoked (revoked ${revokeAll.revokedCount})`);
+  for (const [what, s] of [
+    ['G (the caller)', g],
+    ['H', h],
+    ['E', e],
+  ] as const)
+    revoked(await call('GET', '/account/me', s.token), `(7b) ${what} after sign out everywhere`);
+  const k = await signIn('customer');
+  assert(
+    (await call('GET', '/account/me', k.token)).status === 200,
+    '(7b) a new login after sign out everywhere must work (the watermark only affects logins that pre-date it)',
+  );
+  for (const bad of [{ includeCurrent: 'yes' }, { includeCurrent: 1 }, { everyone: true }])
+    assert((await call('POST', '/account/security/sessions/revoke-all', k.token, { body: bad })).status === 400, `(7b) ${JSON.stringify(bad)} must be a 400`);
+
+  // (8) sign out the current session: the same token is refused afterwards
+  const i = await signIn('customer');
+  const idI = await seenBy(i, '(8) I');
+  const out = ok(await call('POST', '/account/security/sessions/current/sign-out', i.token), SignedOutResponse, '(8) sign out');
+  assert(out.changed && out.keycloak === 'ENDED', `(8) sign-out result changed=${out.changed} keycloak=${out.keycloak}`);
+  revoked(await call('GET', '/account/me', i.token), '(8) I after signing out');
+  revoked(await call('POST', '/account/security/sessions/current/sign-out', i.token), '(8) signing out twice is a revoked-session 401');
+  assert(
+    (await refreshTokenSet({ tokenEndpoint: ep.token, clientId: 'bananagig-web', refreshToken: i.refreshToken }).then(
+      () => 'accepted',
+      () => 'refused',
+    )) === 'refused',
+    '(8) the refresh token of a signed-out session must stop working',
+  );
+
+  // ------------------------------------------------------------------------------------------------------ (10) password reset (public)
+  const reset = await (async (): Promise<{ recorded: boolean; note: string }> => {
+    const valkey = new Redis(env('VALKEY_URL', 'redis://valkey-cache:6379'), { maxRetriesPerRequest: 2 });
+    valkey.on('error', () => undefined);
+    const databaseUrl = env('DATABASE_URL', '');
+    assert(databaseUrl !== '', 'DATABASE_URL is not set in the smoke environment');
+    const database = createDatabase(databaseUrl, { role: 'tests' });
+    const clearLimits = async (): Promise<void> => {
+      // test hygiene: this scenario sends a few requests per run from one source and the limit is per hour; its own buckets are cleared before and after
+      const keys = await valkey.keys('bananagig:rl:password-reset:*');
+      if (keys.length) await valkey.del(...keys);
+    };
+    const mailpitUrl = env('MAILPIT_URL', 'http://mailpit-email:8025');
+    const mailCount = async (to: string): Promise<number> =>
+      ((await (await expectOk(`${mailpitUrl}/api/v1/search?query=${encodeURIComponent(`to:"${to}"`)}`)).json()) as { messages_count: number }).messages_count;
+    try {
+      await clearLimits();
+      const token = await kcMasterToken();
+      const keycloakEmail = (
+        (await kcRealmAdmin(token, `/users?username=${DEV_USERS.customer.username}&exact=true`)).json as { email?: string }[] | undefined
+      )?.[0]?.email?.toLowerCase();
+      assert(!!keycloakEmail, '(10) customer.dev has no email in Keycloak');
+      const primary = (
+        await database.query<{ email_normalized: string }>(
+          `SELECT email_normalized FROM identity.email_contacts WHERE account_id = $1 AND is_primary AND status = 'VERIFIED'`,
+          [meA.accountId],
+        )
+      )[0]?.email_normalized;
+      const resetRequests = async (): Promise<number> =>
+        Number(
+          (
+            await database.query<{ n: string }>(
+              `SELECT count(*) AS n FROM identity.account_audit_events WHERE account_id = $1 AND action = 'PASSWORD_RESET_REQUESTED'`,
+              [meA.accountId],
+            )
+          )[0]!.n,
+        );
+      const ask = async (email: string): Promise<Reply> => call('POST', '/auth/password-reset', undefined, { body: { email } });
+      const unknown = `smoke-nobody-${Math.random().toString(36).slice(2, 10)}@bananagig.localhost`;
+      const unknownReply = await ask(unknown);
+      const invalidReply = await ask('not an email address');
+      assert(unknownReply.status === 202, `(10) an unknown address must get 202, got ${unknownReply.status}`);
+      PasswordResetAcceptedResponse.parse(unknownReply.json);
+      assert(invalidReply.status === 202 && invalidReply.text === unknownReply.text, '(10) an invalid address must get the same 202 body');
+      guard('email address', unknown, primary, keycloakEmail);
+      if (!primary) {
+        return {
+          recorded: false,
+          note: 'customer.dev has NO verified primary email in this environment, so only an unknown and an invalid address were requested (identical 202); nothing was created to force the known case',
+        };
+      }
+      const before = await resetRequests();
+      const sentBefore = await mailCount(keycloakEmail!);
+      const sentToPrimaryBefore = await mailCount(primary);
+      const knownReply = await ask(primary);
+      assert(knownReply.status === unknownReply.status, `(10) known ${knownReply.status} vs unknown ${unknownReply.status}`);
+      assert(
+        knownReply.text === unknownReply.text,
+        `(10) the 202 body must be byte-identical for a known and an unknown address (${knownReply.text} vs ${unknownReply.text})`,
+      );
+      for (const h of ['content-type', 'cache-control'])
+        assert(knownReply.headers.get(h) === unknownReply.headers.get(h), `(10) header ${h} differs between a known and an unknown address`);
+      await retry(
+        async () => {
+          if ((await resetRequests()) <= before) throw new Error('the request has not been recorded yet');
+        },
+        10,
+        1000,
+      );
+      if (primary === keycloakEmail) {
+        // the verified address is the one Keycloak holds: Keycloak sends the single-use link
+        const link = await retry(
+          async () => {
+            const found = (await (await expectOk(`${mailpitUrl}/api/v1/search?query=${encodeURIComponent(`to:"${keycloakEmail}"`)}`)).json()) as {
+              messages: { ID: string }[] | null;
+            };
+            if (!found.messages?.length || (await mailCount(keycloakEmail!)) <= sentBefore) throw new Error('the reset email has not arrived');
+            const m = (await (await expectOk(`${mailpitUrl}/api/v1/message/${found.messages[0]!.ID}`)).json()) as {
+              Text: string;
+              HTML: string;
+              To: { Address: string }[];
+            };
+            assert(m.To.length === 1 && m.To[0]!.Address.toLowerCase() === keycloakEmail, '(10) the reset email must go to the verified address only');
+            const key = /action-token\?key=([A-Za-z0-9._-]+)/.exec(htmlDecode(`${m.Text}\n${m.HTML}`))?.[1];
+            if (!key) throw new Error('the reset email carries no link');
+            return key;
+          },
+          10,
+          1000,
+        );
+        guard('password reset link', link);
+        await fetch(`${mailpitUrl}/api/v1/search?query=${encodeURIComponent(`to:"${keycloakEmail}"`)}`, { method: 'DELETE' }).catch(() => undefined);
+        return {
+          recorded: true,
+          note: 'the same 202 for the verified address of customer.dev, an unknown and an invalid address; the verified address equals the Keycloak address, so Keycloak sent the single-use link to Mailpit (not logged)',
+        };
+      }
+      // the verified address differs from the one Keycloak holds: the request is recorded but NOTHING may be sent (to either address)
+      await sleep(4000);
+      assert(
+        (await mailCount(keycloakEmail!)) === sentBefore,
+        '(10) a reset email was sent to the Keycloak address although it differs from the verified address of the account',
+      );
+      assert((await mailCount(primary)) === sentToPrimaryBefore, '(10) a reset email was sent to the verified address, which Keycloak does not know');
+      return {
+        recorded: true,
+        note: 'the same 202 for the verified address of customer.dev, an unknown and an invalid address; the verified address differs from the Keycloak email in this environment, so the request was recorded (PASSWORD_RESET_REQUESTED) and no mail was sent to either address',
+      };
+    } finally {
+      await clearLimits().catch(() => undefined);
+      valkey.disconnect();
+      await database.close();
+    }
+  })();
+
+  // ------------------------------------------------------------------------------------------------------ (9) the security timeline of customer.dev
+  const t = await signIn('customer');
+  const idT = await seenBy(t, '(9) timeline login');
+  const timeline = ok(await call('GET', '/account/security/activity?limit=100', t.token), SecurityActivityResponse, '(9) activity');
+  const entriesOf = (type: string) => timeline.entries.filter((x) => x.type === type);
+  const at = (x: { occurredAt: string }): number => Date.parse(x.occurredAt);
+  const createdA = entriesOf('SESSION_CREATED').find((x) => x.sessionId === idA);
+  assert(!!createdA, '(9) SESSION_CREATED of session A is missing from the timeline');
+  assert(
+    entriesOf('SESSION_CREATED').some((x) => x.sessionId === idT),
+    '(9) SESSION_CREATED of the timeline login is missing',
+  );
+  assert(
+    entriesOf('SESSION_REVOKED').some((x) => x.sessionId === idB),
+    '(9) SESSION_REVOKED of session B is missing',
+  );
+  assert(
+    entriesOf('SESSION_REVOKED').some((x) => x.sessionId === idA),
+    '(9) SESSION_REVOKED of session A (its browser was removed) is missing',
+  );
+  assert(
+    entriesOf('SESSION_REVOKED').some((x) => x.sessionId === idI),
+    '(9) SESSION_REVOKED of the signed-out session I is missing',
+  );
+  assert(entriesOf('SESSIONS_REVOKED_ALL').filter((x) => at(x) > at(createdA!)).length >= 2, '(9) two SESSIONS_REVOKED_ALL entries of this run are expected');
+  for (const type of ['DEVICE_TRUSTED', 'DEVICE_UNTRUSTED', 'DEVICE_REMOVED'])
+    assert(
+      entriesOf(type).some((x) => at(x) > at(createdA!)),
+      `(9) ${type} of this run is missing from the timeline`,
+    );
+  assert(
+    entriesOf('SESSION_CREATED').find((x) => x.sessionId === idA)?.device?.browser === 'CHROME',
+    '(9) the entry of session A must carry its coarse browser',
+  );
+  if (reset.recorded) assert(entriesOf('PASSWORD_RESET_REQUESTED').length > 0, '(9) PASSWORD_RESET_REQUESTED is missing');
+  assert(
+    timeline.entries.every((x, n, all) => n === 0 || at(all[n - 1]!) >= at(x)) &&
+      timeline.entries.every((x) => x.outcome === 'SUCCESS' && x.labelContentKey.startsWith('account.security.activity.')),
+    '(9) the timeline must be newest first with content-key labels',
+  );
+  assert(
+    timeline.entries.every((x) =>
+      Object.keys(x).every((key) => ['id', 'type', 'occurredAt', 'outcome', 'labelContentKey', 'sessionId', 'device'].includes(key)),
+    ),
+    '(9) unexpected fields in a timeline entry',
+  );
+  const page1 = ok(await call('GET', '/account/security/activity?limit=5', t.token), SecurityActivityResponse, '(9) first page');
+  assert(page1.entries.length === 5 && page1.nextBefore !== null, '(9) a page of 5 must have a cursor');
+  const page2 = ok(
+    await call('GET', `/account/security/activity?limit=5&before=${encodeURIComponent(page1.nextBefore!)}`, t.token),
+    SecurityActivityResponse,
+    '(9) second page',
+  );
+  const firstPageIds = new Set(page1.entries.map((x) => x.id));
+  assert(
+    page2.entries.length > 0 && page2.entries.every((x) => !firstPageIds.has(x.id) && at(x) <= at(page1.entries[page1.entries.length - 1]!)),
+    '(9) the second page must hold older entries only',
+  );
+  for (const bad of ['limit=0', 'limit=1e3', 'limit=101', 'limit=1.0', 'before=yesterday', 'unknown=1'])
+    assert((await call('GET', `/account/security/activity?${bad}`, t.token)).status === 400, `(9) ?${bad} must be a 400`);
+
+  for (const s of [t, k]) await call('POST', '/account/security/sessions/current/sign-out', s.token); // tidy: end the sessions this scenario still holds for customer.dev
+
+  // ------------------------------------------------------------------------------------------------------ (6) MFA: provider.dev
+  const mfaNote = await (async (): Promise<string> => {
+    const provider = DEV_USERS.provider;
+    const lines: string[] = [];
+    let cleaned = false;
+    try {
+      // the web server records the intent first (a step-up guarded call: a login within the window is enough), then sends the browser to Keycloak with kc_action
+      const p0 = await signIn('provider');
+      assert(
+        !p0.acr || p0.acr === 'bananagig:password',
+        `(6) provider.dev must start password-only (acr ${p0.acr}): leftovers of an earlier run? (${healedSecondFactors} removed at the start)`,
+      );
+      const request = ok(
+        await call('POST', '/account/security/mfa/enrollment', p0.token, { body: { method: 'TOTP' } }),
+        MfaEnrollmentResponse,
+        '(6) start TOTP enrolment',
+      );
+      assert(request.method === 'TOTP' && request.keycloakAction === 'CONFIGURE_TOTP', `(6) enrolment action ${request.keycloakAction}`);
+      const before = ok(await call('GET', '/account/security', p0.token), SecurityOverviewResponse, '(6) overview before');
+      assert(before.mfa.available && !before.mfa.totpConfigured, '(6) provider.dev must have no authenticator yet');
+
+      const enrol = await kcWebLogin({ user: provider.username, pw: provider.password, enrol: 'totp' }, { kcAction: 'CONFIGURE_TOTP' });
+      assert(enrol.done && !!enrol.totpSecret, `(6) the CONFIGURE_TOTP action did not complete (stopped at ${enrol.kind ?? 'unknown'})`);
+      guard('TOTP secret', enrol.totpSecret);
+      assert(kcActionStatusFromCallback(enrol.location!) === 'success', '(6) the callback must report kc_action_status=success');
+      const enrolled = await loginOf(await kcTokens(enrol));
+      const afterEnrol = ok(await call('GET', '/account/security', enrolled.token), SecurityOverviewResponse, '(6) overview after enrolment');
+      assert(
+        afterEnrol.mfa.available && afterEnrol.mfa.totpConfigured && !afterEnrol.mfa.recoveryCodesConfigured,
+        `(6) GET /account/security must show totpConfigured:true (${JSON.stringify(afterEnrol.mfa)})`,
+      );
+      lines.push('TOTP enrolled through kc_action, totpConfigured:true');
+
+      // a new login is CHALLENGED for the code even though the authorization request carries no acr_values
+      await sleep(1200);
+      const probe = await kcWebLogin({ user: provider.username, pw: provider.password, stopAt: ['otp'] });
+      assert(!probe.done && probe.kind === 'otp', `(6) the login must be challenged for a code, got ${probe.done ? 'a token' : probe.kind}`);
+      const mfa = await kcWebLogin({ user: provider.username, pw: provider.password, otp: () => nextTotp(enrol.totpSecret!) });
+      const mfaLogin = await loginOf(await kcTokens(mfa));
+      assert(mfaLogin.acr === 'bananagig:mfa', `(6) the token after the code must carry acr bananagig:mfa, got ${mfaLogin.acr}`);
+      const overviewMfa = ok(await call('GET', '/account/security', mfaLogin.token), SecurityOverviewResponse, '(6) overview with an MFA login');
+      assert(overviewMfa.stepUp.mfaSatisfied && overviewMfa.mfa.totpConfigured, '(6) the overview must show the second factor as satisfied');
+      const recoveryRequest = ok(
+        await call('POST', '/account/security/mfa/enrollment', mfaLogin.token, { body: { method: 'RECOVERY_CODES' } }),
+        MfaEnrollmentResponse,
+        '(6) start recovery-code enrolment with an MFA login',
+      );
+      assert(recoveryRequest.keycloakAction === 'CONFIGURE_RECOVERY_AUTHN_CODES', '(6) recovery-code enrolment action');
+      lines.push('login challenged for the code without acr_values, acr bananagig:mfa, the sensitive enrolment endpoint accepts it');
+
+      // recovery codes: generated by Keycloak in the SSO session of that login, then one code opens a new login instead of the authenticator
+      const recovery = await kcWebLogin(
+        { user: provider.username, pw: provider.password, otp: () => nextTotp(enrol.totpSecret!), enrol: 'recovery' },
+        { kcAction: 'CONFIGURE_RECOVERY_AUTHN_CODES', jar: mfa.jar },
+      );
+      assert(
+        recovery.done && (recovery.recoveryCodes?.length ?? 0) >= 8,
+        `(6) the recovery-code action did not complete (stopped at ${recovery.kind ?? 'unknown'})`,
+      );
+      guard('recovery codes', ...recovery.recoveryCodes!);
+      const afterRecovery = ok(await call('GET', '/account/security', mfaLogin.token), SecurityOverviewResponse, '(6) overview after recovery codes');
+      assert(afterRecovery.mfa.recoveryCodesConfigured, '(6) GET /account/security must show recoveryCodesConfigured:true');
+      await sleep(1200);
+      const asked: number[] = [];
+      const viaCode = await kcWebLogin({ user: provider.username, pw: provider.password, recovery: (n) => (asked.push(n), recovery.recoveryCodes![n - 1]!) });
+      const codeLogin = await loginOf(await kcTokens(viaCode));
+      assert(
+        asked.length === 1 && codeLogin.acr === 'bananagig:mfa',
+        `(6) one recovery code (asked for #${asked.join(',')}) must open a login with acr bananagig:mfa, got ${codeLogin.acr}`,
+      );
+      lines.push('recovery codes generated, one code used instead of the authenticator (acr mfa)');
+      const providerActivity = ok(await call('GET', '/account/security/activity?limit=100', mfaLogin.token), SecurityActivityResponse, '(6) provider timeline');
+      for (const type of ['MFA_ENROLLMENT_REQUESTED', 'MFA_ENABLED', 'RECOVERY_CODES_REQUESTED', 'RECOVERY_CODES_ENABLED'])
+        assert(
+          providerActivity.entries.some((x) => x.type === type),
+          `(6) ${type} is missing from the provider timeline`,
+        );
+    } finally {
+      // ALWAYS: provider.dev returns to password-only, whatever happened above
+      const removedFactors = await removeSecondFactors(provider.username).catch((err: unknown) => {
+        const why = `COULD NOT REMOVE the second factors of ${provider.username}: ${err instanceof Error ? err.message : String(err)}`;
+        notes.push(why);
+        console.error(why);
+        return -1;
+      });
+      cleaned = removedFactors >= 0;
+    }
+    assert(cleaned, 'provider.dev kept its second factor: remove its otp / recovery-authn-codes credentials in the Keycloak admin console');
+    await sleep(1200);
+    const back = await signIn('provider'); // a password-only login works again; the API observes the removal (MFA_DISABLED / RECOVERY_CODES_DISABLED)
+    const after = ok(await call('GET', '/account/security', back.token), SecurityOverviewResponse, '(6) overview after cleanup');
+    assert(
+      !after.mfa.totpConfigured && !after.mfa.recoveryCodesConfigured && back.acr === 'bananagig:password',
+      '(6) provider.dev must be password-only again after the cleanup',
+    );
+    return `${lines.join('; ')}; second factors removed again and provider.dev logs in with a password only`;
+  })();
+
+  // ------------------------------------------------------------------------------------------------------ the web app through Caddy (what a browser reaches)
+  const viaCaddy = (
+    host: string,
+    path: string,
+    method: 'GET' | 'POST',
+    headers: Record<string, string> = {},
+  ): Promise<{ status: number; body: string; location?: string }> =>
+    new Promise((resolve, reject) => {
+      const req = http.request(
+        { host: 'caddy-proxy', port: 80, path, method, headers: { host, ...(method === 'POST' ? { 'content-length': '0' } : {}), ...headers } },
+        (res) => {
+          let body = '';
+          res.on('data', (chunk) => (body += chunk));
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, body, location: res.headers.location }));
+        },
+      );
+      req.on('error', reject);
+      req.end();
+    });
+  const page = await viaCaddy('app.localhost', '/security', 'GET');
+  assert(
+    (page.status >= 300 && page.status < 400 && /\/auth\/login|\/session/.test(page.location ?? '')) ||
+      (page.status === 200 && page.body.includes('/auth/login?returnTo=/security')),
+    `GET /security without a session must send the visitor to sign in (got ${page.status})`,
+  );
+  assert(!page.body.includes('eyJ'), 'GET /security leaked token material');
+  assert((await viaCaddy('app.localhost', '/forgot-password', 'GET')).status === 200, 'GET /forgot-password is a public page');
+  const webOrigin = new URL(webPublic).origin;
+  for (const path of ['/auth/security/revoke-all', '/auth/security/trust-device', '/auth/password-reset']) {
+    assert((await viaCaddy('app.localhost', path, 'POST')).status === 403, `POST ${path} without an Origin header must be 403`);
+    assert((await viaCaddy('app.localhost', path, 'POST', { origin: 'http://evil.example' })).status === 403, `POST ${path} with a foreign Origin must be 403`);
+  }
+  assert((await viaCaddy('app.localhost', '/auth/security/revoke-all', 'GET')).status === 405, 'GET /auth/security/revoke-all must be 405');
+  const noSession = await viaCaddy('app.localhost', '/auth/security/revoke-all', 'POST', { origin: webOrigin });
+  assert(
+    noSession.status === 303 && /\/session$/.test(noSession.location ?? ''),
+    `a same-origin POST without a session must redirect to /session (got ${noSession.status} ${noSession.location})`,
+  );
+
+  // ------------------------------------------------------------------------------------------------------ (11) no secret in any response or log line
+  const everything = seen.join('\n');
+  for (const [what, values] of secretsOf) for (const value of values) assert(!everything.includes(value), `a response contains the ${what}`);
+  for (const part of rawUserAgentParts) assert(!everything.includes(part), `a response contains the raw user agent (${part})`);
+  assert(!/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\./.test(everything), 'a response contains a JWT');
+  const loki = env('LOKI_URL', 'http://loki-logs:3100');
+  const query = async (q: string) =>
+    (await (
+      await expectOk(`${loki}/loki/api/v1/query_range?query=${encodeURIComponent(q)}&start=${flowStart}&end=${Date.now() * 1e6 + 60e9}&limit=5`)
+    ).json()) as { data: { result: unknown[] } };
+  await retry(
+    async () => {
+      if ((await query(`{service_name="bananagig-api"} | correlationId = \`${cid}\``)).data.result.length < 1) throw new Error('this flow is not in Loki yet');
+    },
+    12,
+    2000,
+  );
+  await sleep(6000); // the log exporter batches (5 s): give the last lines of the flow time to arrive before asserting an absence
+  const apps = '{service_name=~"bananagig-(api|web|worker)"}';
+  for (const [what, values] of [...secretsOf, ['raw user agent', rawUserAgentParts]] as [string, string[]][]) {
+    const unique = [...new Set(values)];
+    if (unique.length === 0) continue;
+    // one query per group: the alternation of RE2-safe tokens (everything guarded is base64url, hex, a uuid, an address or a short code)
+    const pattern = unique.map((v) => v.replace(/[\\.+*?()|[\]{}^$]/g, '\\$&')).join('|');
+    assert((await query(`${apps} |~ \`${pattern}\``)).data.result.length === 0, `the ${what} appears in the api, web or worker logs`);
+  }
+
+  return [
+    `customer.dev: (1) first request created session ${idA.slice(0, 8)}... current:true, (2) second login = second session (different sid), (3) revoke of B -> B 401 SESSION_REVOKED ${refusedAfterMs} ms later, A kept, Keycloak session ended, refresh refused`,
+    `(4) browser registered (random 43-char secret) shown as CHROME/MACOS/DESKTOP only`,
+    `(5) trusted for ${overviewA.policy.trustedBrowserDays} days (window ${overviewA.policy.stepUpValidMinutes} min); ${stepUpNote}`,
+    `(7) sign out everywhere else kept the caller and refused C and an unseen older login, a new login works; removing the browser revoked its session; including the caller refused all, new login works`,
+    `(8) sign-out then 401 and refresh refused`,
+    `(9) timeline: SESSION_CREATED / SESSION_REVOKED / SESSIONS_REVOKED_ALL / DEVICE_TRUSTED / DEVICE_UNTRUSTED / DEVICE_REMOVED, paged, coarse browser only`,
+    `(6) provider.dev: ${mfaNote}`,
+    `(10) ${reset.note}`,
+    `web through Caddy: /security signs in, POSTs without a same-origin Origin are 403`,
+    `(11) no token, sid, subject, device secret, TOTP secret, recovery code or reset link, and no raw user agent, in any response or in api/web/worker logs`,
+    ...notes,
+  ].join('; ');
+});
+
 // Caddy routes are exercised exactly as a browser would reach them (Host header), from inside the network.
 const proxy = (host: string, path: string, method = 'GET'): Promise<{ status: number; body: string }> =>
   new Promise((resolve, reject) => {
@@ -1558,6 +2603,7 @@ const order = [
   'Accounts',
   'Email verification',
   'Phone verification',
+  'Sessions and security',
   'NATS Events',
   'JetStream',
   'SeaweedFS Storage',

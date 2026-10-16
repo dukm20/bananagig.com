@@ -38,6 +38,7 @@ import {
 import { ContentKey } from './content';
 import { EMAIL_ERROR_CODES } from './email';
 import { PHONE_ERROR_CODES } from './phone';
+import { SECURITY_ERROR_CODES } from './security';
 import { EVENT_TYPE_PATTERN, EventEnvelope } from './index';
 import { containsForbiddenText } from './text';
 
@@ -830,6 +831,12 @@ describe('ACCOUNT_ERROR_CODES', () => {
       'PHONE_RISK_UNAVAILABLE',
       'PHONE_DELIVERY_FAILED',
       'PHONE_RATE_LIMITED',
+      'SESSION_NOT_FOUND',
+      'DEVICE_NOT_FOUND',
+      'DEVICE_REQUIRED',
+      'SECURITY_UNAVAILABLE',
+      'PASSWORD_RESET_RATE_LIMITED',
+      'SESSION_REVOKED',
     ]);
   });
   it('lists every email error code after the ten account codes and every phone error code after those, in vocabulary order', () => {
@@ -846,10 +853,12 @@ describe('ACCOUNT_ERROR_CODES', () => {
       'UNAVAILABLE',
     ]);
     expect(ACCOUNT_ERROR_CODES.slice(10, 10 + EMAIL_ERROR_CODES.length)).toEqual([...EMAIL_ERROR_CODES]);
-    expect(ACCOUNT_ERROR_CODES.slice(10 + EMAIL_ERROR_CODES.length)).toEqual([...PHONE_ERROR_CODES]);
+    expect(ACCOUNT_ERROR_CODES.slice(10 + EMAIL_ERROR_CODES.length, 10 + EMAIL_ERROR_CODES.length + PHONE_ERROR_CODES.length)).toEqual([...PHONE_ERROR_CODES]);
+    // ID-004: the security codes follow the phone codes, then SESSION_REVOKED (an authentication failure raised by the security layer)
+    expect(ACCOUNT_ERROR_CODES.slice(10 + EMAIL_ERROR_CODES.length + PHONE_ERROR_CODES.length)).toEqual([...SECURITY_ERROR_CODES, 'SESSION_REVOKED']);
     expect(EMAIL_ERROR_CODES).toHaveLength(12);
     expect(PHONE_ERROR_CODES).toHaveLength(13);
-    expect(ACCOUNT_ERROR_CODES).toHaveLength(35);
+    expect(ACCOUNT_ERROR_CODES).toHaveLength(41); // 10 account + 12 email + 13 phone + 5 security + SESSION_REVOKED
   });
   it('has unique upper-case codes, usable as the ACCOUNT_<code> API error code suffix', () => {
     expect(new Set(ACCOUNT_ERROR_CODES).size).toBe(ACCOUNT_ERROR_CODES.length);

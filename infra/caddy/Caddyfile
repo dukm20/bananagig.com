@@ -33,6 +33,13 @@
 	handle @auth {
 		# Public identity host: ONLY the realm endpoints browsers need (login, tokens, logout, JWKS, discovery) and static resources.
 		# The admin console, the master realm, health, metrics and every other path are not exposed here.
+		# Account management belongs to BananaGig (step-up, audit, session registry), not to Keycloak's self-service surface: the account console and the
+		# self-service reset-credentials flow are refused here as a second line (the realm file already disables the account clients and sets
+		# resetPasswordAllowed=false). This block MUST stay before the wholesale realm proxy.
+		@blocked path /realms/bananagig/account /realms/bananagig/account/* /realms/bananagig/login-actions/reset-credentials /realms/bananagig/login-actions/reset-credentials/*
+		handle @blocked {
+			respond "Not found" 404
+		}
 		@realm path /realms/bananagig /realms/bananagig/* /resources/*
 		handle @realm {
 			reverse_proxy keycloak-auth:8080

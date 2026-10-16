@@ -1,6 +1,6 @@
 # Rate limiting
 
-The rate-limit foundation (ID-002, ADR-0029) is the facility security-sensitive endpoints share. Email verification (ID-002) and phone verification (ID-003) use it; the public address endpoints (DEBT-0030) can use it without changes to the package.
+The rate-limit foundation (ID-002, ADR-0029) is the facility security-sensitive endpoints share. Email verification (ID-002), phone verification (ID-003) and the public password-reset request (ID-004) use it; the public address endpoints (DEBT-0030) can use it without changes to the package.
 
 ## Model
 
@@ -10,12 +10,16 @@ The rate-limit foundation (ID-002, ADR-0029) is the facility security-sensitive 
 |---|---|---|
 | account | `email-verification:account` | the account id (a uuid) |
 | source address | `email-verification:ip` | `hashDimension(secret, 'ip', request.ip)` |
-| device or session | `email-verification:device` | `hashDimension(secret, 'device', id)` (no device id exists yet; the service accepts one) |
+| device or session | `email-verification:device` | `hashDimension(secret, 'device', id)`; since ID-004 the id is the application device id of the request's session (`request.securitySession.accountDeviceId`, passed by the routes' `requestContext`), absent until the browser has registered (DEBT-0054) |
 | target address | `email-verification:address` | `hashDimension(secret, 'email', canonicalAddress)` |
 | account (phone, ID-003) | `phone-verification:account` | the account id (a uuid) |
 | source address (phone) | `phone-verification:ip` | `hashDimension(secret, 'ip', request.ip)` |
-| device or session (phone) | `phone-verification:device` | `hashDimension(secret, 'device', id)` (no device id exists yet) |
+| device or session (phone) | `phone-verification:device` | `hashDimension(secret, 'device', id)`; fed with the application device id of the session since ID-004, like email |
 | target number (phone) | `phone-verification:number` | `hashDimension(secret, 'phone', e164)`: an HMAC of the canonical E.164, never the raw number; counted across all accounts, on send only (setting a number sends nothing) |
+| target address (password reset, ID-004) | `password-reset:email` | `hashDimension(secret, 'email', canonicalAddress)`; for an address that cannot be canonical, the hash of what was sent (so garbage cannot dodge the limit). Public endpoint, no account |
+| source address (password reset) | `password-reset:ip` | `hashDimension(secret, 'ip', request.ip)`; only as good as `TRUSTED_PROXY_HOPS` |
+
+Both password-reset rules use `reset_link.max_requests_per_hour` (default 5, an engineering assumption, DEBT-0070) with a 3600-second window and are consumed together (all or nothing) BEFORE anything that depends on whether the address belongs to an account, so the caller waits for the same work in every case. A refusal is `429 ACCOUNT_PASSWORD_RESET_RATE_LIMITED` with `Retry-After`; an unreachable limiter FAILS CLOSED (`503 ACCOUNT_UNAVAILABLE`, reason `RATE_LIMITER_UNAVAILABLE`) because each accepted request can send an email. The per-address bucket can be burned by a third party who knows the address; that is uniform on purpose so the endpoint reveals nothing (DEBT-0073). The device dimension is not used by the public endpoint (there is no session).
 
 Keys are opaque. Raw addresses and IPs never become Valkey keys (`hashDimension` is a keyed, truncated HMAC). A refusal reports only `retryAfterSeconds`; the refusing dimension is never named to a client.
 
@@ -23,14 +27,14 @@ Keys are opaque. Raw addresses and IPs never become Valkey keys (`hashDimension`
 
 `consume` returns `{ allowed, limitedBy?, retryAfterSeconds }`. It never returns `allowed` on a failure: if Valkey cannot answer within 150 ms, or the reply is malformed, it throws `RateLimiterUnavailableError` (a circuit breaker then fails fast for two seconds, so a dead Valkey does not add its timeout to every request). **The caller decides what an outage means:**
 
-- operations that send mail or create work **fail closed** (set the address, send a verification);
+- operations that send mail or create work **fail closed** (set the address, send a verification, request a password reset);
 - operations that are bounded elsewhere may **fail open** (confirm a code: the wrong-attempt counter in PostgreSQL is authoritative).
 
 Per-account limits that must survive a Valkey flush (resend cooldown, hourly and daily caps, attempts) are counted from PostgreSQL. Valkey adds the dimensions PostgreSQL cannot see.
 
 ## Limits are configuration
 
-Never hardcode a limit. The values are CFG-001 parameters read at the call site (`verification.email.requests.max_per_hour`, `verification.email.address.max_per_hour`, and the code-policy parameters). A new feature adds its own parameters through a change request or a seeded migration.
+Never hardcode a limit. The values are CFG-001 parameters read at the call site (`verification.email.requests.max_per_hour`, `verification.email.address.max_per_hour`, `reset_link.max_requests_per_hour`, and the code-policy parameters). A new feature adds its own parameters through a change request or a seeded migration.
 
 ## Implementations
 

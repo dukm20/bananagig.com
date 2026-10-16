@@ -62,6 +62,8 @@ describe('loadConfig: VERIFICATION_HASH_SECRET (ID-002)', () => {
     WEB_PUBLIC_URL: 'https://app.example.com',
     // required in production for the api role since ID-003 (DEBT-0055)
     TRUSTED_PROXY_HOPS: '1',
+    // required in production for the api role since ID-004
+    KEYCLOAK_SECURITY_CLIENT_SECRET: 'prod-security-client-secret-'.concat('0123456789abcdef'),
   };
   const configErrorIssues = (fn: () => unknown): string[] => {
     try {
@@ -252,6 +254,7 @@ describe('loadConfig: SMS_TRANSPORT and PHONE_INTELLIGENCE (ID-003)', () => {
     API_INTERNAL_URL: 'http://api-service:3000',
     VERIFICATION_HASH_SECRET: hashKey,
     TRUSTED_PROXY_HOPS: '1',
+    KEYCLOAK_SECURITY_CLIENT_SECRET: 'prod-security-client-secret-'.concat('0123456789abcdef'),
   };
   const issuesOf = (fn: () => unknown): string[] => {
     try {
@@ -430,6 +433,190 @@ describe('loadConfig: SMS_TRANSPORT and PHONE_INTELLIGENCE (ID-003)', () => {
       expect(text).toContain('"transport":"disabled"');
       expect(text).not.toContain('pw@');
       expect(text).not.toContain('shh');
+    });
+  });
+});
+
+// ====================================================================== ID-004: the Keycloak security (admin REST) client
+describe('loadConfig: KEYCLOAK_SECURITY_CLIENT_ID / KEYCLOAK_SECURITY_CLIENT_SECRET (ID-004)', () => {
+  const devSecret = 'bananagig_security_dev_only_secret_0001';
+  const prodSecret = 'prod-security-client-secret-'.concat('0123456789abcdef');
+  const hashKey = 'prod-hash-key-'.concat('0123456789abcdef'.repeat(2));
+  const prodApi = {
+    NODE_ENV: 'production',
+    DATABASE_URL: 'postgres://u:pw@db:5432/d',
+    OTEL_EXPORTER_OTLP_ENDPOINT: 'http://otel:4318',
+    KEYCLOAK_URL: 'http://keycloak-auth:8080/',
+    KEYCLOAK_PUBLIC_URL: 'https://auth.example.com',
+    WEB_PUBLIC_URL: 'https://app.example.com',
+    VERIFICATION_HASH_SECRET: hashKey,
+    TRUSTED_PROXY_HOPS: '1',
+  };
+  const issuesOf = (fn: () => unknown): string[] => {
+    try {
+      fn();
+    } catch (err) {
+      expect(err).toBeInstanceOf(ConfigError);
+      return (err as ConfigError).issues;
+    }
+    throw new Error('expected loadConfig to throw a ConfigError');
+  };
+
+  describe('defaults outside production', () => {
+    it('defaults the client id and the development secret', () => {
+      expect(loadConfig({ service: 't', env: {} }).keycloakAdmin).toEqual({
+        baseUrl: 'http://127.0.0.1:18081',
+        realm: 'bananagig',
+        clientId: 'bananagig-security',
+        clientSecret: devSecret,
+      });
+    });
+    it('the development secret is long enough for its own validation', () => {
+      expect(devSecret.length).toBeGreaterThanOrEqual(32);
+    });
+    it.each(['development', 'test'])('applies in the %s environment', (env) => {
+      expect(loadConfig({ service: 't', env: { NODE_ENV: env } }).keycloakAdmin.clientSecret).toBe(devSecret);
+    });
+    it.each(['web', 'api', 'worker', 'tool'] as const)('applies for the %s role', (role) => {
+      expect(loadConfig({ service: 't', role, env: {} }).keycloakAdmin.clientId).toBe('bananagig-security');
+    });
+    it('treats empty values as unset', () => {
+      const cfg = loadConfig({ service: 't', env: { KEYCLOAK_SECURITY_CLIENT_ID: '', KEYCLOAK_SECURITY_CLIENT_SECRET: '' } });
+      expect(cfg.keycloakAdmin.clientId).toBe('bananagig-security');
+      expect(cfg.keycloakAdmin.clientSecret).toBe(devSecret);
+    });
+  });
+
+  describe('AppConfig.keycloakAdmin', () => {
+    it('takes the INTERNAL Keycloak URL (no trailing slash), the realm and the explicit client settings', () => {
+      const secret = 'explicit-security-secret-'.concat('0123456789abcdef'); // secret-scan:allow (a made-up fixture value, not a credential)
+      const cfg = loadConfig({
+        service: 't',
+        env: {
+          KEYCLOAK_URL: 'http://keycloak-auth:8080/',
+          KEYCLOAK_PUBLIC_URL: 'https://auth.example.com',
+          KEYCLOAK_REALM: 'other',
+          KEYCLOAK_SECURITY_CLIENT_ID: 'my-security',
+          KEYCLOAK_SECURITY_CLIENT_SECRET: secret,
+        },
+      });
+      expect(cfg.keycloakAdmin).toEqual({ baseUrl: 'http://keycloak-auth:8080', realm: 'other', clientId: 'my-security', clientSecret: secret });
+      expect(cfg.keycloakAdmin.baseUrl).not.toContain('auth.example.com'); // never the public URL
+    });
+    it('is part of the frozen configuration object', () => {
+      const cfg = loadConfig({ service: 't', env: {} });
+      expect(Object.isFrozen(cfg)).toBe(true);
+    });
+    it('does not change keycloakUrl or identity', () => {
+      const cfg = loadConfig({ service: 't', env: {} });
+      expect(cfg.keycloakUrl).toBe('http://127.0.0.1:18081');
+      expect(cfg.identity.adminClientId).toBe('bananagig-admin');
+    });
+  });
+
+  describe('validation', () => {
+    it.each(['short', 'k'.repeat(31)])('rejects a secret shorter than 32 characters (%j) and names the variable but not the value', (value) => {
+      const issues = issuesOf(() => loadConfig({ service: 't', env: { KEYCLOAK_SECURITY_CLIENT_SECRET: value } }));
+      expect(issues.join('\n')).toMatch(/KEYCLOAK_SECURITY_CLIENT_SECRET/);
+      expect(issues.join('\n')).not.toContain(value);
+    });
+    it('rejects a secret longer than 256 characters', () => {
+      expect(() => loadConfig({ service: 't', env: { KEYCLOAK_SECURITY_CLIENT_SECRET: 'k'.repeat(257) } })).toThrow(/KEYCLOAK_SECURITY_CLIENT_SECRET/);
+      expect(loadConfig({ service: 't', env: { KEYCLOAK_SECURITY_CLIENT_SECRET: 'k'.repeat(256) } }).keycloakAdmin.clientSecret).toHaveLength(256);
+    });
+    it('rejects a too-short secret in production for any role, even one that does not require it', () => {
+      expect(() => loadConfig({ service: 'w', role: 'worker', env: { NODE_ENV: 'production', KEYCLOAK_SECURITY_CLIENT_SECRET: 'short' } })).toThrow(
+        /KEYCLOAK_SECURITY_CLIENT_SECRET/,
+      );
+    });
+  });
+
+  describe('production', () => {
+    it('requires the secret for the api role and names it', () => {
+      expect(issuesOf(() => loadConfig({ service: 'a', role: 'api', env: prodApi }))).toEqual(['KEYCLOAK_SECURITY_CLIENT_SECRET: required in production']);
+    });
+    it('requires it when no role is given (the strictest set)', () => {
+      expect(issuesOf(() => loadConfig({ service: 't', env: { NODE_ENV: 'production' } }))).toContain(
+        'KEYCLOAK_SECURITY_CLIENT_SECRET: required in production',
+      );
+    });
+    it('lists it together with the other missing api settings', () => {
+      const { WEB_PUBLIC_URL: _w, VERIFICATION_HASH_SECRET: _v, ...rest } = prodApi;
+      const issues = issuesOf(() => loadConfig({ service: 'a', role: 'api', env: rest }));
+      expect(issues).toEqual(
+        expect.arrayContaining([
+          'WEB_PUBLIC_URL: required in production',
+          'VERIFICATION_HASH_SECRET: required in production',
+          'KEYCLOAK_SECURITY_CLIENT_SECRET: required in production',
+        ]),
+      );
+    });
+    it('accepts the api role once the secret is explicit and keeps the default client id', () => {
+      const cfg = loadConfig({ service: 'a', role: 'api', env: { ...prodApi, KEYCLOAK_SECURITY_CLIENT_SECRET: prodSecret } });
+      expect(cfg.keycloakAdmin).toEqual({ baseUrl: 'http://keycloak-auth:8080', realm: 'bananagig', clientId: 'bananagig-security', clientSecret: prodSecret });
+    });
+    it('treats an empty secret as missing in production', () => {
+      expect(issuesOf(() => loadConfig({ service: 'a', role: 'api', env: { ...prodApi, KEYCLOAK_SECURITY_CLIENT_SECRET: '' } }))).toContain(
+        'KEYCLOAK_SECURITY_CLIENT_SECRET: required in production',
+      );
+    });
+    it.each(['web', 'worker', 'tool'] as const)('does not require it for the %s role', (role) => {
+      const env =
+        role === 'web'
+          ? {
+              NODE_ENV: 'production',
+              API_INTERNAL_URL: 'http://api-service:3000',
+              OTEL_EXPORTER_OTLP_ENDPOINT: 'http://otel:4318',
+              KEYCLOAK_URL: 'http://keycloak-auth:8080',
+              KEYCLOAK_PUBLIC_URL: 'https://auth.example.com',
+              WEB_PUBLIC_URL: 'https://app.example.com',
+              VALKEY_URL: 'redis://valkey:6379',
+            }
+          : role === 'worker'
+            ? {
+                NODE_ENV: 'production',
+                DATABASE_URL: 'postgres://u:pw@db:5432/d',
+                NATS_URL: 'nats://nats:4222',
+                OTEL_EXPORTER_OTLP_ENDPOINT: 'http://otel:4318',
+              }
+            : { NODE_ENV: 'production' };
+      expect(() => loadConfig({ service: 't', role, env })).not.toThrow();
+    });
+    it('REFUSES the development secret in production and the ConfigError names the variable', () => {
+      const issues = issuesOf(() => loadConfig({ service: 'a', role: 'api', env: { ...prodApi, KEYCLOAK_SECURITY_CLIENT_SECRET: devSecret } }));
+      expect(issues).toEqual(['KEYCLOAK_SECURITY_CLIENT_SECRET: the development value is not allowed in production']);
+    });
+    it.each(['web', 'worker', 'tool'] as const)('refuses the development secret in production for the %s role too', (role) => {
+      expect(() => loadConfig({ service: 't', role, env: { NODE_ENV: 'production', KEYCLOAK_SECURITY_CLIENT_SECRET: devSecret } })).toThrow(
+        /KEYCLOAK_SECURITY_CLIENT_SECRET: the development value is not allowed in production/,
+      );
+    });
+    it('does not refuse the development secret outside production, set explicitly', () => {
+      expect(loadConfig({ service: 't', env: { KEYCLOAK_SECURITY_CLIENT_SECRET: devSecret } }).keycloakAdmin.clientSecret).toBe(devSecret);
+    });
+    it('never falls back to the development secret in production', () => {
+      expect(() => loadConfig({ service: 'a', role: 'api', env: prodApi })).toThrow(ConfigError);
+      const cfg = loadConfig({ service: 'a', role: 'api', env: { ...prodApi, KEYCLOAK_SECURITY_CLIENT_SECRET: prodSecret } });
+      expect(cfg.keycloakAdmin.clientSecret).not.toBe(devSecret);
+    });
+    it('does not echo the secret in a ConfigError', () => {
+      const issues = issuesOf(() => loadConfig({ service: 'a', role: 'api', env: { ...prodApi, KEYCLOAK_SECURITY_CLIENT_SECRET: devSecret } }));
+      expect(issues.join('\n')).not.toContain(devSecret);
+    });
+  });
+
+  describe('redactConfig', () => {
+    it('masks the secret and nothing else of the block', () => {
+      const secret = 'explicit-security-secret-'.concat('0123456789abcdef'); // secret-scan:allow (a made-up fixture value, not a credential)
+      const cfg = loadConfig({ service: 't', env: { KEYCLOAK_SECURITY_CLIENT_SECRET: secret } });
+      const text = JSON.stringify(redactConfig(cfg));
+      expect(text).not.toContain(secret);
+      expect(text).not.toContain(devSecret);
+      const out = redactConfig(cfg) as { keycloakAdmin: Record<string, string> };
+      expect(out.keycloakAdmin).toEqual({ baseUrl: 'http://127.0.0.1:18081', realm: 'bananagig', clientId: 'bananagig-security', clientSecret: '***' });
+    });
+    it('masks the development default too', () => {
+      expect(JSON.stringify(redactConfig(loadConfig({ service: 't', env: {} })))).not.toContain(devSecret);
     });
   });
 });

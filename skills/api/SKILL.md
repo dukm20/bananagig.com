@@ -17,6 +17,7 @@ Add or change HTTP endpoints following the BananaGig API conventions.
 - `apps/api/src/modules/system/routes.ts`, `apps/api/src/modules/system/service.ts`
 - `packages/contracts/src/index.ts`, `scripts/generate-specs.mjs`, `docs/api/openapi.yaml`, `docs/events/asyncapi.yaml`
 - `docs/engineering/API_CONVENTIONS.md`, `docs/engineering/EVENT_CONVENTIONS.md`
+- ID-004: `apps/api/src/plugins/step-up.ts`, `apps/api/src/modules/security/{routes,wiring}.ts`, `apps/api/src/spec-completeness.test.ts`, `docs/engineering/SESSIONS_AND_MFA.md`
 
 ## Architecture rules
 
@@ -27,6 +28,8 @@ Add or change HTTP endpoints following the BananaGig API conventions.
 - Readiness checks critical dependencies only (API: PostgreSQL). Optional outages must not fail `/readyz`.
 - Cross-cutting plugins use `fastify-plugin`; route modules stay encapsulated (LRN-0006).
 - Protected routes use the guards in `apps/api/src/plugins/auth.ts` (`requireAuthenticated`, `requireRealmRole`, `requireAnyRole`, `requireClientRole`, `requireAuthContext`) and declare `security: [{ bearerAuth: [] }]`; public routes declare `security: []`. 401 is AUTHENTICATION, 403 is AUTHORIZATION; no provider payloads are returned. Details: `skills/identity/SKILL.md`.
+- Session enforcement and step-up (ID-004, ADR-0034, ADR-0036): when `AppDeps.security` is wired, `requireAccount()` also resolves the token's `sid` to the application session (token without `sid` = 401 `INVALID_TOKEN`; revoked = 401 `SESSION_REVOKED` with the `invalid_token` challenge) and sets `request.securitySession`. A route that needs a fresher or stronger authentication lists `requireRecentAuthentication()` / `requireMfa()` AFTER `requireAccount()` and BEFORE `strictBody` in `preValidation` (401/403 win, then the step-up 401, then the 400); the answer is the RFC 9470 shape (`WWW-Authenticate` with `error="insufficient_user_authentication"`, `max_age`, `acr_values`; `details` = `StepUpDetails`). Guards read only the verified token's `auth_time` and `acr`. Routes that use only `requireAuthenticated()` (for example `system/whoami`) do NOT consult the session registry: use `requireAccount()` for anything that must honour "sign out everywhere".
+- `toAppError(err, realm?)` maps the security codes; pass the realm where a `SESSION_REVOKED` can occur so the 401 carries the right challenge. Security routes send `Cache-Control: no-store` (an `onRequest` hook) on errors too, take no account id/subject/Keycloak session id (path ids are application uuids of the caller's own account; a foreign id is a 404), and a public route that must always answer the same (`POST /auth/password-reset`) lives in its own plugin so the authenticated hooks never apply, does its account-dependent work detached, and relies on `drain()` (awaited with a bound in `onClose`) at shutdown.
 
 ## Implementation pattern
 
@@ -73,6 +76,7 @@ Services never write SQL in routes. Persistence changes go through the database 
 - Account guard (ID-001, `apps/api/src/plugins/account.ts`, ADR-0025 and ADR-0026): `preValidation: [requireAccount({ includeProfile? }), strictBody(Schema)]` authenticates (401), requires the normal web context (the admin context and any other client get 403 `ACCOUNT_CONTEXT_NOT_SUPPORTED`), maps the verified issuer and subject to the application account (created on the first request), refuses `SUSPENDED` and `CLOSED` accounts (403) and sets `request.account` (id, status, ACTIVE roles, memberships, primary role, active role, optional own profile; no token, no subject). The role a request acts as comes from the `x-active-role` header (`ACTIVE_ROLE_HEADER`) and is validated against the account's ACTIVE memberships on EVERY request (403 `ACCOUNT_ROLE_NOT_HELD` or `ACCOUNT_ROLE_NOT_ACTIVE`); a role-switch route turns the header off and validates its body instead. Never accept an account id, subject or role from the client (strict bodies and `additionalProperties: false` on the query reject them), never authorize with `request.principal.realmRoles`, and never add a role-granting endpoint. Account responses (errors included) are `Cache-Control: no-store` because they carry the caller's own name. Errors are `ACCOUNT_<code>` through the module `toAppError`. The shared `parseBody` and `strictBody` (`apps/api/src/plugins/strict-body.ts`) serve the account, content, geography and address routes.
 
 - Client address behind a proxy (ID-003, ADR-0033, DEBT-0055): Fastify's `trustProxy` receives the function `trustHops(hops)` from `apps/api/src/app.ts` (`(address, hop) => hop < hops`, proxy-addr's contract: hop 0 is the socket peer), so `request.ip` is the first address that is not a trusted proxy: the LAST `X-Forwarded-For` entry with 1 hop, the socket with 0; never `trustProxy: true` and never a client-chosen leftmost entry. `hops` is `TRUSTED_PROXY_HOPS` (0 to 4, required in production, 1 elsewhere). A function is used because the Fastify 5.12.5 option is typed `boolean | string | string[] | TrustProxyFunction` (no number), and the function makes the hop semantics explicit and unit-testable (LRN-0040). The proxy must REPLACE the header (`header_up X-Forwarded-For {remote_host}` in `infra/caddy/Caddyfile`) and the API must not be published; both are asserted by tests (`apps/api/src/trust-proxy.test.ts`).
+- The generated OpenAPI silently lacked the ID-003 phone routes because `scripts/generate-specs.mjs` did not pass the phone service to `buildApp`; `specs:check` could not notice (committed and generated files were equally incomplete). `apps/api/src/spec-completeness.test.ts` now fails when an `AppDeps` property is not passed by the generator or a module's paths are missing from the committed spec: when you add an optional service to `AppDeps`, pass it in the generator (LRN-0044).
 
 ## Do not
 
@@ -83,11 +87,11 @@ Services never write SQL in routes. Persistence changes go through the database 
 - Do not trust a route to be private because it is unlisted or because the UI hides it: add a guard.
 - Integers that arrive as text (path parameters, query strings) use the one strict parser: `strictIntegerParams({ name: bounds })` in `preValidation` (after the authorization hook) plus `integerParamSchema(bounds)` in the route schema; never rely on Ajv coercion, which reads `1e3` as 1000 and `0x10` as 16 (LRN-0032). `enforceStrictIntegerParams` makes a route with an unguarded numeric `params`/`querystring` property, a numeric type outside `properties`, or any `$ref` in those schemas fail to register (the hook must be a direct entry of the route's own `preValidation`), so adding one without the hook fails in every test that builds the app. It does not cover request bodies: Ajv still coerces body integers and booleans on the configuration and content routes (DEBT-0043); use `strictBody` there.
 - Endpoints that receive personal data and persist nothing (address validate/format, `docs/engineering/ADDRESSES.md`) are stateless POSTs: `Cache-Control: no-store`, a small `bodyLimit`, `strictBody` first, errors and issues carry field names and codes only (never the rejected value), no logging of the body (the app has `logger: false`; keep it so), and no sibling route that reads a persisted record until its access policy exists.
+- Do not add an optional service to `AppDeps` without passing it in `scripts/generate-specs.mjs` and adding its module to the spec-completeness test.
+- Do not enforce a factor or a step-up from a header, body, cookie or the trusted-browser flag; read `auth_time` and `acr` of the verified token (guards in `step-up.ts`).
 
 ## Related ADRs
-
-ADR-0006, ADR-0004, ADR-0013, ADR-0024, ADR-0025, ADR-0026, ADR-0033
+ADR-0006, ADR-0004, ADR-0013, ADR-0024, ADR-0025, ADR-0026, ADR-0033, ADR-0034, ADR-0036
 
 ## Last reviewed
-
-2026-10-08 (ID-003)
+2026-10-16 (ID-004)

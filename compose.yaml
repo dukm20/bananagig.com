@@ -150,6 +150,10 @@ services:
     environment:
       SERVICE_NAME: bananagig-api
       PORT: "3000"
+      # Account security (ID-004): the service-account client the API uses for the Keycloak admin REST API. An empty secret means "unset": the development
+      # placeholder outside production, a startup error in production (the placeholder itself is refused there).
+      KEYCLOAK_SECURITY_CLIENT_ID: ${KEYCLOAK_SECURITY_CLIENT_ID:-bananagig-security}
+      KEYCLOAK_SECURITY_CLIENT_SECRET: ${KEYCLOAK_SECURITY_CLIENT_SECRET:-}
     networks: [bananagig]
     read_only: true
     cap_drop: [ALL]
@@ -376,6 +380,8 @@ services:
     env_file: .env
     environment:
       SERVICE_NAME: bananagig-smoke
+      # opt-in: SMOKE_STEP_UP_AGING=1 pnpm smoke also proves the step-up refusal with a REAL aged auth_time (lowers security.step_up_valid_minutes to 1 for about 3 minutes and restores it)
+      SMOKE_STEP_UP_AGING: ${SMOKE_STEP_UP_AGING:-}
     networks: [bananagig]
     read_only: true
     cap_drop: [ALL]

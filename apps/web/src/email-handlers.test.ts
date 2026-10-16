@@ -35,6 +35,8 @@ const cfg: AuthConfig = {
   cookieSecure: false,
   sessionCookie: 'bg_session',
   txCookie: 'bg_auth_tx',
+  deviceCookie: 'bg_device',
+  revokedRedirectUri: `${PUBLIC}/session?error=session_revoked`,
 };
 const TOKENS = { access: 'tok-access-SECRET-1', refresh: 'tok-refresh-SECRET-2', id: 'tok-id-SECRET-3' };
 

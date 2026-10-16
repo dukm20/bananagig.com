@@ -4,7 +4,7 @@ import type { AppConfig } from '@bananagig/config';
 import { API_PREFIX } from '@bananagig/contracts';
 import type { ConfigurationService } from '@bananagig/configuration';
 import type { ContentService } from '@bananagig/content';
-import type { AccountService, EmailVerificationService, PhoneVerificationService } from '@bananagig/accounts';
+import type { AccountService, EmailVerificationService, PhoneVerificationService, SecurityOperations } from '@bananagig/accounts';
 import type { AddressService, GeographyService } from '@bananagig/geography';
 import type { TokenVerifier } from '@bananagig/identity';
 import { metrics } from '@bananagig/observability';
@@ -16,12 +16,17 @@ import { enforceStrictIntegerParams } from './plugins/strict-params';
 import { configurationRoutes } from './modules/configuration/routes';
 import { contentRoutes } from './modules/content/routes';
 import { accountRoutes } from './modules/account/routes';
+import { passwordResetRoutes, securityRoutes } from './modules/security/routes';
+import { drainWithTimeout } from './modules/security/wiring';
 import { addressRoutes } from './modules/geography/address-routes';
 import { geographyRoutes } from './modules/geography/routes';
 import { systemAuthRoutes, systemRootRoutes, systemV1Routes } from './modules/system/routes';
 
 /** Longest path parameter the router accepts: above the 160-character content key limit; longer values are rejected with the standard 400. */
 export const MAX_PATH_PARAM_LENGTH = 192;
+
+/** Longest the shutdown waits for the security layer's detached work. */
+export const SECURITY_DRAIN_TIMEOUT_MS = 5000;
 
 export interface AppDeps {
   cfg: AppConfig;
@@ -51,6 +56,12 @@ export interface AppDeps {
   emailVerification?: EmailVerificationService;
   /** The phone contact and its verification (ID-003); the phone routes are registered only when provided together with `accounts`. */
   phoneVerification?: PhoneVerificationService;
+  /**
+   * Sessions, devices, MFA status, step-up and password reset (ID-004). Optional like the verification services: when provided together with `accounts`, the security
+   * routes are registered AND requireAccount enforces the session registry (a revoked session is refused with 401 SESSION_REVOKED, a token without `sid` is refused);
+   * without it requireAccount behaves exactly as before.
+   */
+  security?: SecurityOperations;
 }
 
 /**
@@ -107,6 +118,11 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
           description:
             "The caller's own application account (ID-001): account, application roles, active role and core profile. Authenticated with the normal web identity context; the admin context has no application account. Application roles live in PostgreSQL, not in Keycloak",
         },
+        {
+          name: 'security',
+          description:
+            "The caller's own sessions, browsers (devices) and second-factor state, the step-up protocol (RFC 9470) and the security timeline (ID-004), plus the public password-reset request. Passwords, authenticator secrets and recovery codes live in the identity provider; BananaGig stores none of them",
+        },
       ],
       components: {
         securitySchemes: {
@@ -133,12 +149,24 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   if (deps.geography) await app.register(geographyRoutes, { prefix: `${API_PREFIX}/geography`, geography: deps.geography });
   if (deps.address) await app.register(addressRoutes, { prefix: `${API_PREFIX}/geography`, address: deps.address });
   if (deps.accounts) {
-    await app.register(accountPlugin, { accounts: deps.accounts, emailVerification: deps.emailVerification, phoneVerification: deps.phoneVerification });
+    await app.register(accountPlugin, {
+      accounts: deps.accounts,
+      emailVerification: deps.emailVerification,
+      phoneVerification: deps.phoneVerification,
+      security: deps.security,
+    });
     await app.register(accountRoutes, {
       prefix: API_PREFIX,
       emailRoutes: deps.emailVerification !== undefined,
       phoneRoutes: deps.phoneVerification !== undefined,
     });
+    if (deps.security) {
+      const security = deps.security;
+      // graceful stop (index.ts closes the database only after app.close()): wait, bounded, for the detached password-reset work
+      app.addHook('onClose', async () => drainWithTimeout(security.drain?.bind(security), SECURITY_DRAIN_TIMEOUT_MS));
+      await app.register(securityRoutes, { prefix: API_PREFIX });
+      await app.register(passwordResetRoutes, { prefix: API_PREFIX });
+    }
   }
 
   app.get('/metrics', { schema: { hide: true } }, async (_req, reply) => reply.type(metrics.contentType).send(await metrics.metrics()));

@@ -23,9 +23,9 @@ Not in scope (no table, column or route exists for any of them):
 |---|---|
 | Onboarding screens, sign-up and sign-in forms, carousels, the role switcher UI | web checkpoints (CU-03 and later); the account area (CU-09, PR-09) |
 | Phone storage and verification | IMPLEMENTED in ID-003 (`docs/engineering/PHONE_VERIFICATION.md`); CU-03.04 to CU-03.06, SV-03 |
-| Account recovery by phone, the step-up before a phone change and the phone screens (verification page, "Change number") | not built: recovery is DEBT-0017; the production SMS provider is DEBT-0059; see `TECH_DEBT.md` for the others |
-| Email recovery of access, the account email screens and the step-up before an email change | DEBT-0017, DEBT-0050 (the email contact and its verification are IMPLEMENTED in ID-002: `docs/engineering/EMAIL_VERIFICATION.md`) |
-| Password recovery and reset, notifications | DEBT-0017 |
+| Account recovery by phone (the phone confirmation after a reset), the step-up before a phone change and the phone screens (verification page, "Change number") | not built: recovery is DEBT-0017 and DEBT-0067; the step-up primitive exists but is not wired into the phone change (DEBT-0062); the production SMS provider is DEBT-0059; see `TECH_DEBT.md` for the others |
+| The account email screens and the step-up before an email change | DEBT-0050 (the email contact and its verification are IMPLEMENTED in ID-002: `docs/engineering/EMAIL_VERIFICATION.md`) |
+| Password reset by email link, application sessions, browsers, authenticator app and recovery codes, step-up guards, the security timeline | IMPLEMENTED in ID-004: `docs/engineering/SESSIONS_AND_MFA.md` (ADR-0034 to ADR-0036). Not built: email/SMS second factors, recovery by phone, support route (DEBT-0067), notifications (DEBT-0017) |
 | Consent and legal acceptance records | ID-005 |
 | Billing, payment methods, balances, subscriptions | finance checkpoints |
 | Photos, bio, public profile, provider business details | profile and provider checkpoints (SV-11.02, PR-09, PB-03) |
@@ -41,8 +41,11 @@ Not in scope (no table, column or route exists for any of them):
 | Concern | Owner | Where it lives |
 |---|---|---|
 | Credentials, passwords, password policy, brute-force protection | Keycloak | the `keycloak` database |
-| Authentication flows, MFA factors, step-up | Keycloak | the `keycloak` database and realm file |
+| Authentication flows, MFA factors (TOTP, recovery codes) and their secrets, the floor that asks for them | Keycloak | the `keycloak` database and realm file; BananaGig stores no secret and no code (ADR-0036) |
 | Protocol sessions and token issuance (access, refresh, ID tokens) | Keycloak | issued by Keycloak; the web server keeps the tokens in its Valkey session record, never in the browser |
+| The application session registry, revocation and the "sign out everywhere" watermark | BananaGig (ID-004) | `identity.application_sessions`, `identity.accounts.sessions_not_before`; references the Keycloak `sid`, holds no token (ADR-0034) |
+| Browsers (devices) and the trusted-browser record | BananaGig (ID-004) | `identity.account_devices`: a keyed hash of a cookie secret and three coarse families; the trusted flag does not change when Keycloak asks for a code (DEBT-0066) |
+| The security timeline | BananaGig (ID-004) | a read model over `identity.account_audit_events`, no separate table |
 | Login identifier (username, login email) | Keycloak | the `keycloak` database; not mirrored |
 | The immutable subject (`sub`) and the issuer | Keycloak issues them; BananaGig stores the pair only as the link | `identity.external_identities` |
 | Account existence, account id, status and status history | BananaGig | `identity.accounts`, `identity.account_status_history` |
@@ -108,7 +111,7 @@ What the database guarantees, in addition to the usual keys and CHECKs (all guar
 - At commit, the status history and the account agree in both directions (two deferred constraint triggers, `STATUS_HISTORY_MISMATCH`): the newest history row equals the CURRENT `accounts.status` read at commit (so a transaction that passes through a transient status, suspend then reactivate, is fine), and every history row continues the previous one (`from_status` equals the previous `to_status`, NULL for the first row), so a stray history row is refused too.
 - No row is ever deleted; history and audit rows are immutable; identity columns are immutable.
 
-There is no `users` table, no `display_name`, no `active_role` column, no `sessions` table, no contact table, no address column and no table of Keycloak data.
+There is no `users` table, no `display_name`, no `active_role` column, no address column and no table of Keycloak data. (Since ID-002, ID-003 and ID-004 the schema also holds the email and phone contact tables and the application session and device registries; none holds a credential, a token, a TOTP secret or a recovery code.)
 
 ## Account bootstrap policy
 
@@ -346,7 +349,7 @@ Test files (counts change with every test; run them rather than quoting numbers)
 | Debt | Subject |
 |---|---|
 | DEBT-0013 | idempotency records: evaluated for ID-001 and not built (natural uniqueness suffices); stays OPEN |
-| DEBT-0017 | SMS notifications and recovery flows not built (email verification is built, ID-002) |
+| DEBT-0017 | SMS notifications and recovery flows not built (email verification is built, ID-002; the password reset by email link, TOTP and recovery codes are built, ID-004) |
 | DEBT-0021 | temporary admin permissions as Keycloak client roles |
 | DEBT-0036 | address retention, erasure and exact-location access policy (also applies to saved addresses later) |
 | DEBT-0038 | phone numbering rules not modelled |
@@ -358,6 +361,7 @@ Test files (counts change with every test; run them rather than quoting numbers)
 | DEBT-0048 | no endpoint or screen for the preferred role; account screens are infrastructure only |
 | DEBT-0049 to DEBT-0058 | email verification debts: production provider, change-email step-up and screens, contested addresses, branded layout, brokered social login, bot protection and re-verification, trusted proxy address, admin timeline, retention, unconfirmed abuse limits |
 | DEBT-0059 to DEBT-0064 | phone verification debts (ID-003): DEBT-0059 production SMS provider, DEBT-0060 telecom risk vendor, DEBT-0061 contested numbers (support process), DEBT-0063 the market scope of country and market policy waits for accounts to have a market, DEBT-0064 the two Valkey abuse limits are engineering assumptions; see `TECH_DEBT.md` for each entry and for DEBT-0062 |
+| DEBT-0066 to DEBT-0074 | sessions, MFA and recovery debts (ID-004): DEBT-0066 the trusted browser has no login-time effect, DEBT-0067 no email/SMS second factor and no phone or support recovery, DEBT-0068 Keycloak events are not consumed, DEBT-0069 per-process refresh single-flight, DEBT-0070 three assumed parameters and the duplicated remember-me value, DEBT-0071 the `manage-users` service account, DEBT-0072 best-effort propagation without a queue, DEBT-0073 password-reset abuse residuals, DEBT-0074 session and security residuals |
 
 ## Email contact (ID-002)
 
@@ -376,10 +380,16 @@ The account's mobile number (stored in E.164 with its country), its verification
 
 Seven audit actions and five outbox events are added; the error codes are `ACCOUNT_PHONE_*` (400, 409, 429 with `Retry-After` where the wait is known, 503).
 
+
+## Sessions, browsers and security (ID-004)
+
+`requireAccount()` also resolves the token's `sid` to an application session when the security service is wired (a revoked session is `401 SESSION_REVOKED` at once; a token without `sid` is `401 INVALID_TOKEN`) and sets `request.securitySession` (`applicationSessionId`, `accountDeviceId`, `created`; ids only). The email and phone routes pass the session's `accountDeviceId` to their limiter, so the per-device dimension has an identifier. Everything else (the twelve `/account/security/*` operations and the public `POST /auth/password-reset`, the guards, the watermark, the Keycloak service account, the realm changes, the privacy rules and the tests) is specified in `docs/engineering/SESSIONS_AND_MFA.md`. A suspended or closed account is a 403 before any session logic; a closed account gets no new session or device and its watermark is not raised (DEBT-0074: closing or suspending an account does not revoke its sessions).
+
 ## Operations and troubleshooting
 
 | Symptom | Likely cause |
 |---|---|
+| 401 `SESSION_REVOKED` | the session was signed out from another place, its browser was removed, a sign-out everywhere raised the account's watermark above this login, or the `sid` belongs to another account; sign in again (`SESSIONS_AND_MFA.md`) |
 | 403 `ACCOUNT_CONTEXT_NOT_SUPPORTED` | the token is an admin token or belongs to a client other than `bananagig-web`; account routes serve the normal web identity only |
 | 403 `ACCOUNT_SUSPENDED` or `ACCOUNT_CLOSED` on every request | the account status; `changeStatus` (service) is the only way to change it, and `CLOSED` is terminal |
 | 403 `ACCOUNT_ROLE_NOT_HELD` with a role the person used before | the web session remembers a role that was deactivated, or the header holds an unknown code; switch role again |

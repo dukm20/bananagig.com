@@ -608,19 +608,52 @@ CREATE TABLE identity.account_audit_events (
   correlation_id text NOT NULL,
   email_contact_id uuid,
   phone_contact_id uuid,
+  application_session_id uuid,
+  account_device_id uuid,
   CONSTRAINT pk_account_audit_events PRIMARY KEY (audit_event_id),
+  CONSTRAINT fk_account_audit_events__account_device FOREIGN KEY (account_id, account_device_id) REFERENCES identity.account_devices(account_id, account_device_id) ON DELETE RESTRICT,
   CONSTRAINT fk_account_audit_events__account_email_contact FOREIGN KEY (account_id, email_contact_id) REFERENCES identity.email_contacts(account_id, email_contact_id) ON DELETE RESTRICT,
   CONSTRAINT fk_account_audit_events__account_id FOREIGN KEY (account_id) REFERENCES identity.accounts(account_id) ON DELETE RESTRICT,
   CONSTRAINT fk_account_audit_events__account_phone_contact FOREIGN KEY (account_id, phone_contact_id) REFERENCES identity.phone_contacts(account_id, phone_contact_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_account_audit_events__account_session FOREIGN KEY (account_id, application_session_id) REFERENCES identity.application_sessions(account_id, application_session_id) ON DELETE RESTRICT,
   CONSTRAINT fk_account_audit_events__role_id FOREIGN KEY (role_id) REFERENCES identity.roles(role_id) ON DELETE RESTRICT,
-  CONSTRAINT ck_account_audit_events__action CHECK ((action = ANY (ARRAY['ACCOUNT_CREATED'::text, 'EXTERNAL_IDENTITY_LINKED'::text, 'ROLE_GRANTED'::text, 'ROLE_ACTIVATED'::text, 'ROLE_DEACTIVATED'::text, 'PRIMARY_ROLE_CHANGED'::text, 'PROFILE_UPDATED'::text, 'EMAIL_ADDED'::text, 'EMAIL_CHANGE_REQUESTED'::text, 'EMAIL_VERIFICATION_REQUESTED'::text, 'EMAIL_VERIFICATION_FAILED'::text, 'EMAIL_VERIFICATION_LOCKED'::text, 'EMAIL_VERIFIED'::text, 'EMAIL_PRIMARY_CHANGED'::text, 'PHONE_ADDED'::text, 'PHONE_CHANGE_REQUESTED'::text, 'PHONE_VERIFICATION_REQUESTED'::text, 'PHONE_VERIFICATION_FAILED'::text, 'PHONE_VERIFICATION_LOCKED'::text, 'PHONE_VERIFIED'::text, 'PHONE_PRIMARY_CHANGED'::text]))),
+  CONSTRAINT ck_account_audit_events__action CHECK ((action = ANY (ARRAY['ACCOUNT_CREATED'::text, 'EXTERNAL_IDENTITY_LINKED'::text, 'ROLE_GRANTED'::text, 'ROLE_ACTIVATED'::text, 'ROLE_DEACTIVATED'::text, 'PRIMARY_ROLE_CHANGED'::text, 'PROFILE_UPDATED'::text, 'EMAIL_ADDED'::text, 'EMAIL_CHANGE_REQUESTED'::text, 'EMAIL_VERIFICATION_REQUESTED'::text, 'EMAIL_VERIFICATION_FAILED'::text, 'EMAIL_VERIFICATION_LOCKED'::text, 'EMAIL_VERIFIED'::text, 'EMAIL_PRIMARY_CHANGED'::text, 'PHONE_ADDED'::text, 'PHONE_CHANGE_REQUESTED'::text, 'PHONE_VERIFICATION_REQUESTED'::text, 'PHONE_VERIFICATION_FAILED'::text, 'PHONE_VERIFICATION_LOCKED'::text, 'PHONE_VERIFIED'::text, 'PHONE_PRIMARY_CHANGED'::text, 'SESSION_CREATED'::text, 'SESSION_ENDED'::text, 'SESSION_REVOKED'::text, 'SESSIONS_REVOKED_ALL'::text, 'DEVICE_TRUSTED'::text, 'DEVICE_UNTRUSTED'::text, 'DEVICE_REMOVED'::text, 'MFA_ENROLLMENT_REQUESTED'::text, 'MFA_ENABLED'::text, 'MFA_DISABLED'::text, 'RECOVERY_CODES_REQUESTED'::text, 'RECOVERY_CODES_ENABLED'::text, 'RECOVERY_CODES_DISABLED'::text, 'PASSWORD_RESET_REQUESTED'::text, 'PASSWORD_CHANGED'::text, 'PASSWORD_RESET_COMPLETED'::text]))),
   CONSTRAINT ck_account_audit_events__actor CHECK (((length(btrim(actor)) > 0) AND (length(actor) <= 200))),
   CONSTRAINT ck_account_audit_events__changes_object CHECK (((changes IS NULL) OR (jsonb_typeof(changes) = 'object'::text))),
+  CONSTRAINT ck_account_audit_events__device CHECK (((action ~~ 'DEVICE\_%'::text) = (account_device_id IS NOT NULL))),
   CONSTRAINT ck_account_audit_events__email_contact CHECK (((action ~~ 'EMAIL\_%'::text) = (email_contact_id IS NOT NULL))),
   CONSTRAINT ck_account_audit_events__phone_contact CHECK (((action ~~ 'PHONE\_%'::text) = (phone_contact_id IS NOT NULL))),
-  CONSTRAINT ck_account_audit_events__role CHECK (((action ~~ 'ROLE\_%'::text) = (role_id IS NOT NULL)))
+  CONSTRAINT ck_account_audit_events__role CHECK (((action ~~ 'ROLE\_%'::text) = (role_id IS NOT NULL))),
+  CONSTRAINT ck_account_audit_events__session CHECK (((action ~~ 'SESSION\_%'::text) = (application_session_id IS NOT NULL)))
 );
 CREATE INDEX idx_account_audit_events__account ON identity.account_audit_events USING btree (account_id, occurred_at DESC);
+CREATE INDEX idx_account_audit_events__account_security_state ON identity.account_audit_events USING btree (account_id, occurred_at DESC) WHERE (action = ANY (ARRAY['MFA_ENABLED'::text, 'MFA_DISABLED'::text, 'RECOVERY_CODES_ENABLED'::text, 'RECOVERY_CODES_DISABLED'::text, 'MFA_ENROLLMENT_REQUESTED'::text, 'RECOVERY_CODES_REQUESTED'::text, 'PASSWORD_CHANGED'::text, 'PASSWORD_RESET_COMPLETED'::text, 'PASSWORD_RESET_REQUESTED'::text]));
+
+CREATE TABLE identity.account_devices (
+  account_device_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  account_id uuid NOT NULL,
+  device_hash character(64) NOT NULL,
+  browser_family text NOT NULL,
+  os_family text NOT NULL,
+  device_class text NOT NULL,
+  first_seen_at timestamp with time zone NOT NULL DEFAULT clock_timestamp(),
+  last_seen_at timestamp with time zone NOT NULL DEFAULT clock_timestamp(),
+  trusted_at timestamp with time zone,
+  trusted_until timestamp with time zone,
+  removed_at timestamp with time zone,
+  CONSTRAINT pk_account_devices PRIMARY KEY (account_device_id),
+  CONSTRAINT uq_account_devices__account_device UNIQUE (account_id, account_device_id),
+  CONSTRAINT uq_account_devices__account_hash UNIQUE (account_id, device_hash),
+  CONSTRAINT fk_account_devices__account_id FOREIGN KEY (account_id) REFERENCES identity.accounts(account_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_account_devices__browser_family CHECK ((browser_family = ANY (ARRAY['CHROME'::text, 'FIREFOX'::text, 'SAFARI'::text, 'EDGE'::text, 'OPERA'::text, 'OTHER'::text]))),
+  CONSTRAINT ck_account_devices__device_class CHECK ((device_class = ANY (ARRAY['DESKTOP'::text, 'MOBILE'::text, 'TABLET'::text, 'OTHER'::text]))),
+  CONSTRAINT ck_account_devices__device_hash CHECK ((device_hash ~ '^[0-9a-f]{64}$'::text)),
+  CONSTRAINT ck_account_devices__os_family CHECK ((os_family = ANY (ARRAY['WINDOWS'::text, 'MACOS'::text, 'LINUX'::text, 'IOS'::text, 'ANDROID'::text, 'OTHER'::text]))),
+  CONSTRAINT ck_account_devices__removed_untrusted CHECK (((removed_at IS NULL) OR (trusted_until IS NULL))),
+  CONSTRAINT ck_account_devices__seen_order CHECK ((last_seen_at >= first_seen_at)),
+  CONSTRAINT ck_account_devices__trust_pair CHECK (((trusted_at IS NULL) = (trusted_until IS NULL))),
+  CONSTRAINT ck_account_devices__trust_window CHECK (((trusted_until IS NULL) OR (trusted_until > trusted_at)))
+);
 
 CREATE TABLE identity.account_profiles (
   account_id uuid NOT NULL,
@@ -685,11 +718,34 @@ CREATE TABLE identity.accounts (
   created_at timestamp with time zone NOT NULL DEFAULT now(),
   updated_at timestamp with time zone NOT NULL DEFAULT now(),
   closed_at timestamp with time zone,
+  sessions_not_before timestamp with time zone,
   CONSTRAINT pk_accounts PRIMARY KEY (account_id),
   CONSTRAINT fk_accounts__primary_role FOREIGN KEY (account_id, primary_role_id) REFERENCES identity.account_roles(account_id, role_id) ON DELETE RESTRICT,
   CONSTRAINT ck_accounts__closed_at CHECK (((status = 'CLOSED'::text) = (closed_at IS NOT NULL))),
   CONSTRAINT ck_accounts__status CHECK ((status = ANY (ARRAY['PENDING'::text, 'ACTIVE'::text, 'SUSPENDED'::text, 'CLOSURE_REQUESTED'::text, 'CLOSED'::text])))
 );
+
+CREATE TABLE identity.application_sessions (
+  application_session_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  account_id uuid NOT NULL,
+  keycloak_session_id text NOT NULL,
+  account_device_id uuid,
+  created_at timestamp with time zone NOT NULL DEFAULT clock_timestamp(),
+  last_seen_at timestamp with time zone NOT NULL DEFAULT clock_timestamp(),
+  revoked_at timestamp with time zone,
+  revocation_reason text,
+  CONSTRAINT pk_application_sessions PRIMARY KEY (application_session_id),
+  CONSTRAINT uq_application_sessions__account_session UNIQUE (account_id, application_session_id),
+  CONSTRAINT uq_application_sessions__keycloak_session UNIQUE (keycloak_session_id),
+  CONSTRAINT fk_application_sessions__account_device FOREIGN KEY (account_id, account_device_id) REFERENCES identity.account_devices(account_id, account_device_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_application_sessions__account_id FOREIGN KEY (account_id) REFERENCES identity.accounts(account_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_application_sessions__keycloak_session_id CHECK ((((length(keycloak_session_id) >= 1) AND (length(keycloak_session_id) <= 100)) AND (keycloak_session_id !~ '[\u0001-\u0020\u007F]'::text))),
+  CONSTRAINT ck_application_sessions__revocation_reason CHECK (((revocation_reason IS NULL) OR (revocation_reason = ANY (ARRAY['SIGN_OUT'::text, 'REVOKED_BY_USER'::text, 'SIGN_OUT_EVERYWHERE'::text, 'KEYCLOAK_ENDED'::text, 'DEVICE_REMOVED'::text, 'PASSWORD_CHANGED'::text])))),
+  CONSTRAINT ck_application_sessions__revoked_pair CHECK (((revoked_at IS NULL) = (revocation_reason IS NULL))),
+  CONSTRAINT ck_application_sessions__seen_order CHECK (((last_seen_at >= created_at) AND ((revoked_at IS NULL) OR (revoked_at >= created_at))))
+);
+CREATE INDEX idx_application_sessions__account_live ON identity.application_sessions USING btree (account_id) WHERE (revoked_at IS NULL);
+CREATE INDEX idx_application_sessions__device ON identity.application_sessions USING btree (account_id, account_device_id) WHERE (account_device_id IS NOT NULL);
 
 CREATE TABLE identity.email_contacts (
   email_contact_id uuid NOT NULL DEFAULT gen_random_uuid(),

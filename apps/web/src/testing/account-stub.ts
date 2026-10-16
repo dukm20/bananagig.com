@@ -2,7 +2,22 @@
 // integration tests and `pnpm smoke`). It behaves like the API where the web app depends on it: the bearer token is required, the role named in
 // x-active-role must be an ACTIVE role of the account (403 ACCOUNT_ROLE_NOT_HELD otherwise), the role switch validates and persists nothing.
 import type http from 'node:http';
-import { CORRELATION_HEADER, UpdateProfileRequest, type AccountDto, type AccountEmailDetailDto } from '@bananagig/contracts';
+import {
+  CORRELATION_HEADER,
+  PasswordResetRequest,
+  RegisterSessionRequest,
+  RevokeAllSessionsRequest,
+  SECURITY_ACTIVITY_TYPES,
+  StartMfaEnrollmentRequest,
+  UpdateProfileRequest,
+  KEYCLOAK_ACTION_OF_METHOD,
+  type AccountDto,
+  type AccountEmailDetailDto,
+  type SecurityActivityDto,
+  type SecurityDevicesDto,
+  type SecurityOverviewDto,
+  type SecuritySessionsDto,
+} from '@bananagig/contracts';
 import type { ContentStub, StubCatalog } from './content-stub';
 import { REGISTRY_COPY } from './content-stub';
 
@@ -94,6 +109,174 @@ export const EMAIL_COPY: StubCatalog = {
   },
 };
 
+// ---------------------------------------------------------------- account security (ID-004)
+export const SESSION_ID = '5b0c9d3e-7a41-4f68-9c2d-1e8f0a6b4d21';
+export const OTHER_SESSION_ID = '9a7e2c54-3b18-4d6f-8f90-2c5d7e1a0b36';
+export const DEVICE_ID = '2d6f8a10-5c93-4e7b-b4a1-7f3e9c0d5a82';
+export const OTHER_DEVICE_ID = 'c4e1b7a9-0d52-4a38-9e6f-8b2a5d3c7f10';
+
+/** The overview the API reports for an account with an authenticator app but no recovery codes, signed in with the password only. */
+export const overviewDto = (over: Partial<SecurityOverviewDto> = {}): SecurityOverviewDto => ({
+  mfa: { available: true, totpConfigured: true, recoveryCodesConfigured: false },
+  stepUp: { authenticatedAt: '2026-10-16T10:00:00.000Z', mfaSatisfied: false, recentUntil: null },
+  currentSession: { sessionId: SESSION_ID, deviceId: DEVICE_ID, deviceTrusted: false, trustedUntil: null },
+  policy: { trustedBrowserDays: 30, stepUpValidMinutes: 15, activityLogDays: 90 },
+  ...over,
+});
+/** Two ACTIVE sessions: the current one (Firefox on Linux) and another browser (Safari on iOS). */
+export const sessionsDto = (over: Partial<SecuritySessionsDto> = {}): SecuritySessionsDto => ({
+  reconciled: true,
+  sessions: [
+    {
+      sessionId: SESSION_ID,
+      current: true,
+      status: 'ACTIVE',
+      device: { browser: 'FIREFOX', os: 'LINUX', deviceClass: 'DESKTOP' },
+      deviceId: DEVICE_ID,
+      createdAt: '2026-10-16T09:00:00.000Z',
+      lastSeenAt: '2026-10-16T10:05:00.000Z',
+      trusted: false,
+      trustedUntil: null,
+    },
+    {
+      sessionId: OTHER_SESSION_ID,
+      current: false,
+      status: 'ACTIVE',
+      device: { browser: 'SAFARI', os: 'IOS', deviceClass: 'MOBILE' },
+      deviceId: OTHER_DEVICE_ID,
+      createdAt: '2026-10-15T09:00:00.000Z',
+      lastSeenAt: '2026-10-15T18:30:00.000Z',
+      trusted: true,
+      trustedUntil: '2026-11-14T09:00:00.000Z',
+    },
+  ],
+  ...over,
+});
+export const devicesDto = (over: Partial<SecurityDevicesDto> = {}): SecurityDevicesDto => ({
+  devices: [
+    {
+      deviceId: DEVICE_ID,
+      current: true,
+      device: { browser: 'FIREFOX', os: 'LINUX', deviceClass: 'DESKTOP' },
+      firstSeenAt: '2026-09-01T09:00:00.000Z',
+      lastSeenAt: '2026-10-16T10:05:00.000Z',
+      trusted: false,
+      trustedUntil: null,
+    },
+    {
+      deviceId: OTHER_DEVICE_ID,
+      current: false,
+      device: { browser: 'SAFARI', os: 'IOS', deviceClass: 'MOBILE' },
+      firstSeenAt: '2026-08-01T09:00:00.000Z',
+      lastSeenAt: '2026-10-15T18:30:00.000Z',
+      trusted: true,
+      trustedUntil: '2026-11-14T09:00:00.000Z',
+    },
+  ],
+  ...over,
+});
+export const activityDto = (over: Partial<SecurityActivityDto> = {}): SecurityActivityDto => ({
+  entries: [
+    {
+      id: 'ev-1',
+      type: 'SESSION_CREATED',
+      occurredAt: '2026-10-16T09:00:00.000Z',
+      outcome: 'SUCCESS',
+      labelContentKey: 'account.security.activity.session_created',
+      sessionId: SESSION_ID,
+      device: { browser: 'FIREFOX', os: 'LINUX', deviceClass: 'DESKTOP' },
+    },
+    {
+      id: 'ev-2',
+      type: 'PASSWORD_CHANGED',
+      occurredAt: '2026-10-14T08:00:00.000Z',
+      outcome: 'SUCCESS',
+      labelContentKey: 'account.security.activity.password_changed',
+      sessionId: null,
+      device: null,
+    },
+  ],
+  nextBefore: null,
+  ...over,
+});
+
+/**
+ * Registry copy of the security screens (ID-004): every content key the /security, /forgot-password and /session pages request, worded unlike the seeded copy so a
+ * test proves the text came from the registry. The stub does not render variables, so the copy with a variable is plain text here.
+ */
+export const SECURITY_TEXT: Readonly<Record<string, string>> = {
+  'account.security.title': 'Registry security title',
+  'account.security.mfa.title': 'Registry mfa title',
+  'account.security.mfa.status.enabled': 'Registry mfa on',
+  'account.security.mfa.status.disabled': 'Registry mfa off',
+  'account.security.mfa.status.unknown': 'Registry mfa unknown',
+  'account.security.mfa.totp.label': 'Registry totp label',
+  'account.security.mfa.totp.enable': 'Registry totp enable',
+  'account.security.mfa.recovery.label': 'Registry recovery label',
+  'account.security.mfa.recovery.generate': 'Registry recovery generate',
+  'account.security.mfa.recovery.warning': 'Registry recovery warning',
+  'account.security.mfa.stepup_note': 'Registry step-up note',
+  'account.security.sessions.title': 'Registry sessions title',
+  'account.security.sessions.current': 'Registry this session',
+  'account.security.sessions.sign_out': 'Registry sign this one out',
+  'account.security.sessions.sign_out_everywhere': 'Registry sign out everywhere',
+  'account.security.sessions.empty': 'Registry no sessions',
+  'account.security.sessions.unreconciled': 'Registry sessions unreconciled',
+  'account.security.sessions.last_seen': 'Registry last seen',
+  'account.security.devices.title': 'Registry browsers title',
+  'account.security.devices.trust': 'Registry trust this browser',
+  'account.security.devices.untrust': 'Registry stop trusting',
+  'account.security.devices.remove': 'Registry remove browser',
+  'account.security.devices.trust_note': 'Registry trust note',
+  'account.security.devices.none': 'Registry no browsers',
+  'account.security.devices.trusted_until': 'Registry trusted until',
+  'account.security.activity.title': 'Registry activity title',
+  'account.security.activity.empty': 'Registry no activity',
+  ...Object.fromEntries(SECURITY_ACTIVITY_TYPES.map((t) => [`account.security.activity.${t.toLowerCase()}`, `Registry activity ${t.toLowerCase()}`])),
+  ...Object.fromEntries(['chrome', 'firefox', 'safari', 'edge', 'opera', 'other'].map((b) => [`account.security.browser.${b}`, `Registry browser ${b}`])),
+  ...Object.fromEntries(['windows', 'macos', 'linux', 'ios', 'android', 'other'].map((o) => [`account.security.os.${o}`, `Registry os ${o}`])),
+  ...Object.fromEntries(['desktop', 'mobile', 'tablet', 'other'].map((c) => [`account.security.device_class.${c}`, `Registry class ${c}`])),
+  ...Object.fromEntries(
+    ['session_revoked', 'signed_out_elsewhere', 'device_trusted', 'device_untrusted', 'device_removed', 'mfa_return_success', 'mfa_return_cancelled'].map(
+      (n) => [`account.security.notice.${n}`, `Registry notice ${n}`],
+    ),
+  ),
+  ...Object.fromEntries(
+    [
+      'session_revoked',
+      'step_up_required',
+      'mfa_enrollment_required',
+      'session_not_found',
+      'device_not_found',
+      'device_required',
+      'security_unavailable',
+      'password_reset_rate_limited',
+    ].map((e) => [`account.security.error.${e}`, `Registry error ${e}`]),
+  ),
+  'account.password_reset.title': 'Registry reset title',
+  'account.password_reset.intro': 'Registry reset intro',
+  'account.password_reset.email_label': 'Registry reset email label',
+  'account.password_reset.submit': 'Registry reset submit',
+  'account.password_reset.accepted': 'Registry reset accepted',
+  'account.password_reset.back_to_sign_in': 'Registry back to sign in',
+  'account.password_reset.error.invalid_email': 'Registry reset invalid email',
+  'account.password_reset.error.rate_limited': 'Registry reset rate limited',
+};
+export const SECURITY_COPY: StubCatalog = {
+  'en-US': {
+    ...ACCOUNT_COPY['en-US'],
+    ...Object.fromEntries(Object.entries(SECURITY_TEXT).map(([key, value]) => [key, { value, contentType: 'PLAIN_TEXT' as const }])),
+  },
+};
+
+/** A scripted failure of one security route: the status and the standard error envelope the API would answer with. */
+export interface ForcedFailure {
+  status: number;
+  code: string;
+  category: string;
+  details?: Record<string, unknown>;
+}
+
 export interface AccountCall {
   method: string;
   path: string;
@@ -102,6 +285,8 @@ export interface AccountCall {
   activeRole: string | undefined;
   body: unknown;
   correlationId: string | undefined;
+  /** The x-forwarded-for header the request carried. */
+  forwardedFor?: string | undefined;
 }
 export interface AccountApiStub {
   calls: AccountCall[];
@@ -109,6 +294,12 @@ export interface AccountApiStub {
   account: AccountDto;
   /** The email verification state GET /api/v1/account/email reports (ID-002). */
   email: AccountEmailDetailDto;
+  /** The security read models (ID-004) GET /api/v1/account/security... report. */
+  security: { overview: SecurityOverviewDto; sessions: SecuritySessionsDto; devices: SecurityDevicesDto; activity: SecurityActivityDto };
+  /** When true every /account/* request is answered 401 SESSION_REVOKED (what `requireAccount` does for a revoked session). */
+  revoked: boolean;
+  /** Scripted failures by `METHOD /path` (without the /api/v1 prefix and the query), for example `POST /account/security/devices/current/trust`. */
+  forced: Record<string, ForcedFailure>;
   /** up: serves; down: 503; suspended: 403 ACCOUNT_SUSPENDED. */
   mode: 'up' | 'down' | 'suspended';
   /** Whether /system/whoami is served (otherwise 404, which is what the content-only stub does). */
@@ -121,23 +312,37 @@ export function attachAccountApi(stub: ContentStub): AccountApiStub {
     calls: [],
     account: accountDto(),
     email: emailDetail(),
+    security: { overview: overviewDto(), sessions: sessionsDto(), devices: devicesDto(), activity: activityDto() },
+    revoked: false,
+    forced: {},
     mode: 'up',
     whoami: true,
     reset() {
       api.calls.length = 0;
       api.account = accountDto();
       api.email = emailDetail();
+      api.security = { overview: overviewDto(), sessions: sessionsDto(), devices: devicesDto(), activity: activityDto() };
+      api.revoked = false;
+      api.forced = {};
       api.mode = 'up';
       api.whoami = true;
     },
   };
   stub.extra = (req: http.IncomingMessage, body: unknown, res: http.ServerResponse): boolean => {
     const path = req.url ?? '';
-    if (!path.startsWith('/api/v1/account/') && !(api.whoami && path === '/api/v1/system/whoami')) return false;
+    if (!path.startsWith('/api/v1/account/') && path !== '/api/v1/auth/password-reset' && !(api.whoami && path === '/api/v1/system/whoami')) return false;
     const correlationId = req.headers[CORRELATION_HEADER] as string | undefined;
     const activeRole = req.headers['x-active-role'] as string | undefined;
     const authorization = req.headers.authorization;
-    api.calls.push({ method: req.method ?? '', path, authorization, activeRole, body, correlationId });
+    api.calls.push({
+      method: req.method ?? '',
+      path,
+      authorization,
+      activeRole,
+      body,
+      correlationId,
+      forwardedFor: req.headers['x-forwarded-for'] as string | undefined,
+    });
     const cid = correlationId ?? 'stub-correlation';
     res.setHeader('content-type', 'application/json').setHeader(CORRELATION_HEADER, cid);
     const fail = (status: number, code: string, category: string, details?: Record<string, unknown>): boolean => {
@@ -149,7 +354,17 @@ export function attachAccountApi(stub: ContentStub): AccountApiStub {
       res.end(JSON.stringify({ data, meta: { correlationId: cid } }));
       return true;
     };
+    const route = `${req.method ?? ''} ${path.slice('/api/v1'.length).split('?')[0]}`;
+    const forced = api.forced[route];
+    if (forced) return fail(forced.status, forced.code, forced.category, forced.details);
+    // POST /auth/password-reset is public: always the same 202 for a well-formed body (the real API never says whether an account exists)
+    if (route === 'POST /auth/password-reset') {
+      if (!PasswordResetRequest.safeParse(body).success) return fail(400, 'VALIDATION_FAILED', 'VALIDATION');
+      res.statusCode = 202;
+      return ok({ accepted: true });
+    }
     if (!authorization?.startsWith('Bearer ')) return fail(401, 'AUTHENTICATION_REQUIRED', 'AUTHENTICATION');
+    if (api.revoked && path.startsWith('/api/v1/account/')) return fail(401, 'SESSION_REVOKED', 'AUTHENTICATION');
     if (api.mode === 'down') return fail(503, 'ACCOUNT_UNAVAILABLE', 'DEPENDENCY');
     if (api.mode === 'suspended') return fail(403, 'ACCOUNT_SUSPENDED', 'AUTHORIZATION', { status: 'SUSPENDED' });
     if (path === '/api/v1/system/whoami')
@@ -179,6 +394,43 @@ export function attachAccountApi(stub: ContentStub): AccountApiStub {
         },
       };
       return ok(acting(activeRole));
+    }
+    const sec = api.security;
+    const SECURITY = '/account/security';
+    if (route === `GET ${SECURITY}`) return held(activeRole) ? ok(sec.overview) : fail(403, 'ACCOUNT_ROLE_NOT_HELD', 'AUTHORIZATION', { role: activeRole });
+    if (route === `GET ${SECURITY}/sessions`) return ok(sec.sessions);
+    if (route === `GET ${SECURITY}/devices`) return ok(sec.devices);
+    if (route === `GET ${SECURITY}/activity`) return ok(sec.activity);
+    if (route === `POST ${SECURITY}/sessions/current`) {
+      if (!RegisterSessionRequest.safeParse(body).success) return fail(400, 'VALIDATION_FAILED', 'VALIDATION');
+      const o = sec.overview.currentSession;
+      return ok({ sessionId: o.sessionId, deviceId: o.deviceId, deviceTrusted: o.deviceTrusted, trustedUntil: o.trustedUntil });
+    }
+    const sessionRoute = /^DELETE \/account\/security\/sessions\/([^/]+)$/.exec(route);
+    if (sessionRoute) {
+      const id = sessionRoute[1]!;
+      if (!sec.sessions.sessions.some((x) => x.sessionId === id)) return fail(404, 'ACCOUNT_SESSION_NOT_FOUND', 'NOT_FOUND');
+      return ok({ sessionId: id, changed: true, current: sec.sessions.sessions.find((x) => x.sessionId === id)!.current, keycloak: 'ENDED' });
+    }
+    if (route === `POST ${SECURITY}/sessions/revoke-all`) {
+      if (!RevokeAllSessionsRequest.safeParse(body).success) return fail(400, 'VALIDATION_FAILED', 'VALIDATION');
+      return ok({ revokedCount: sec.sessions.sessions.filter((x) => !x.current).length, keycloak: 'ENDED' });
+    }
+    if (route === `POST ${SECURITY}/sessions/current/sign-out`) return ok({ changed: true, keycloak: 'ENDED' });
+    if (route === `POST ${SECURITY}/devices/current/trust`)
+      return ok({ deviceId: sec.overview.currentSession.deviceId ?? DEVICE_ID, trusted: true, trustedUntil: '2026-11-15T10:00:00.000Z' });
+    if (route === `DELETE ${SECURITY}/devices/current/trust`)
+      return ok({ deviceId: sec.overview.currentSession.deviceId ?? DEVICE_ID, trusted: false, trustedUntil: null });
+    const deviceRoute = /^DELETE \/account\/security\/devices\/([^/]+)$/.exec(route);
+    if (deviceRoute) {
+      const id = deviceRoute[1]!;
+      if (!sec.devices.devices.some((x) => x.deviceId === id)) return fail(404, 'ACCOUNT_DEVICE_NOT_FOUND', 'NOT_FOUND');
+      return ok({ deviceId: id, changed: true, sessionsRevoked: 1, keycloak: 'ENDED' });
+    }
+    if (route === `POST ${SECURITY}/mfa/enrollment`) {
+      const parsed = StartMfaEnrollmentRequest.safeParse(body);
+      if (!parsed.success) return fail(400, 'VALIDATION_FAILED', 'VALIDATION');
+      return ok({ method: parsed.data.method, keycloakAction: KEYCLOAK_ACTION_OF_METHOD[parsed.data.method] });
     }
     return fail(404, 'ROUTE_NOT_FOUND', 'NOT_FOUND');
   };

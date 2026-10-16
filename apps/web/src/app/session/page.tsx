@@ -1,10 +1,11 @@
 import type { Metadata } from 'next';
 import { Fragment } from 'react';
 import { headers } from 'next/headers';
+import { redirect } from 'next/navigation';
 import type { AccountDto } from '@bananagig/contracts';
 import { accountStatusLabelKey } from '@bananagig/contracts';
 import { ApiError } from '../../lib/api-client';
-import { forgetActiveRole, getSession } from '../../lib/auth/handlers';
+import { forgetActiveRole, getSession, isSessionRevokedError } from '../../lib/auth/handlers';
 import { authDeps } from '../../lib/auth/runtime';
 import type { SessionRecord } from '../../lib/auth/types';
 import { BOOTSTRAP_COPY, getContentMany, renderContent } from '../../lib/content';
@@ -25,6 +26,8 @@ async function loadAccount(id: string, record: SessionRecord): Promise<AccountDt
   try {
     return await api().getAccount({ activeRole: record.activeRole });
   } catch (err) {
+    // the API revoked this session (sign out everywhere, a removed browser): /auth/revoked re-checks and ends it through Keycloak (a page cannot clear a cookie)
+    if (isSessionRevokedError(err)) redirect('/auth/revoked');
     if (!record.activeRole || !(err instanceof ApiError) || err.status !== 403 || !STALE_ROLE_CODES.has(err.code)) return undefined;
   }
   try {
@@ -43,12 +46,16 @@ export default async function SessionPage({ searchParams }: { searchParams: Prom
   // Managed copy comes from the registry only; when it is unavailable the element is omitted (no hardcoded replacement), EXCEPT the
   // two authentication controls, which fall back to the bootstrap labels so login/logout still work when the registry is down.
   if (!session) {
+    const failureKey =
+      error === 'login_failed' ? 'session.error.login_failed' : error === 'session_revoked' ? 'account.security.error.session_revoked' : undefined;
     const copy = await getContentMany([
       'session.status.signed_out',
       'common.action.sign_in',
-      ...(error === 'login_failed' ? ['session.error.login_failed'] : []),
+      'account.password_reset.title',
+      ...(failureKey ? [failureKey] : []),
     ]);
-    const failure = error === 'login_failed' ? renderContent(copy['session.error.login_failed']) : null;
+    const failure = failureKey ? renderContent(copy[failureKey]) : null;
+    const forgot = renderContent(copy['account.password_reset.title']);
     const status = renderContent(copy['session.status.signed_out']);
     const signIn = renderContent(copy['common.action.sign_in']) ?? BOOTSTRAP_COPY.signIn;
     return (
@@ -59,6 +66,11 @@ export default async function SessionPage({ searchParams }: { searchParams: Prom
         <p>
           <a href="/auth/login?returnTo=/session">{signIn}</a>
         </p>
+        {forgot ? (
+          <p>
+            <a href="/forgot-password">{forgot}</a>
+          </p>
+        ) : null}
       </>
     );
   }
@@ -75,6 +87,7 @@ export default async function SessionPage({ searchParams }: { searchParams: Prom
   const copy = await getContentMany([
     'session.status.signed_in',
     'common.action.sign_out',
+    'account.security.title',
     ...(account
       ? [
           'session.account.id',
@@ -146,6 +159,11 @@ export default async function SessionPage({ searchParams }: { searchParams: Prom
           <button type="submit">{r.name}</button>
         </form>
       ))}
+      {label('account.security.title') ? (
+        <p>
+          <a href="/security">{label('account.security.title')}</a>
+        </p>
+      ) : null}
       {/* POST + same-origin check; there is deliberately no GET logout link (CSRF). */}
       <form method="post" action="/auth/logout">
         <button type="submit">{signOut}</button>

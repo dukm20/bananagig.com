@@ -40,12 +40,38 @@ export interface AuthorizeParams {
   nonce: string;
   codeChallenge: string;
   scope?: string;
-  /** Step-up: request an authentication context class, e.g. `bananagig:mfa`. */
+  /** Step-up: request an authentication context class. Only the values of `AUTHORIZE_ACR_VALUES` are accepted. */
   acrValues?: string;
+  /** `login` forces re-authentication. The only value accepted. */
+  prompt?: 'login';
+  /** Maximum age, in seconds, of the authentication the caller will accept (OIDC `max_age`): an integer from 0 to 86400. 0 forces re-authentication. */
+  maxAge?: number;
+  /** Keycloak application-initiated action (`kc_action`), e.g. `CONFIGURE_TOTP`. Only the values of `KEYCLOAK_ACTIONS` are accepted. */
+  kcAction?: string;
+}
+
+/** The `acr` levels the realm maps (`acr.loa.map`); the same strings as `ACR_PASSWORD` / `ACR_MFA` in @bananagig/contracts (identity may not import contracts). */
+export const AUTHORIZE_ACR_VALUES = ['bananagig:password', 'bananagig:mfa'] as const;
+/** The Keycloak actions the web server may start: the values of `KEYCLOAK_ACTION_OF_METHOD` in @bananagig/contracts. */
+export const KEYCLOAK_ACTIONS = ['CONFIGURE_TOTP', 'CONFIGURE_RECOVERY_AUTHN_CODES'] as const;
+/** Upper bound of `max_age` (one day): a larger window is not a step-up. */
+export const MAX_AGE_LIMIT_SECONDS = 86_400;
+
+/** An authorize parameter outside its whitelist. The message names the parameter, never its value. */
+export class AuthorizeParamError extends Error {
+  constructor(public readonly param: 'prompt' | 'max_age' | 'acr_values' | 'kc_action') {
+    super(`invalid authorize parameter: ${param}`);
+    this.name = 'AuthorizeParamError';
+  }
 }
 
 /** Authorization request: response_type=code with PKCE method S256. There is deliberately no way to request `plain` or implicit flow. */
 export function buildAuthorizeUrl(p: AuthorizeParams): string {
+  // validate before building anything: an unlisted value never reaches the identity provider
+  if (p.prompt !== undefined && p.prompt !== 'login') throw new AuthorizeParamError('prompt');
+  if (p.maxAge !== undefined && !(Number.isInteger(p.maxAge) && p.maxAge >= 0 && p.maxAge <= MAX_AGE_LIMIT_SECONDS)) throw new AuthorizeParamError('max_age');
+  if (p.acrValues !== undefined && !(AUTHORIZE_ACR_VALUES as readonly string[]).includes(p.acrValues)) throw new AuthorizeParamError('acr_values');
+  if (p.kcAction !== undefined && !(KEYCLOAK_ACTIONS as readonly string[]).includes(p.kcAction)) throw new AuthorizeParamError('kc_action');
   const u = new URL(p.authorizationEndpoint);
   u.searchParams.set('response_type', 'code');
   u.searchParams.set('client_id', p.clientId);
@@ -55,8 +81,34 @@ export function buildAuthorizeUrl(p: AuthorizeParams): string {
   u.searchParams.set('nonce', p.nonce);
   u.searchParams.set('code_challenge', p.codeChallenge);
   u.searchParams.set('code_challenge_method', 'S256');
-  if (p.acrValues) u.searchParams.set('acr_values', p.acrValues);
+  if (p.prompt !== undefined) u.searchParams.set('prompt', p.prompt);
+  if (p.maxAge !== undefined) u.searchParams.set('max_age', String(p.maxAge));
+  if (p.acrValues !== undefined) u.searchParams.set('acr_values', p.acrValues);
+  if (p.kcAction !== undefined) u.searchParams.set('kc_action', p.kcAction);
   return u.toString();
+}
+
+/** Outcomes Keycloak reports for an application-initiated action in the `kc_action_status` callback parameter. */
+export const KC_ACTION_STATUSES = ['success', 'cancelled', 'error'] as const;
+export type KcActionStatus = (typeof KC_ACTION_STATUSES)[number];
+
+/**
+ * Reads `kc_action_status` from the callback URL (an absolute URL, a relative `/path?query`, a URL object or URLSearchParams). Returns the value only when it is
+ * exactly one of `KC_ACTION_STATUSES` (case-sensitive, a single occurrence, in the query and not the fragment); anything else is undefined.
+ */
+export function kcActionStatusFromCallback(callback: string | URL | URLSearchParams): KcActionStatus | undefined {
+  let params: URLSearchParams;
+  if (callback instanceof URLSearchParams) params = callback;
+  else {
+    try {
+      params = (callback instanceof URL ? callback : new URL(callback, 'http://callback.invalid')).searchParams;
+    } catch {
+      return undefined;
+    }
+  }
+  const all = params.getAll('kc_action_status');
+  const value = all.length === 1 ? all[0] : undefined;
+  return value !== undefined && (KC_ACTION_STATUSES as readonly string[]).includes(value) ? (value as KcActionStatus) : undefined;
 }
 
 export interface TokenSet {

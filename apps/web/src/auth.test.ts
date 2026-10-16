@@ -24,6 +24,8 @@ const cfgFor = (publicUrl = PUBLIC): AuthConfig => {
     cookieSecure: secure,
     sessionCookie: secure ? '__Host-bg_session' : 'bg_session',
     txCookie: 'bg_auth_tx',
+    deviceCookie: secure ? '__Host-bg_device' : 'bg_device',
+    revokedRedirectUri: `${publicUrl}/session?error=session_revoked`,
   };
 };
 

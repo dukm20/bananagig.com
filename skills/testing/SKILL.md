@@ -18,6 +18,7 @@ Choose and write the right test level, and run the same gates CI runs.
 - `packages/testing/src/mailpit.ts` (read a delivered email from Mailpit and extract the code and link), `packages/accounts/src/email-verification.itest.ts` and `apps/api/src/account-email.itest.ts` (patterns for races, crafted rows and secret scans)
 - `packages/testing/src/sms.ts` (`@bananagig/testing/sms`: `FakeSmsInbox`, `openFakeSmsInbox`, `extractSmsCode`; the ID-003 counterpart of the Mailpit helper), `apps/api/src/trust-proxy.test.ts` (proxy-trust semantics and the Caddyfile, static)
 - ID-003 phone suites (patterns for crafted rows, guard triggers, races on one number and secret scans): `packages/testing/src/phone-model.itest.ts` (database), `packages/accounts/src/phone-verification.itest.ts` (service), `apps/api/src/account-phone.itest.ts` (HTTP), with unit suites `phone.test.ts`, `phone-policy.test.ts`, `verification-core.test.ts` and `apps/api/src/account-phone.test.ts`
+- ID-004 suites (patterns for revocation, the watermark, step-up, Keycloak fakes and live Keycloak): `packages/testing/src/security-model.itest.ts` (database), `packages/accounts/src/security-service.itest.ts` (service), `apps/api/src/security.itest.ts` (HTTP), `packages/identity/src/keycloak-security.itest.ts` (live Keycloak), unit suites `apps/api/src/security.test.ts`, `packages/accounts/src/security-{device,policy,fakes}.test.ts`, `packages/identity/src/{keycloak-admin,authorize-extras}.test.ts`, `apps/web/src/{security-handlers.test.ts,security.test.tsx}`, `scripts/identity-realm.test.mjs`, `apps/api/src/spec-completeness.test.ts`; fakes in `packages/accounts/src/security-fakes.ts`
 
 ## Architecture rules
 
@@ -90,6 +91,9 @@ Schema changes also need constraint-violation and rollback tests, and the data-m
 - SMS tests read the REAL message the API "sent" through the Valkey fake sink (`SMS_TRANSPORT=fake`, Valkey from `pnpm dev:deps`, default `redis://127.0.0.1:16379`): `openFakeSmsInbox()` and `inbox.wait(e164)` then `extractSmsCode(message.body)` from `@bananagig/testing/sms` (`FakeSmsInbox`). Use a unique number per test (US test numbers `+1202555xxxx`; the last three digits 901 to 905 select the fake line type, so avoid them unless the test is about line types) and `inbox.clear(e164)` when a test sends twice. The sink holds plaintext codes by design; it is DEV/TEST only and nothing in production code reads it.
 - Do NOT run `pnpm test:integration` while other agents, a running stack or a developer need the dev database untouched: its first step (`scripts/dev.mjs --deps-only`) runs `scripts/migrate.mjs` against the dev database. To run single files use the vitest command with the integration config: `node --env-file-if-exists=.env.host node_modules/vitest/vitest.mjs run -c vitest.integration.config.ts <file>`. `dropStaleTestDatabases` (the integration global setup) now skips a test database whose name embeds the pid of a live process (`bananagig_t_<pid>_...`), so concurrent runs no longer drop each other's databases; a database of a crashed run (dead pid) is still dropped. Prefer one file per concurrent run.
 - Advisory-lock race pattern (the accounts-per-number cap, ID-003): create the accounts, give each a pending contact for the SAME number, then `Promise.all` N verifications (more than the cap, on separate pool connections) and assert the invariants, not the interleaving: exactly `cap` accounts end VERIFIED, the rest get the typed refusal and nothing changed for them, one audit row and one outbox event per success; repeat in a loop with fresh accounts and numbers. Prove the trigger as the second line with raw SQL that ignores the service pre-check and expects `identity_rule:PHONE_NUMBER_CAP`. Mutation-check the test by removing the lock: it must fail.
+- Testing session revocation (ID-004): forge tokens with `signToken(keys, { sid, authTime | authTimeAgoSec, acr })` (`@bananagig/identity/testing`) and call any `requireAccount` route: revoke one `sid` and assert THAT token is refused on its very next request while a token with another `sid` still works, measure the latency, and assert a never-seen session with an `auth_time` older than the watermark is refused at first sight. `FakeSecurityIdentityProvider` stands in for Keycloak: `setUser`, `addSession`, `failNext('endSession', n)`, `hold('sendPasswordResetEmail')` returns a release function (proves a caller does not wait for the provider), `calls`, `endedSessions`, `sentResetEmails`; `StaticSecurityPolicyProvider` serves a policy. Await `drain()` before asserting detached work. Live Keycloak tests clean up what they create (the smoke scenario `Sessions and security` always removes the second factor it enrolled for `provider.dev`).
+- Time in security tests: `auth_time` is whole seconds and comes from another clock, so the watermark tolerates 2 s; wait past it (or craft rows) instead of racing it, and take both sides of a database-time comparison from `clock_timestamp()` (LRN-0041).
+- A scripted Keycloak admin client test uses an injected `fetch` and clock and asserts the failure CODES and that no body, token, secret, URL or id ever reaches an error; a realm linter test mutates a copy of the realm file for every rule (positive and negative cases).
 
 ## Do not
 
@@ -99,9 +103,7 @@ Schema changes also need constraint-violation and rollback tests, and the data-m
 - Do not read verification secrets from the database in a test (they are hashes): take them from the delivered message, the fake SMS sink or the `EmailSender` / `SmsSender` double.
 
 ## Related ADRs
-
-ADR-0004, ADR-0006, ADR-0025
+ADR-0004, ADR-0006, ADR-0025, ADR-0034, ADR-0035, ADR-0036
 
 ## Last reviewed
-
-2026-10-08 (ID-003)
+2026-10-16 (ID-004)

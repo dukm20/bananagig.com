@@ -188,6 +188,9 @@ export function mapDbError(err: unknown): never {
   if (e.code === '23503') throw new AccountError('VALIDATION_FAILED', 'a referenced record does not exist', { constraint: e.constraint });
   if (e.code === '22021' || e.code === '22P05')
     throw new AccountError('VALIDATION_FAILED', 'the request contains a character that is not allowed', { reason: 'FORBIDDEN_CHARACTER' });
+  // a date/time value the database rejects (invalid format, field out of range, bad time zone displacement) is a bad value from the caller; the driver text echoes the input, so it is dropped
+  if (e.code === '22007' || e.code === '22008' || e.code === '22009')
+    throw new AccountError('VALIDATION_FAILED', 'the request contains a date or time that is not valid', { reason: 'INVALID_VALUE' });
   if (isDatabaseOutage(err)) {
     // the driver message is not logged: it can echo statement text; the SQLSTATE or the error class is enough to diagnose an outage
     log('error', 'account database unavailable', { code: e.code ?? (err instanceof Error ? err.name : 'unknown') });

@@ -21,6 +21,7 @@ Read, define and change managed product copy (UI text, messages, email and push 
 - `apps/worker/src/jobs/content.ts`
 - `apps/web/src/lib/content.ts`, `apps/web/src/lib/locale.ts`
 - `docs/engineering/CONTENT.md`, `docs/content/CONTENT_OWNERSHIP.md` (inventory of existing strings and migration rules)
+- ID-004: `db/migrations/0012_application_sessions.sql` (86 entries), `apps/web/src/app/security/page.tsx`, `apps/web/src/app/forgot-password/page.tsx`, `packages/contracts/src/security.ts` (label key helpers)
 
 ## Architecture rules
 
@@ -98,6 +99,7 @@ Any change to `content.*` goes through the Data Model Review Gate (normalization
 - Web locale negotiation uses the public active-locale list (`GET /api/v1/content/locales`, memoized 30 s per process); `<html lang>` is still static (DEBT-0026).
 - Email copy (ID-002): an email is two entries, `<key>.subject` (EMAIL_SUBJECT, single line, no secret in it) and `<key>.body` (EMAIL_BODY, rendered to sanitized HTML); a plain-text alternative is derived from that HTML (`htmlToPlainText` in `@bananagig/platform`). Credentials in variables (a code, a link) are typed (`STRING`, `URL`) and marked `SENSITIVE_PERSONAL`. A link destination built from a variable (`[text]({verification_url})`) is validated at render time; the fragment form `#token=` passes. Seed entries WITH variables by inserting `content.entry_variables` before the version in the lifecycle `DO` block (a required variable cannot be added once the entry has versions); every seeded body must render with its example values (test it with `ContentService.render`, the SQL seed bypasses the authoring validation).
 - SMS copy (ID-003): one entry `sms.<name>.body` of content type `PLAIN_TEXT` (no HTML, no subject), kept concise enough for one short message, with NO link and no account identifier; credentials and counts are typed variables (`verification_code` STRING `SENSITIVE_PERSONAL`, `expiry_minutes` COUNT, rendered with an ICU `plural`). The sender passes the variables it has and the renderer FILTERS them per entry (`createContentSmsRenderer` keeps only the names the resolved entry defines), because the registry is strict about variables the entry does not define; test the filter with a variable the entry lacks. Screen and error copy for the phone flow is seeded the same way as the email copy (`account.phone.verify.*`, `account.phone.status.*`, `account.phone.error.*`, 33 entries in migration 0011).
+- Security copy (ID-004): 78 entries under `account.security.*` (`mfa`, `sessions`, `devices`, `activity` (one per activity type), `browser`, `os`, `device_class`, `notice`, `error`) and 8 under `account.password_reset.*`. Label keys are derived by contract helpers (`securityActivityLabelKey`, `browserLabelKey`, `osLabelKey`, `deviceClassLabelKey`, `securityErrorMessageKey`, `authSecurityErrorMessageKey`) and a test computes every key from them, so adding a vocabulary value without its copy fails. Dates in copy are typed STRING variables formatted by the web server (`when`, `date`), resolved once per distinct value. Copy must not overpromise: `account.security.devices.trust_note` states that the sign-in service still decides when it asks for a code (DEBT-0066), and `account.password_reset.accepted` must never say whether an account exists. The Keycloak-sent reset email and OTP pages are Keycloak theme text, not registry copy (DEBT-0019, DEBT-0029).
 
 ## Do not
 
@@ -111,9 +113,7 @@ Any change to `content.*` goes through the Data Model Review Gate (normalization
 - Do not use the temporary client-role permissions as the long-term model (DEBT-0028).
 
 ## Related ADRs
-
-ADR-0018, ADR-0019, ADR-0020, ADR-0021, ADR-0022 (builds on ADR-0001, ADR-0003, ADR-0012, ADR-0016, ADR-0017)
+ADR-0018, ADR-0019, ADR-0020, ADR-0021, ADR-0022 (builds on ADR-0001, ADR-0003, ADR-0012, ADR-0016, ADR-0017), ADR-0036
 
 ## Last reviewed
-
-2026-10-08 (ID-003)
+2026-10-16 (ID-004)

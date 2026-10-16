@@ -10,17 +10,21 @@
   "resetPasswordAllowed": false,
   "editUsernameAllowed": false,
   "verifyEmail": false,
-  "rememberMe": false,
+  "rememberMe": true,
   "bruteForceProtected": true,
   "permanentLockout": false,
   "failureFactor": 5,
-  "waitIncrementSeconds": 60,
+  "waitIncrementSeconds": 900,
   "maxFailureWaitSeconds": 900,
-  "maxDeltaTimeSeconds": 43200,
+  "maxDeltaTimeSeconds": 900,
   "accessTokenLifespan": 300,
   "accessCodeLifespan": 60,
   "ssoSessionIdleTimeout": 1800,
   "ssoSessionMaxLifespan": 36000,
+  "ssoSessionIdleTimeoutRememberMe": 2592000,
+  "ssoSessionMaxLifespanRememberMe": 2592000,
+  "revokeRefreshToken": true,
+  "refreshTokenMaxReuse": 1,
   "passwordPolicy": "length(12) and notUsername",
   "otpPolicyType": "totp",
   "otpPolicyAlgorithm": "HmacSHA1",
@@ -38,6 +42,15 @@
     "RS256"
   ],
   "webAuthnPolicyUserVerificationRequirement": "preferred",
+  "smtpServer": {
+    "host": "mailpit-email",
+    "port": "1025",
+    "from": "no-reply@bananagig.localhost",
+    "fromDisplayName": "BananaGig",
+    "auth": "false",
+    "ssl": "false",
+    "starttls": "false"
+  },
   "attributes": {
     "acr.loa.map": "{\"bananagig:password\": 1, \"bananagig:mfa\": 2}"
   },
@@ -128,6 +141,14 @@
           "content-legal",
           "geography-read",
           "geography-write"
+        ]
+      }
+    ],
+    "realm-management": [
+      {
+        "client": "bananagig-security",
+        "roles": [
+          "manage-users"
         ]
       }
     ]
@@ -327,6 +348,221 @@
           "authenticatorFlow": false
         }
       ]
+    },
+    {
+      "id": "b4a9c3e2-0000-4000-8000-00000000a010",
+      "alias": "bananagig-browser",
+      "description": "Customer/provider web browser flow: Cookie, else password then OTP (or recovery code) whenever the user has a second factor. Level of authentication: password = 1, MFA = 2. Bound to bananagig-web only.",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "requirement": "ALTERNATIVE",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "authenticator": "auth-cookie",
+          "authenticatorFlow": false
+        },
+        {
+          "requirement": "ALTERNATIVE",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "authenticatorFlow": true,
+          "flowAlias": "bananagig-browser-forms"
+        }
+      ]
+    },
+    {
+      "id": "b4a9c3e2-0000-4000-8000-00000000a011",
+      "alias": "bananagig-browser-forms",
+      "description": "Username/password, then the second factor when the user has one",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "authenticator": "auth-username-password-form",
+          "authenticatorFlow": false
+        },
+        {
+          "requirement": "CONDITIONAL",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "authenticatorFlow": true,
+          "flowAlias": "bananagig-browser-mfa"
+        }
+      ]
+    },
+    {
+      "id": "b4a9c3e2-0000-4000-8000-00000000a012",
+      "alias": "bananagig-browser-mfa",
+      "description": "Second factor: applies only to users that have OTP or recovery codes and only below LoA 2 (client minimum.acr.value makes LoA 2 the floor)",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "authenticator": "conditional-level-of-authentication",
+          "authenticatorConfig": "bananagig-web-loa2",
+          "authenticatorFlow": false
+        },
+        {
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "authenticator": "conditional-user-configured",
+          "authenticatorFlow": false
+        },
+        {
+          "requirement": "ALTERNATIVE",
+          "priority": 30,
+          "userSetupAllowed": false,
+          "authenticator": "auth-otp-form",
+          "authenticatorFlow": false
+        },
+        {
+          "requirement": "ALTERNATIVE",
+          "priority": 40,
+          "userSetupAllowed": false,
+          "authenticator": "auth-recovery-authn-code-form",
+          "authenticatorFlow": false
+        }
+      ]
+    }
+  ],
+  "authenticatorConfig": [
+    {
+      "alias": "bananagig-web-loa2",
+      "config": {
+        "loa-condition-level": "2",
+        "loa-max-age": "2592000"
+      }
+    }
+  ],
+  "requiredActions": [
+    {
+      "alias": "CONFIGURE_TOTP",
+      "name": "Configure OTP",
+      "providerId": "CONFIGURE_TOTP",
+      "enabled": true,
+      "defaultAction": false,
+      "priority": 10,
+      "config": {}
+    },
+    {
+      "alias": "TERMS_AND_CONDITIONS",
+      "name": "Terms and Conditions",
+      "providerId": "TERMS_AND_CONDITIONS",
+      "enabled": false,
+      "defaultAction": false,
+      "priority": 20,
+      "config": {}
+    },
+    {
+      "alias": "UPDATE_PASSWORD",
+      "name": "Update Password",
+      "providerId": "UPDATE_PASSWORD",
+      "enabled": true,
+      "defaultAction": false,
+      "priority": 30,
+      "config": {}
+    },
+    {
+      "alias": "UPDATE_PROFILE",
+      "name": "Update Profile",
+      "providerId": "UPDATE_PROFILE",
+      "enabled": true,
+      "defaultAction": false,
+      "priority": 40,
+      "config": {}
+    },
+    {
+      "alias": "VERIFY_EMAIL",
+      "name": "Verify Email",
+      "providerId": "VERIFY_EMAIL",
+      "enabled": true,
+      "defaultAction": false,
+      "priority": 50,
+      "config": {}
+    },
+    {
+      "alias": "delete_account",
+      "name": "Delete Account",
+      "providerId": "delete_account",
+      "enabled": false,
+      "defaultAction": false,
+      "priority": 60,
+      "config": {}
+    },
+    {
+      "alias": "webauthn-register",
+      "name": "Webauthn Register",
+      "providerId": "webauthn-register",
+      "enabled": false,
+      "defaultAction": false,
+      "priority": 70,
+      "config": {}
+    },
+    {
+      "alias": "webauthn-register-passwordless",
+      "name": "Webauthn Register Passwordless",
+      "providerId": "webauthn-register-passwordless",
+      "enabled": false,
+      "defaultAction": false,
+      "priority": 80,
+      "config": {}
+    },
+    {
+      "alias": "VERIFY_PROFILE",
+      "name": "Verify Profile",
+      "providerId": "VERIFY_PROFILE",
+      "enabled": true,
+      "defaultAction": false,
+      "priority": 90,
+      "config": {}
+    },
+    {
+      "alias": "delete_credential",
+      "name": "Delete Credential",
+      "providerId": "delete_credential",
+      "enabled": false,
+      "defaultAction": false,
+      "priority": 100,
+      "config": {}
+    },
+    {
+      "alias": "idp_link",
+      "name": "Linking Identity Provider",
+      "providerId": "idp_link",
+      "enabled": false,
+      "defaultAction": false,
+      "priority": 110,
+      "config": {}
+    },
+    {
+      "alias": "CONFIGURE_RECOVERY_AUTHN_CODES",
+      "name": "Recovery Authentication Codes",
+      "providerId": "CONFIGURE_RECOVERY_AUTHN_CODES",
+      "enabled": true,
+      "defaultAction": false,
+      "priority": 120,
+      "config": {}
+    },
+    {
+      "alias": "update_user_locale",
+      "name": "Update User Locale",
+      "providerId": "update_user_locale",
+      "enabled": true,
+      "defaultAction": false,
+      "priority": 1000,
+      "config": {}
     }
   ],
   "clients": [
@@ -342,7 +578,8 @@
       "fullScopeAllowed": false,
       "frontchannelLogout": false,
       "redirectUris": [
-        "http://app.localhost:8080/auth/callback"
+        "http://app.localhost:8080/auth/callback",
+        "http://app.localhost:8080/session"
       ],
       "webOrigins": [
         "http://app.localhost:8080"
@@ -356,12 +593,16 @@
       "optionalClientScopes": [],
       "attributes": {
         "pkce.code.challenge.method": "S256",
-        "post.logout.redirect.uris": "http://app.localhost:8080/",
-        "access.token.lifespan": "300"
+        "post.logout.redirect.uris": "http://app.localhost:8080/##http://app.localhost:8080/session?error=session_revoked",
+        "access.token.lifespan": "300",
+        "minimum.acr.value": "bananagig:mfa"
       },
       "name": "BananaGig web (customers and providers)",
       "rootUrl": "http://app.localhost:8080",
-      "baseUrl": "http://app.localhost:8080"
+      "baseUrl": "http://app.localhost:8080",
+      "authenticationFlowBindingOverrides": {
+        "browser": "b4a9c3e2-0000-4000-8000-00000000a010"
+      }
     },
     {
       "clientId": "bananagig-api",
@@ -421,6 +662,30 @@
       }
     },
     {
+      "clientId": "bananagig-security",
+      "name": "BananaGig security service (server-side session/credential administration, client credentials only)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "bananagig_security_dev_only_secret_0001",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "frontchannelLogout": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "defaultClientScopes": [
+        "roles"
+      ],
+      "optionalClientScopes": [],
+      "attributes": {
+        "access.token.lifespan": "120"
+      }
+    },
+    {
       "clientId": "admin-cli",
       "enabled": false,
       "protocol": "openid-connect",
@@ -439,6 +704,46 @@
         "bananagig.note": "Built-in client disabled in the product realm: it enables the password grant. Realm administration uses the master realm."
       },
       "name": "${client_admin-cli}"
+    },
+    {
+      "clientId": "account",
+      "enabled": false,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": false,
+      "frontchannelLogout": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "defaultClientScopes": [],
+      "optionalClientScopes": [],
+      "attributes": {
+        "bananagig.note": "Built-in self-service account client disabled in the product realm: its console (/realms/<realm>/account) would let a user manage credentials and sessions outside BananaGig (step-up, audit, session registry). Account security is the /security page."
+      },
+      "name": "${client_account}"
+    },
+    {
+      "clientId": "account-console",
+      "enabled": false,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": false,
+      "frontchannelLogout": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "defaultClientScopes": [],
+      "optionalClientScopes": [],
+      "attributes": {
+        "bananagig.note": "Built-in account console client disabled in the product realm (see client account)."
+      },
+      "name": "${client_account-console}"
     },
     {
       "clientId": "bananagig-dev-test",
@@ -578,6 +883,16 @@
       "attributes": {
         "bananagig.devOnly": [
           "true"
+        ]
+      }
+    },
+    {
+      "username": "service-account-bananagig-security",
+      "enabled": true,
+      "serviceAccountClientId": "bananagig-security",
+      "clientRoles": {
+        "realm-management": [
+          "manage-users"
         ]
       }
     }

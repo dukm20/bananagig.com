@@ -19,6 +19,7 @@ Change the schema safely and access PostgreSQL correctly through `@bananagig/dat
 - `docs/data/DATABASE_CONVENTIONS.md` (naming, UUID, time, money, locking, pools, PostGIS), `docs/data/MIGRATION_POLICY.md`
 - `docs/data/DATA_MODEL_GUARDRAILS.md`, `docs/data/DATA_MODEL.md`, `docs/data/DATA_MODEL_CHANGELOG.md`, `docs/data/DATA_DICTIONARY.md`, `docs/data/ERD.md`, `docs/data/NORMALIZATION_LOG.md`, `docs/data/SCHEMA_SNAPSHOT.sql`
 - `scripts/schema-snapshot.mjs`, `scripts/data-model-check.mjs`, `scripts/db-backup-test.mjs`
+- ID-004: `db/migrations/0012_application_sessions.sql`, `packages/testing/src/security-model.itest.ts`
 
 ## Architecture rules
 
@@ -90,6 +91,8 @@ This skill is the data-model process: see the review gate above, `DATABASE_CONVE
 - Uniqueness policy as partial unique indexes (ID-002): "a verified address belongs to one account" is `UNIQUE (email_normalized) WHERE status = 'VERIFIED'`, while pending duplicates stay legal; "one open challenge per contact" is `UNIQUE (email_contact_id) WHERE used_at IS NULL AND invalidated_at IS NULL`. A multi-step replacement (disable the old primary, promote the new one) passes through states the immediate guards must allow and the whole-account invariant must forbid at COMMIT: use a `DEFERRABLE INITIALLY DEFERRED` constraint trigger that re-reads the account's rows. Count sends as rows (one challenge per send) instead of a counter column that can drift; a hash column is `CHECK (col ~ '^[0-9a-f]{64}$')` and a keyed HMAC, never a plain hash of a low-entropy secret.
 - A uniqueness policy that is DATA cannot be a unique index (ID-003): "how many accounts may hold one phone number VERIFIED" is a configuration parameter (default 1, per country and market), so a partial unique index would be wrong as soon as a market raises it. Serialize on the key with `pg_advisory_xact_lock(hashtextextended('phone:' || number, 0))`, count the OTHER owners, refuse at the limit, and pass the limit to the guard trigger through a transaction-local setting (`set_config('app.phone_max_accounts', n, true)`, read with `current_setting(..., true)`); the trigger takes the SAME lock, enforces the setting when present (validated to a range) and a structural ceiling (5) otherwise, so a writer that skips the service cannot exceed it. Prove it with N parallel verifications ending at exactly the cap and with raw SQL against the trigger (skill `skills/testing/SKILL.md`).
 - `char(2)` columns (ISO country codes) that reference a `char(2)` key (`geography.countries.iso_alpha2`) need `char(2)` too: declare the foreign-key column as `char(2)`, not `text` (`identity.phone_contacts.country_code` is `char(2)` with `CHECK (country_code ~ '^[A-Z]{2}$')`).
+- Serializing "first sight" against "revoke all" (ID-004, LRN-0045): when a row may be created by a request AND a bulk operation must cover rows that do not exist yet, give the bulk operation a watermark column on the owner row and make the creator read it under `SELECT ... FOR SHARE` of the owner row while the bulk operation takes it `FOR UPDATE`; insert with `ON CONFLICT (natural key) DO NOTHING` and read the winner. A hot-path touch (`last_seen_at` once a minute) is a HOT update only if the table has a low fillfactor and NO index on the touched column: index justification and the partial indexes are documented in the migration header.
+- Composite foreign keys that guarantee an audit row names a session or device of the SAME account (`(account_id, application_session_id)` with `MATCH SIMPLE` for a nullable reference), a CHECK that ties an action prefix to its reference (`(action LIKE 'SESSION\_%') = (application_session_id IS NOT NULL)`; the underscore is escaped), and widening an action CHECK by dropping and re-creating it in the same transaction (expand step; the append-only trigger is not involved) are the 0012 patterns. Store a bearer-like identifier (a device cookie) only as a keyed HMAC with a domain string and the owner id, and a protocol identifier (`sid`) only as an internal lookup key that no API, log, audit or event exposes.
 
 ## Do not
 
@@ -101,9 +104,7 @@ This skill is the data-model process: see the review gate above, `DATABASE_CONVE
 - Do not add tables or schemas "for later".
 
 ## Related ADRs
-
-ADR-0001, ADR-0004, ADR-0008, ADR-0009, ADR-0010, ADR-0011, ADR-0012, ADR-0021, ADR-0023, ADR-0025, ADR-0026, ADR-0031
+ADR-0001, ADR-0004, ADR-0008, ADR-0009, ADR-0010, ADR-0011, ADR-0012, ADR-0021, ADR-0023, ADR-0025, ADR-0026, ADR-0031, ADR-0034
 
 ## Last reviewed
-
-2026-10-08 (ID-003)
+2026-10-16 (ID-004)

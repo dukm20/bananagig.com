@@ -21,7 +21,7 @@ export interface AuthPluginOptions {
   realm: string;
 }
 
-const challenge = (realm: string, error?: string): Record<string, string> => ({
+export const challenge = (realm: string, error?: string): Record<string, string> => ({
   'www-authenticate': error ? `Bearer realm="${realm}", error="${error}"` : `Bearer realm="${realm}"`,
 });
 

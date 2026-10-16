@@ -11,6 +11,13 @@ import {
   AccountStatusChangedPayload,
   ExternalIdentityLinkedPayload,
   EMAIL_EVENTS,
+  MfaChangedPayload,
+  PasswordResetCompletedPayload,
+  PasswordResetRequestedPayload,
+  SECURITY_EVENTS,
+  SessionCreatedPayload,
+  SessionRevokedPayload,
+  SessionsRevokedAllPayload,
   PHONE_EVENTS,
   PhoneChangeRequestedPayload,
   PhoneContactAddedPayload,
@@ -60,6 +67,8 @@ const app = await buildApp({
   address: {},
   accounts: {},
   emailVerification: {},
+  phoneVerification: {},
+  security: {},
   readiness: async () => ({}),
 });
 await app.ready();
@@ -224,6 +233,50 @@ const PHONE_MESSAGES = {
     'identity_account',
   ],
 };
+const SECURITY_MESSAGES = {
+  sessionCreated: [
+    'IdentitySessionCreated',
+    'The API saw a new login session of an account for the first time (an application session was created).',
+    SessionCreatedPayload,
+    'identity_account',
+  ],
+  sessionRevoked: [
+    'IdentitySessionRevoked',
+    'An application session ended: the person signed out, revoked it from another session, removed its browser, or the identity provider ended it. reason names why. A revoked session is refused by the API at once.',
+    SessionRevokedPayload,
+    'identity_account',
+  ],
+  sessionsRevokedAll: [
+    'IdentitySessionsRevokedAll',
+    'The person signed out everywhere: all sessions (except the current one unless includeCurrent) were revoked and the account revocation watermark was raised.',
+    SessionsRevokedAllPayload,
+    'identity_account',
+  ],
+  mfaEnabled: [
+    'IdentityMfaEnabled',
+    'A second factor (method TOTP or RECOVERY_CODES) was observed as set up in the identity provider. The payload never carries a secret or a code.',
+    MfaChangedPayload,
+    'identity_account',
+  ],
+  mfaDisabled: [
+    'IdentityMfaDisabled',
+    'A second factor (method TOTP or RECOVERY_CODES) was observed as removed in the identity provider.',
+    MfaChangedPayload,
+    'identity_account',
+  ],
+  passwordResetRequested: [
+    'IdentityPasswordResetRequested',
+    'A password reset email was requested for an account (through the public request or by the owner). The payload carries the account id only, never an address or a link.',
+    PasswordResetRequestedPayload,
+    'identity_account',
+  ],
+  passwordResetCompleted: [
+    'IdentityPasswordResetCompleted',
+    'A password reset was completed: the identity provider password changed after a reset request. Observed, never the password.',
+    PasswordResetCompletedPayload,
+    'identity_account',
+  ],
+};
 const channels = {
   infraPing: {
     address: INFRA_PING_EVENT_TYPE,
@@ -337,13 +390,29 @@ for (const [k, [name, summary, payload, aggregate]] of Object.entries(PHONE_MESS
   };
   schemas[name] = typedEnvelope(type, payload);
 }
+for (const [k, [name, summary, payload, aggregate]] of Object.entries(SECURITY_MESSAGES)) {
+  const type = SECURITY_EVENTS[k];
+  channels[`identity_security_${k}`] = {
+    address: type,
+    description: `${summary} Published through the transactional outbox (aggregate ${aggregate}); the payload carries identifiers only, never a token, a Keycloak session id, a device secret, an address, a password, a code or a link.`,
+    messages: { [name]: { $ref: `#/components/messages/${name}` } },
+  };
+  operations[`send${name}`] = { action: 'send', channel: { $ref: `#/channels/identity_security_${k}` }, summary };
+  messages[name] = {
+    name,
+    title: summary,
+    headers: { type: 'object', properties: { 'x-correlation-id': { type: 'string' } } },
+    payload: { $ref: `#/components/schemas/${name}` },
+  };
+  schemas[name] = typedEnvelope(type, payload);
+}
 const asyncapi = {
   asyncapi: '3.0.0',
   info: {
     title: 'BananaGig Events',
     version: '1.0.0',
     description:
-      'Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events, the identity account events, the email verification events and the phone verification events exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.',
+      'Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events, the identity account events, the email verification events, the phone verification events and the account security events (sessions, second factor, password reset) exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.',
   },
   defaultContentType: 'application/json',
   channels,

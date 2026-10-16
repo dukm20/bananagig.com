@@ -39,6 +39,8 @@ export interface Principal {
   /** Which identity context issued this token (admin console vs normal web vs anything else). */
   authContext: AuthContext;
   acr?: string;
+  /** The `auth_time` claim: when the user last actually authenticated (epoch seconds). Absent when the token has none. */
+  authTime?: number;
   sessionId?: string;
   issuedAt: number;
   expiresAt: number;
@@ -146,6 +148,7 @@ export class TokenVerifier {
       scopes: typeof p.scope === 'string' && p.scope ? p.scope.split(' ') : [],
       authContext,
       acr: typeof p.acr === 'string' ? p.acr : undefined,
+      authTime: typeof p.auth_time === 'number' && Number.isFinite(p.auth_time) && p.auth_time >= 0 ? p.auth_time : undefined,
       sessionId: typeof p.sid === 'string' ? p.sid : undefined,
       issuedAt: p.iat as number,
       expiresAt: p.exp as number,

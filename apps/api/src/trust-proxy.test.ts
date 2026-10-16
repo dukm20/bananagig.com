@@ -344,6 +344,7 @@ describe('TRUSTED_PROXY_HOPS configuration', () => {
     KEYCLOAK_PUBLIC_URL: 'https://auth.example.com',
     WEB_PUBLIC_URL: 'https://app.example.com',
     VERIFICATION_HASH_SECRET: 'production-hash-key-'.concat('0123456789abcdef'.repeat(2)),
+    KEYCLOAK_SECURITY_CLIENT_SECRET: 'production-security-client-secret-'.concat('0123456789abcdef'.repeat(2)),
   };
   const issues = (fn: () => unknown): string[] => {
     try {

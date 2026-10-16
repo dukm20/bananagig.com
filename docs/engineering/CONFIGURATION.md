@@ -141,10 +141,18 @@ Parameters seeded by migrations (through the real change workflow, so they look 
 | `verification.phone.blocked_line_types` | JSON (array of `LANDLINE`, `VOIP`, `VIRTUAL`, `UNKNOWN`, `HIGH_RISK`; unique, at most 5) | `["VIRTUAL","HIGH_RISK"]` | `SECOND_APPROVER`, CRITICAL, PLATFORM + COUNTRY + MARKET | trust | ID-003 (PRD SV-03.02) |
 | `verification.phone.requests.max_per_hour` | INTEGER (1 to 1000) | 30 | `SECOND_APPROVER`, CRITICAL, PLATFORM only | security | ID-003 (engineering assumption, DEBT-0064) |
 | `verification.phone.number.max_per_hour` | INTEGER (1 to 100) | 5 | same | security | ID-003 (engineering assumption, DEBT-0064) |
+| `session.trusted_browser_days` | INTEGER (1 to 365, days) | 30 | `SECOND_APPROVER`, CRITICAL, PLATFORM only | security | ID-004 (PRD CU-09.13) |
+| `session.keep_signed_in_days` | INTEGER (1 to 90, days) | 30 | same | security | ID-004 (PRD SV-01.12); MUST equal the realm remember-me lifetimes (DEBT-0070) |
+| `reset_link.validity_minutes` | INTEGER (5 to 1440, minutes) | 60 | same | security | ID-004 (PRD CU-03.11) |
+| `security.step_up_valid_minutes` | INTEGER (1 to 60, minutes) | 15 | same | security | ID-004 (engineering assumption, DEBT-0070) |
+| `security.activity_log_days` | INTEGER (30 to 730, days) | 90 | same | security | ID-004 (engineering assumption, DEBT-0070; PRD CU-09.20 says "the configured period") |
+| `reset_link.max_requests_per_hour` | INTEGER (1 to 20, requests) | 5 | same | security | ID-004 (engineering assumption, DEBT-0070) |
 
 CRITICAL parameters are never cached and never served from last-known-good; their consumers fail closed when the registry cannot answer. The consumer (`createVerificationPolicyProvider`) validates every value again with its own bounds.
 
 Two phone parameters are policy, not limits, and permit COUNTRY and MARKET overrides: `verification.phone.max_accounts_per_number` and `verification.phone.blocked_line_types`. The phone policy provider (`createPhonePolicyProvider`, `apps/api/src/modules/account/phone-wiring.ts`) resolves all ten with the context `{ country }` set to the country of the NUMBER being verified (the country the numbering library resolves from the number), so a COUNTRY override beats the PLATFORM value. It does not pass a market: accounts have no market yet, so a MARKET override takes effect only once they do (DEBT-0063). `verification.phone.blocked_line_types` has the data type JSON: its value is an array validated by the JSON schema in the definition, and an empty array means no line-type lookup is made. See `docs/engineering/PHONE_VERIFICATION.md`.
+
+The six `session.*`, `security.*` and `reset_link.*` parameters (ID-004) are read by the security policy provider (`createSecurityPolicyProvider`, `apps/api/src/modules/security/wiring.ts`), which resolves them fresh on every call (CRITICAL: never cached, never last-known-good) and validates each against the same bounds (`parseSecurityPolicy`); a missing or out-of-range value fails the operation closed (`ACCOUNT_UNAVAILABLE`, reason `POLICY_UNAVAILABLE`), there is no code default. Three are PRD values and three are engineering assumptions awaiting the security owner (DEBT-0070). `session.keep_signed_in_days` has a second source of truth that configuration cannot change: the realm's "Keep me signed in" lifetimes (`ssoSessionIdleTimeoutRememberMe`, `ssoSessionMaxLifespanRememberMe`, 2592000 seconds); a test compares the realm with the migration default, but a configuration change request does NOT move the realm, so the two can drift (DEBT-0070). See `docs/engineering/SESSIONS_AND_MFA.md`.
 
 ## Using it from a domain
 

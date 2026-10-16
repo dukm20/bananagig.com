@@ -14,3 +14,8 @@ export * from './phone-crypto';
 export * from './phone-policy';
 export * from './phone-state';
 export * from './phone-verification';
+export * from './security-types';
+export * from './security-device';
+export * from './security-policy';
+export * from './security-service';
+export * from './security-fakes';

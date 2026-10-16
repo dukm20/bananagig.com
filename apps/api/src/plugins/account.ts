@@ -7,15 +7,24 @@
 import type { FastifyInstance, preHandlerAsyncHookHandler } from 'fastify';
 import fp from 'fastify-plugin';
 import { ACTIVE_ROLE_HEADER } from '@bananagig/contracts';
-import type { AccountContext, AccountService, EmailVerificationService, PhoneVerificationService } from '@bananagig/accounts';
+import type {
+  AccountContext,
+  AccountService,
+  EmailVerificationService,
+  ObservedSession,
+  PhoneVerificationService,
+  SecurityOperations,
+} from '@bananagig/accounts';
 import { AppError } from '../errors';
 import { toAppError } from '../modules/account/dto';
-import { requireAuthenticated } from './auth';
+import { challenge, requireAuthenticated } from './auth';
 
 declare module 'fastify' {
   interface FastifyRequest {
     /** Set by requireAccount(); the application account of the verified caller. Contains no token material and no Keycloak subject. */
     account?: AccountContext;
+    /** Set by requireAccount() when the security layer is wired (ID-004): the application session of the verified token's `sid`. Holds ids only. */
+    securitySession?: ObservedSession;
   }
   interface FastifyInstance {
     accounts: AccountService;
@@ -23,18 +32,27 @@ declare module 'fastify' {
     emailVerification: EmailVerificationService;
     /** The phone contact and its verification (ID-003); present when the phone routes are registered. */
     phoneVerification: PhoneVerificationService;
+    /** The application sessions, devices, MFA status and password reset (ID-004); present when the security routes are registered. */
+    security: SecurityOperations;
   }
 }
 
 export const accountPlugin = fp(
   async (
     app: FastifyInstance,
-    opts: { accounts: AccountService; emailVerification?: EmailVerificationService; phoneVerification?: PhoneVerificationService },
+    opts: {
+      accounts: AccountService;
+      emailVerification?: EmailVerificationService;
+      phoneVerification?: PhoneVerificationService;
+      security?: SecurityOperations;
+    },
   ): Promise<void> => {
     app.decorate('accounts', opts.accounts);
     if (opts.emailVerification) app.decorate('emailVerification', opts.emailVerification);
     if (opts.phoneVerification) app.decorate('phoneVerification', opts.phoneVerification);
+    if (opts.security) app.decorate('security', opts.security);
     app.decorateRequest('account', undefined);
+    app.decorateRequest('securitySession', undefined);
   },
 );
 
@@ -48,6 +66,10 @@ export interface RequireAccountOptions {
 /**
  * Authenticates (401), requires the normal web identity context (403 for admin and other contexts), maps the verified identity to its account,
  * creating it on the first request, and refuses SUSPENDED and CLOSED accounts (403). Sets `request.account`. List it first in `preValidation`.
+ *
+ * When the security layer is wired (ID-004) it also resolves the token's `sid` to an application session (created on first sight) and sets
+ * `request.securitySession`: a token without `sid` is 401 INVALID_TOKEN, and a revoked session is 401 SESSION_REVOKED at once, although the access token itself
+ * is still valid for up to its lifetime ("sign out everywhere" takes effect immediately). Without the security service nothing changes.
  */
 export function requireAccount(options: RequireAccountOptions = {}): preHandlerAsyncHookHandler {
   const authenticate = requireAuthenticated();
@@ -63,5 +85,15 @@ export function requireAccount(options: RequireAccountOptions = {}): preHandlerA
         { requestedRole: honorHeader ? (Array.isArray(header) ? header.join(',') : header) : undefined, includeProfile: options.includeProfile },
       )
       .catch(toAppError);
+    const security = request.server.security as SecurityOperations | undefined;
+    if (security) {
+      const realm = (request.server as unknown as { authRealm: string }).authRealm;
+      // the Keycloak session id comes ONLY from the verified token; it is never read from the client
+      if (!p.sessionId)
+        throw new AppError('AUTHENTICATION', 'INVALID_TOKEN', 'The access token is invalid or expired', undefined, challenge(realm, 'invalid_token'));
+      request.securitySession = await security
+        .observeSession({ accountId: request.account.accountId, keycloakSessionId: p.sessionId, authTime: p.authTime })
+        .catch((err: unknown) => toAppError(err, realm));
+    }
   };
 }

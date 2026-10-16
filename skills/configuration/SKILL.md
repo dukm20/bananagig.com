@@ -19,6 +19,7 @@ Read, define and change product configuration (business values) through the regi
 - `apps/api/src/modules/configuration/routes.ts`, `apps/api/src/plugins/auth.ts`
 - `apps/worker/src/jobs/configuration.ts`
 - `docs/engineering/CONFIGURATION.md`
+- ID-004: `packages/accounts/src/security-policy.ts` (keys, bounds, `parseSecurityPolicy`), `apps/api/src/modules/security/wiring.ts` (`createSecurityPolicyProvider`), `db/migrations/0012_application_sessions.sql` (the six seeds)
 
 ## Architecture rules
 
@@ -81,6 +82,7 @@ Any change to `configuration.*` goes through the Data Model Review Gate (normali
 - `ValkeyConfigCache` is bounded: `new ValkeyConfigCache(client, { commandTimeoutMs, breakerCooldownMs, now })` (defaults 100 ms per command and a 5 s circuit breaker). Any failure or timeout degrades to a miss or no-op; the breaker is per instance, and the API and worker create one instance per registry (configuration and content) over the same client, so each has its own breaker state. Generation counters have no TTL and can be evicted under `allkeys-lru` pressure and reset to 0; staleness is then bounded by the 30 s cache TTL.
 - Seeding a parameter from a migration (ID-002, `0010_email_verification.sql`): replay the REAL workflow rows in one `DO` block per parameter (parameter, `PLATFORM` scope, `PARAMETER_CREATED`; change request `DRAFT` -> `PENDING_APPROVAL` -> `APPROVED` with a different approver row for `SECOND_APPROVER`; holder and version 1; request `ACTIVE`; audit `CHANGE_PUBLISHED`/`CHANGE_ACTIVATED`), so later changes go through the normal workflow and the audit trail looks like a real one. Seeds emit no outbox events. Security parameters are CRITICAL (never cached, never last-known-good): the consumer must fail closed when they cannot be read and parse them again with its own bounds.
 - Country and market scoped security parameters (ID-003, `0011_phone_verification.sql`): a parameter that policy may override per place lists the scopes in its seed (`parameter_scopes` rows `PLATFORM`, `COUNTRY`, `MARKET` for `verification.phone.max_accounts_per_number` and `verification.phone.blocked_line_types`; the plain limits stay `PLATFORM` only), and the consumer resolves with the context of the subject: `configuration.resolveMany(keys, { country })` (the COUNTRY is the ISO alpha-2 the numbering library found for the number; `{}` resolves PLATFORM only). A COUNTRY override beats PLATFORM; a MARKET override applies only when the caller can pass a market (accounts have none yet, DEBT-0063). A list-valued parameter is `data_type` `JSON` with `rules` `{"schema": <JSON schema>}` (the writer validates every value against it; the consumer parses again and refuses anything unexpected). The caller's `PhonePolicyProvider` (`createPhonePolicyProvider` in `apps/api/src/modules/account/phone-wiring.ts`) is the example: one `resolveMany` of all keys per country, parsed by `parsePhoneVerificationPolicy`, any failure propagating so the service fails closed.
+- Session and recovery parameters (ID-004): `session.trusted_browser_days` (30), `session.keep_signed_in_days` (30), `reset_link.validity_minutes` (60), `security.step_up_valid_minutes` (15, assumption), `security.activity_log_days` (90, assumption), `reset_link.max_requests_per_hour` (5, assumption); CRITICAL, `SECOND_APPROVER`, PLATFORM only, read fresh per call, no code default (an invalid value fails closed as `UNAVAILABLE`/`POLICY_UNAVAILABLE`). When a value must equal something outside the registry (`session.keep_signed_in_days` = the realm's remember-me lifetimes), the registry cannot keep them in step: pin the relation with a consistency test between the seed and the realm file and record the duplication as debt (DEBT-0070); a seed reason must flag which values are PRD defaults and which are engineering assumptions.
 
 ## Do not
 
@@ -91,9 +93,7 @@ Any change to `configuration.*` goes through the Data Model Review Gate (normali
 - Do not use the temporary client-role permissions as the long-term model (DEBT-0021).
 
 ## Related ADRs
-
-ADR-0016, ADR-0017 (builds on ADR-0001, ADR-0003, ADR-0012)
+ADR-0016, ADR-0017 (builds on ADR-0001, ADR-0003, ADR-0012), ADR-0034
 
 ## Last reviewed
-
-2026-10-08 (ID-003)
+2026-10-16 (ID-004)

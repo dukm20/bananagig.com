@@ -115,7 +115,7 @@ The same email carries both. The link is `<web>/verify-email#token=<token>`. The
 | Resend cooldown (`resend_seconds`, 30) | PostgreSQL: from the creation of the account's newest challenge that is neither FAILED nor used (a delivery in flight holds a second send back; a failed delivery and a verified address do not) | `429 ACCOUNT_EMAIL_RESEND_TOO_SOON` + `Retry-After` |
 | Per hour (`max_per_hour`, 5) and per day (`max_per_day`, 10) | PostgreSQL: challenges created by the account (failed deliveries count) | `429 ACCOUNT_EMAIL_SEND_LIMIT` + `Retry-After` |
 | Wrong attempts (`max_attempts`, 5) | PostgreSQL: `attempt_count` | `429 ACCOUNT_EMAIL_VERIFICATION_LOCKED` |
-| Requests per account, per source address and per device per hour (`requests.max_per_hour`, 30) | Valkey, the reusable limiter | `429 ACCOUNT_EMAIL_RATE_LIMITED` |
+| Requests per account, per source address and per device per hour (`requests.max_per_hour`, 30). Since ID-004 the device dimension is fed: the routes pass the application device id of the request's session (`request.securitySession.accountDeviceId`) in the request context; it is absent until the browser has registered, and a user who clears the device cookie gets a new device and so a new bucket (DEBT-0054) | Valkey, the reusable limiter | `429 ACCOUNT_EMAIL_RATE_LIMITED` |
 | Sends to one address across all accounts per hour (`address.max_per_hour`, 5) | Valkey (address HMAC) | `429 ACCOUNT_EMAIL_RATE_LIMITED` |
 
 A send refused by the cooldown or a cap is detected BEFORE the Valkey limiter is consumed (and again under the account lock), so a refused request never spends the per-address budget of emails to one address.

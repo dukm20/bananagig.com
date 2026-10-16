@@ -9,6 +9,20 @@ const body = (req: { correlationId: string }, category: ErrorCategory, code: str
 });
 
 /**
+ * Everything under /api/v1/account and /api/v1/auth concerns one person's sessions, contacts or credentials (or is a reset request): every response there, errors
+ * included, is `Cache-Control: no-store`. The routes set it in an onRequest hook, but router-level failures and unknown paths never reach a route hook, so the error
+ * paths set it here from the URL.
+ */
+const NO_STORE_PREFIXES = ['/api/v1/account', '/api/v1/auth'];
+export const isNoStorePath = (url: string): boolean => {
+  const path = (url.split(/[?#]/)[0] ?? '').toLowerCase();
+  return NO_STORE_PREFIXES.some((p) => path === p || path.startsWith(`${p}/`));
+};
+const noStoreFor = (req: { url: string }, reply: FastifyReply): void => {
+  if (isNoStorePath(req.url)) void reply.header('cache-control', 'no-store');
+};
+
+/**
  * Fastify `frameworkErrors` handler: failures raised by the ROUTER before any hook runs (a malformed URL component, a path parameter longer
  * than maxParamLength). Without it Fastify answers with its own non-standard JSON body. No onRequest hook has run yet, so the correlation id is
  * resolved here the same way the correlation plugin does.
@@ -17,6 +31,7 @@ export const frameworkErrors = (err: FastifyError, req: FastifyRequest, reply: F
   const correlationId = resolveCorrelationId(req.headers[CORRELATION_HEADER]);
   const code = err.code === 'FST_ERR_MAX_PARAM_LENGTH' ? 'PATH_PARAMETER_TOO_LONG' : 'BAD_URL';
   const message = code === 'BAD_URL' ? 'The request URL is not valid' : 'A path parameter exceeds the maximum allowed length';
+  noStoreFor(req, reply);
   void reply
     .header(CORRELATION_HEADER, correlationId)
     .status(ERROR_STATUS.VALIDATION)
@@ -26,10 +41,12 @@ export const frameworkErrors = (err: FastifyError, req: FastifyRequest, reply: F
 /** Maps every failure to the standard error envelope. Stack traces are logged, never returned. */
 export const errorPlugin = fp(async (app: FastifyInstance): Promise<void> => {
   app.setNotFoundHandler((req, reply) => {
+    noStoreFor(req, reply);
     reply.status(404).send(body(req, 'NOT_FOUND', 'ROUTE_NOT_FOUND', `Route ${req.method} ${req.url.split('?')[0]} not found`));
   });
 
   app.setErrorHandler((err: FastifyError | AppError, req, reply) => {
+    noStoreFor(req, reply);
     if (err instanceof AppError) {
       if (err.headers) reply.headers(err.headers);
       return reply.status(err.status).send(body(req, err.category, err.code, err.message, err.details));

@@ -20,6 +20,10 @@ export function buildAuthConfig(cfg: ReturnType<typeof serverConfig>): AuthConfi
     // __Host- requires Secure, Path=/ and no Domain: applied to the long-lived session cookie whenever we are on https.
     sessionCookie: secure ? '__Host-bg_session' : 'bg_session',
     txCookie: 'bg_auth_tx',
+    // the device cookie (ID-004) follows the session cookie: __Host- on https
+    deviceCookie: secure ? '__Host-bg_device' : 'bg_device',
+    // must be listed in the post.logout.redirect.uris of the bananagig-web client (infra/keycloak/bananagig-realm.json)
+    revokedRedirectUri: `${cfg.identity.webPublicUrl}/session?error=session_revoked`,
   };
 }
 
@@ -35,6 +39,7 @@ export function authDeps(): AuthDeps {
     store: new ValkeySessionStore(redis, cfg.env),
     verifier: createTokenVerifier({ issuer: e.issuer, apiAudience: cfg.identity.apiAudience, jwks: { url: e.jwks } }),
     api: (accessToken) => serverApi(accessToken),
+    publicApi: () => serverApi(),
     log: (level, message, attrs) => log(level, message, attrs),
   };
   return cached;

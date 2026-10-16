@@ -17,7 +17,7 @@ import {
 } from '@bananagig/platform';
 import { ConfigurationService, ValkeyConfigCache } from '@bananagig/configuration';
 import { ContentService } from '@bananagig/content';
-import { AccountService, EmailVerificationService, PhoneVerificationService } from '@bananagig/accounts';
+import { AccountService, EmailVerificationService, PhoneVerificationService, SecurityService } from '@bananagig/accounts';
 import {
   AddressService,
   GeographyService,
@@ -26,9 +26,10 @@ import {
   createMarketDefaultsProvider,
   registerReadinessCheck,
 } from '@bananagig/geography';
-import { createTokenVerifier } from '@bananagig/identity';
+import { KeycloakAdminClient, createTokenVerifier } from '@bananagig/identity';
 import { buildApp } from './app';
 import { createContentSmsRenderer, createPhoneCountryDirectory, createPhonePolicyProvider } from './modules/account/phone-wiring';
+import { createKeycloakSecurityIdentityProvider, createSecurityPolicyProvider, createUnavailableSecurityIdentityProvider } from './modules/security/wiring';
 import { createContentEmailRenderer, createVerificationLinkBuilder, createVerificationPolicyProvider } from './modules/account/email-wiring';
 
 const cfg = loadConfig({ service: 'bananagig-api', role: 'api' });
@@ -135,6 +136,29 @@ const phoneVerification = new PhoneVerificationService({
   rateLimiter: new ValkeyRateLimiter(valkey),
 });
 
+// Account security (ID-004): the application session registry, devices, MFA status and password reset. Passwords, TOTP, recovery codes and protocol sessions stay in
+// Keycloak (ADR-0034): the admin client only ASKS it and ends sessions, with a dedicated service account (bananagig-security). The limits come from the configuration
+// registry (CFG-001). Without an admin client secret the provider reports itself unavailable (MFA state unknown, revocation application-side only). The abuse limiter
+// is the Valkey rate-limit foundation and fails closed (every password-reset request can send an email).
+const securityIdentity = cfg.keycloakAdmin.clientSecret
+  ? createKeycloakSecurityIdentityProvider(
+      new KeycloakAdminClient({
+        baseUrl: cfg.keycloakAdmin.baseUrl,
+        realm: cfg.keycloakAdmin.realm,
+        clientId: cfg.keycloakAdmin.clientId,
+        clientSecret: cfg.keycloakAdmin.clientSecret,
+        resetEmail: { clientId: cfg.identity.webClientId, redirectUri: `${cfg.identity.webPublicUrl}/session` },
+      }),
+    )
+  : createUnavailableSecurityIdentityProvider();
+const security = new SecurityService({
+  database,
+  policy: createSecurityPolicyProvider(configuration),
+  identityProvider: securityIdentity,
+  rateLimiter: new ValkeyRateLimiter(valkey),
+  hashSecret: cfg.verification.hashSecret,
+});
+
 const app = await buildApp({
   cfg,
   verifier,
@@ -145,6 +169,7 @@ const app = await buildApp({
   accounts,
   emailVerification,
   phoneVerification,
+  security,
   // Critical for serving requests: Postgres only. Valkey/NATS/OpenSearch/flagd outages must not take the API down.
   readiness: async () => ({ postgres: (await database.health()).ok ? 'up' : 'down' }),
   diagnostics: () => runDiagnostics(adapters),

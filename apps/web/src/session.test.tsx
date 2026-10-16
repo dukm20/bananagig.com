@@ -50,7 +50,11 @@ describe('session page copy', () => {
     expect(html).toContain('>Registry sign in</a>');
     expect(html).not.toContain('Not signed in');
     expect(html).not.toContain('role="alert"');
-    expect((stub.calls[0]!.body as { keys: string[] }).keys.sort()).toEqual(['common.action.sign_in', 'session.status.signed_out']);
+    expect((stub.calls[0]!.body as { keys: string[] }).keys.sort()).toEqual([
+      'account.password_reset.title',
+      'common.action.sign_in',
+      'session.status.signed_out',
+    ]);
   });
   it('signed out after a failed login: the error message comes from the registry', async () => {
     const html = await render('login_failed');
@@ -142,6 +146,7 @@ describe('session page account (ID-001)', () => {
     expect(stub.calls).toHaveLength(1);
     expect((stub.calls[0]!.body as { keys: string[] }).keys.sort()).toEqual(
       [
+        'account.security.title',
         'account.status.active',
         'common.action.sign_out',
         'identity.role.customer.name',

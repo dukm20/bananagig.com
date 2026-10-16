@@ -144,6 +144,22 @@ No translations were invented: only en-US exists, other locales resolve through 
 
 No web page uses the screen copy yet (there is no phone verification screen); the keys are returned to clients as `details.messageKey` and are ready for it.
 
+### ID-004 additions
+
+`db/migrations/0012_application_sessions.sql` seeds 86 more entries through the real lifecycle (owner CONTENT, PUBLIC, STANDARD, approval policy NONE, CHAIN, PLATFORM scope, en-US only), used by `app/security/page.tsx` and `app/forgot-password/page.tsx` (each omits an element whose copy cannot be served; the sign-in and sign-out controls fall back to the bootstrap copy). By prefix, 78 under `account.security.*` and 8 under `account.password_reset.*`:
+
+- `account.security.title` (1).
+- `account.security.mfa.*` (10): `title`, `status.enabled`, `status.disabled`, `status.unknown`, `totp.label`, `totp.enable`, `recovery.label`, `recovery.generate`, `recovery.warning`, `stepup_note`.
+- `account.security.sessions.*` (7): `title`, `current`, `sign_out`, `sign_out_everywhere`, `empty`, `unreconciled`, `last_seen` (typed variable `when` STRING, formatted by the web server).
+- `account.security.devices.*` (7): `title`, `trust`, `untrust`, `remove`, `trust_note`, `none`, `trusted_until` (variable `date` STRING). `trust_note` states plainly that the sign-in service still decides when it asks for a verification code, so trusting a browser does not by itself skip that step and never replaces the extra confirmation for sensitive changes; a rewording must keep that meaning (DEBT-0066).
+- `account.security.activity.*` (22): `title`, `empty` and one label per activity type (key = `account.security.activity.` plus the type in lower case, `securityActivityLabelKey`; the 16 security audit actions and `email_verified`, `email_primary_changed`, `phone_verified`, `phone_primary_changed`).
+- `account.security.browser.*` (6: chrome, firefox, safari, edge, opera, other), `account.security.os.*` (6: windows, macos, linux, ios, android, other) and `account.security.device_class.*` (4: desktop, mobile, tablet, other): the labels of the coarse families (`browserLabelKey`, `osLabelKey`, `deviceClassLabelKey`).
+- `account.security.notice.*` (7): `session_revoked`, `signed_out_elsewhere`, `device_trusted`, `device_untrusted`, `device_removed`, `mfa_return_success`, `mfa_return_cancelled`.
+- `account.security.error.*` (8): `session_revoked`, `step_up_required`, `mfa_enrollment_required`, `session_not_found`, `device_not_found`, `device_required`, `security_unavailable`, `password_reset_rate_limited` (the guard and API error codes in lower case; returned as `details.messageKey`).
+- `account.password_reset.*` (8): `title`, `intro`, `email_label`, `submit`, `accepted`, `back_to_sign_in`, `error.invalid_email`, `error.rate_limited`. `accepted` is shown for every accepted request and must never say whether an account exists.
+
+The password-reset EMAIL itself is sent by Keycloak with its built-in theme text ("Update Your Account") and is therefore NOT registry-backed: it stays DEFERRED with the rest of the Keycloak theme (DEBT-0019, DEBT-0029). The Keycloak OTP, recovery-code and UPDATE_PASSWORD pages are likewise Keycloak's own.
+
 ### GEO-001 additions
 
 - Country display name. `db/migrations/0007_geography_registry.sql` seeds one more entry through the real lifecycle (UI_LABEL, owner CONTENT, PUBLIC, STANDARD, approval policy NONE, CHAIN, PLATFORM scope; five audit rows, no outbox events): `geography.country.us.name`, en-US body `United States`. A country's display name is managed content, not a column: `geography.countries.display_name_content_key` is a foreign key to `content.entries (key)`, and consumers resolve it with the content API. Convention for later countries: `geography.country.<alpha-2 lower case>.name`, authored through the lifecycle (create the entry, then the country). Currency display names stay a column on `geography.currencies` (a stable English reference label, not localized copy). Locale display names (`content.locales.display_name`) are reference data, not copy.

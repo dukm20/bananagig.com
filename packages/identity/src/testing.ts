@@ -39,6 +39,14 @@ export interface SignOptions {
   /** Seconds relative to now. */
   expiresInSec?: number;
   notBeforeInSec?: number;
+  /** `auth_time` claim in epoch seconds (absent by default, like a token whose login time was not requested). */
+  authTime?: number;
+  /** Convenience: `auth_time` this many seconds before now. Ignored when `authTime` is given. */
+  authTimeAgoSec?: number;
+  /** `sid` claim (default `test-session-1`). */
+  sid?: string;
+  /** `acr` claim (default `bananagig:password`). */
+  acr?: string;
 }
 function baseClaims(): Record<string, unknown> {
   return {
@@ -56,6 +64,10 @@ function baseClaims(): Record<string, unknown> {
 export async function signToken(keys: TestKeys, o: SignOptions = {}): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const claims: Record<string, unknown> = { ...baseClaims(), ...o.claims };
+  if (o.sid !== undefined) claims.sid = o.sid;
+  if (o.acr !== undefined) claims.acr = o.acr;
+  if (o.authTime !== undefined) claims.auth_time = o.authTime;
+  else if (o.authTimeAgoSec !== undefined) claims.auth_time = now - o.authTimeAgoSec;
   for (const k of o.omit ?? []) delete claims[k];
   const jwt = new SignJWT(claims as Record<string, never>).setProtectedHeader({ alg: 'RS256', kid: keys.kid, typ: 'JWT' });
   if (!(o.omit ?? []).includes('iat')) jwt.setIssuedAt(now);

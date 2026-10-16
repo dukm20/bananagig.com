@@ -2,7 +2,7 @@ import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['**/dist/**', '**/node_modules/**', '**/.next/**', '**/next-env.d.ts', 'docs/**'] },
+  { ignores: ['**/dist/**', '**/node_modules/**', '**/.next/**', '**/next-env.d.ts', 'docs/**', '.checkpoint/**'] }, // .checkpoint is git-ignored working material (checkpoint start files, lab scripts)
   js.configs.recommended,
   ...tseslint.configs.recommended,
   { rules: { '@typescript-eslint/no-unused-vars': ['error', { varsIgnorePattern: '^_', argsIgnorePattern: '^_', ignoreRestSiblings: true }] } },

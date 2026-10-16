@@ -451,16 +451,18 @@ const CHALLENGE_CONSTRAINTS = [
 ];
 
 describe('A. schema shape: only a hash, no plaintext secret, one E.164 column, restrictive foreign keys', () => {
-  it('adds exactly two tables to the identity schema (eleven in total) and no sequence', async () => {
+  it('adds exactly two tables to the identity schema (nine with 0010, eleven after 0011, thirteen after 0012) and no sequence', async () => {
     const tables = await q<{ table_name: string }>(
       "SELECT table_name FROM information_schema.tables WHERE table_schema = 'identity' AND table_type = 'BASE TABLE'",
     );
     expect(tables.map((r) => r.table_name).sort()).toEqual([
       'account_audit_events',
+      'account_devices',
       'account_profiles',
       'account_roles',
       'account_status_history',
       'accounts',
+      'application_sessions',
       'email_contacts',
       'email_verification_challenges',
       'external_identities',
@@ -482,7 +484,7 @@ describe('A. schema shape: only a hash, no plaintext secret, one E.164 column, r
     expect(await columnsOf('phone_verification_challenges')).toEqual(CHALLENGE_COLUMNS);
   });
 
-  it('adds exactly one nullable uuid column (phone_contact_id) to the audit trail, after email_contact_id, and keeps the rest', async () => {
+  it('adds exactly one nullable uuid column (phone_contact_id) to the audit trail, after email_contact_id, and keeps the rest (0012 appends application_session_id and account_device_id)', async () => {
     expect((await columnsOf('account_audit_events')).map(([n, t, nullable]) => [n, t, nullable])).toEqual([
       ['audit_event_id', 'uuid', false],
       ['occurred_at', 'timestamp with time zone', false],
@@ -495,6 +497,8 @@ describe('A. schema shape: only a hash, no plaintext secret, one E.164 column, r
       ['correlation_id', 'text', false],
       ['email_contact_id', 'uuid', true],
       ['phone_contact_id', 'uuid', true],
+      ['application_session_id', 'uuid', true],
+      ['account_device_id', 'uuid', true],
     ]);
   });
 
@@ -591,13 +595,13 @@ describe('A. schema shape: only a hash, no plaintext secret, one E.164 column, r
     expect(await q("SELECT 1 FROM pg_constraint WHERE conname = 'fk_account_audit_events__phone_contact_id'")).toEqual([]);
   });
 
-  it('brings the identity schema to 96 primary key, unique, foreign key and check constraints (44 from 0009, 26 from 0010, 26 from 0011)', async () => {
+  it('brings the identity schema to 121 primary key, unique, foreign key and check constraints (44 from 0009, 26 from 0010, 26 from 0011, 25 from 0012)', async () => {
     const { n } = (
       await q<{ n: number }>(
         "SELECT count(*)::int AS n FROM pg_constraint c JOIN pg_namespace s ON s.oid = c.connamespace WHERE s.nspname = 'identity' AND c.contype IN ('p', 'u', 'f', 'c')",
       )
     )[0]!;
-    expect(n).toBe(96);
+    expect(n).toBe(121);
     expect(CONTACT_CONSTRAINTS.length + CHALLENGE_CONSTRAINTS.length + 2).toBe(26);
   });
 

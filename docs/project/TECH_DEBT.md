@@ -183,7 +183,7 @@ Description: Keycloak admin credentials, database credentials and any future con
 Why deferred: Production hosting and secret storage are undecided.
 Exit criteria: A secrets manager supplies all credentials, the production realm is applied by an automated, reviewed pipeline, and the dev admin credentials cannot exist in production.
 Target checkpoint: production deployment checkpoint
-
+ID-004 note (2026-10-16): the first service account exists, `bananagig-security` (ADR-0035). Its secret (`KEYCLOAK_SECURITY_CLIENT_SECRET`) is required by the API in production and the development placeholder is refused there, but nothing generates, stores or rotates the production value: `pnpm identity:build-prod` strips the secret so Keycloak generates one, and reading it from Keycloak (`GET clients/{id}/client-secret`), injecting it from a secret store and rotating it (`POST` there) is manual. `${ENV}` placeholders in realm import files were not verified. The production realm build also removes the development SMTP server (Mailpit), so the password reset sends nothing in production until a production SMTP server is provisioned. See DEBT-0071.
 
 ## DEBT-0017 — Identity notifications (email, SMS) and recovery flows not built
 
@@ -197,6 +197,7 @@ Exit criteria: Verified-email and recovery flows implemented with configured SMT
 Target checkpoint: ID-001 and following identity checkpoints
 ID-002 note: email verification (the BananaGig email contact, code and magic link, Mailpit) is implemented without Keycloak SMTP; the realm still has `verifyEmail` and `resetPasswordAllowed` off. Recovery through email (password reset link, recovery codes), SMS and phone verification remain open (ID-003 for phone).
 ID-003 note (2026-10-08): phone verification is built (the BananaGig phone contact and the SMS code, `docs/engineering/PHONE_VERIFICATION.md`) with the Valkey fake sink for development and tests and no production SMS provider (DEBT-0059). SMS-based account recovery and SMS second factors are NOT built and stay open.
+ID-004 note (2026-10-16): the password reset by email link (BananaGig endpoint, Keycloak sends the link), the authenticator app (TOTP) and recovery codes are built (`docs/engineering/SESSIONS_AND_MFA.md`). Still open: email and SMS one-time-code factors, the phone confirmation after a reset, the support route for a person who lost both channels, and notifications such as the password-changed email (DEBT-0067, DEBT-0068). The realm still has `verifyEmail` off; Keycloak now has an SMTP server in the development realm only.
 
 ## DEBT-0018 — WebAuthn and web step-up authentication deferred
 
@@ -208,7 +209,7 @@ Description: WebAuthn has default policy values only, and the web client's brows
 Why deferred: No feature needs step-up yet and WebAuthn needs a UX decision.
 Exit criteria: A level-of-authentication browser flow bound to the web client, an `acr_values` request from the features that need it, and WebAuthn enrolment, with tests.
 Target checkpoint: first feature requiring step-up (for example payment method change)
-
+ID-004 note (2026-10-16): the level-of-authentication browser flow is built (`bananagig-browser` bound to `bananagig-web` with the floor `minimum.acr.value=bananagig:mfa`) and the API has the step-up primitives (`requireRecentAuthentication()`, `requireMfa()`, RFC 9470 responses, `acr`/`max_age` from the web login). Still open: WebAuthn (its required actions are disabled in the realm until it is built) and the CALLERS of the primitive: only the trusted-browser and MFA-enrolment routes use it, `requireMfa()` has no route (DEBT-0050, DEBT-0062).
 
 ## DEBT-0019 — Keycloak built-in account console and login theme not decided
 
@@ -220,7 +221,7 @@ Description: Keycloak's built-in account console (`/realms/bananagig/account`) i
 Why deferred: BananaGig's own account and security screens do not exist yet, and the account console is currently the only way for a user to enrol TOTP.
 Exit criteria: Either disable the built-in clients and reverse-proxy rules once BananaGig account screens exist, or theme and keep them; add a BananaGig login theme.
 Target checkpoint: account security screens checkpoint
-
+ID-004 note (2026-10-16): the built-in account console is closed: `account` and `account-console` are declared disabled in the realm file, the linter requires it, and Caddy returns 404 for `/realms/bananagig/account*` and for the self-service `login-actions/reset-credentials*` (a second line). Account security is the BananaGig `/security` page. Still open: the BananaGig login theme (Keycloak's login, OTP, recovery-code and reset-password pages and the reset email use the built-in English theme text).
 
 ## DEBT-0020 — Interactive login only works in the container stack
 
@@ -516,6 +517,7 @@ Description: The account status machine exists (PENDING, ACTIVE, SUSPENDED, CLOS
 Why deferred: Bookings, payments and payouts do not exist; closure rules depend on them. Financial closure semantics were explicitly out of scope.
 Exit criteria: Closure rules per role with tests, an erasure and anonymization procedure that keeps legally retained records, a data export, and the retention policy (with DEBT-0036).
 Target checkpoint: the account closure and privacy checkpoints (CU-09 and PR-09 account sections)
+ID-004 note (2026-10-16): unchanged. The new `identity.application_sessions`, `identity.account_devices` and security audit rows also hold personal data (browser families, times, the Keycloak `sid`) and are never deleted (DEBT-0057); closing or suspending an account does not revoke its sessions (DEBT-0074).
 
 ## DEBT-0046 — Admin identities have no application identity
 
@@ -571,6 +573,7 @@ Description: The data model and lifecycle of a change are complete (the verified
 Why deferred: step-up needs the 2FA checkpoints; the notice needs a notification template and trigger; the account area is CU-09.
 Exit criteria: a step-up check before `POST /account/email` for a verified account, an old-address notice email on `EmailVerified` with a replacement, and the account email screens.
 Target checkpoint: the account security checkpoints (CU-09.13 to CU-09.15)
+ID-004 note (2026-10-16): the step-up primitive exists (`requireRecentAuthentication()`, `requireMfa()`; DEBT-0018) but is NOT wired into `POST /account/email`: changing an email still needs only a signed-in session. The old-address notice is still open.
 
 ## DEBT-0051 — No recovery for an address that is verified on another account
 
@@ -616,6 +619,7 @@ Why deferred: the device identifier, the risk signals (SV-09.03) and the bot-pro
 Exit criteria: a device or session identifier passed to the service, bot protection on the send operation, and re-verification with the configured period.
 Target checkpoint: the sign-up hardening and risk checkpoints
 ID-003 note (2026-10-08): the same gaps apply to the SMS send, where they cost money (SMS pumping, DEBT-0059); there is no bot protection on `POST /account/phone/verification/send`. The phone service accepts a device dimension like the email service, but no device identifier exists and none is passed, so that dimension is still unused.
+ID-004 note (2026-10-16): the device identifier now exists and feeds the device dimension of the email and phone limiters (the routes pass `request.securitySession.accountDeviceId`; it is absent until the browser has registered, and a person who clears the device cookie gets a new device and so a new bucket, so the dimension bounds honest clients, not an attacker). Still open: bot protection on the send operations and re-verification after a period, a risk signal or a bounce.
 
 ## DEBT-0055 — The API trusts a client-supplied X-Forwarded-For
 
@@ -652,6 +656,7 @@ Why deferred: retention and erasure are decided with DEBT-0036 and DEBT-0045.
 Exit criteria: a retention period per table, a purge or anonymization job that keeps what the audit needs, and the erasure procedure for the contact data.
 Target checkpoint: the account closure and privacy checkpoints
 ID-003 note (2026-10-08): the same gap covers `identity.phone_verification_challenges` (one row per SMS, code hash and delivery outcome) and DISABLED `identity.phone_contacts` rows (the E.164 number and country), which are never purged. The DEV/TEST fake SMS sink is the only store of a plaintext code; its Valkey entries expire by a 15-minute TTL, which is their only retention control (the sink is never enabled in production).
+ID-004 note (2026-10-16): the same gap covers `identity.application_sessions` (one row per login, the Keycloak `sid`), `identity.account_devices` (a keyed device hash and three coarse families) and the security audit rows: none is ever deleted or anonymized, and there is no retention period.
 
 ## DEBT-0058 — Two verification abuse limits are engineering assumptions awaiting owner confirmation
 
@@ -707,6 +712,7 @@ Description: The data model and lifecycle of a phone change are complete (the ve
 Why deferred: step-up needs the 2FA checkpoints; the notice needs an SMS notification template and a provider (DEBT-0059); the account area is CU-09.
 Exit criteria: a step-up check before `POST /account/phone` for a verified account, an old-number notice on `PhoneVerified` with a replacement, a phone verification page and the account phone screens.
 Target checkpoint: the account security checkpoints (CU-09.13 to CU-09.15)
+ID-004 note (2026-10-16): the step-up primitive exists (DEBT-0018) but is NOT wired into `POST /account/phone`; a signed-in session alone can still start a number change. The notice to the old number and the phone screens are still open.
 
 ## DEBT-0063 — Accounts have no market, so market-scoped phone policy resolves by country only
 
@@ -740,3 +746,113 @@ Description: Accepted residuals, none exploitable to take over an account but ea
 Why deferred: each needs a product or security decision (limits, support process, vendor) or touches the unchanged email flow; the production SMS provider does not exist yet (DEBT-0059) so sends are disabled in production.
 Exit criteria: a per-number attempt cap across challenges, a number budget above the per-account cap with a per-(account, number) sub-limit, a global and per-country send ceiling with a kill switch and IPv6 /64 keys, a re-lookup for numbers without a snapshot when the policy tightens, a code-bound idempotent confirm, a provider timeout and a stale-PENDING sweeper, and the same savepoint treatment for the email attempt counter.
 Target checkpoint: before the production SMS provider is enabled (DEBT-0059)
+
+## DEBT-0066 — A trusted browser is recorded but has no effect on when Keycloak asks for a code
+
+Status: OPEN
+Severity: LOW
+Introduced by: ID-004
+Owner/domain: identity / security
+Description: A browser the person trusts is stored (`identity.account_devices.trusted_until`, `session.trusted_browser_days`), shown and expired, and never satisfies a step-up guard, but it does NOT change Keycloak's login-time prompt for a code (PRD CU-09.13 says "a browser can be trusted for the configured number of days"). Keycloak cannot skip the OTP step for one browser without a custom extension, and the tempting shortcuts (`acr_values`, an essential `claims` parameter) travel through the browser and are tamperable. The product copy and the API summaries say so plainly (`account.security.devices.trust_note`). What exists is Keycloak's own remembered session: with "Keep me signed in" an OTP user keeps their SSO session and MFA level for 30 days on that browser.
+Why deferred: the effect needs a Keycloak extension or session design and a security decision; the record, the device registry and the honest copy were built so it can be added without a data change.
+Exit criteria: either an offline-session-backed trusted browser (trusting a browser makes Keycloak keep a long-lived session for it, trusted window = session lifetime) or a signed request object (RFC 9101) carrying the device assertion to a custom authenticator that may skip the OTP step; in both a trusted browser never satisfies a step-up guard, and the copy is updated.
+Target checkpoint: the account security checkpoints (CU-09.13)
+
+## DEBT-0067 — No email or SMS one-time-code factor, no step-up for accounts without TOTP, no phone confirmation after a reset, no support route
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: ID-004
+Owner/domain: identity / security / support
+Description: Only the authenticator app (TOTP) and Keycloak's recovery codes exist as second factors. Not built: the one-time code sent to the verified email or phone as a second factor (PRD CU-09.13), the step-up for an account WITHOUT a TOTP credential (CU-09.14: the "Authentication Required" dialog that sends a code to a verified channel; today `requireMfa()` answers `403 MFA_ENROLLMENT_REQUIRED`), the phone confirmation after a password reset ("then confirms a code to the verified phone", CU-03.12), the recovery through the other channel plus a backup code, and the support identity-check route for a person who lost both channels (CU-03.12, PRD question Q7). A person with neither a TOTP device nor recovery codes who loses their password can only use the email link.
+Why deferred: the email and SMS factors need Keycloak extensions or a BananaGig-side second-factor design and, for SMS, a provider (DEBT-0059); the support route needs the admin console and support roles (DEBT-0046, DEBT-0021).
+Exit criteria: an email/SMS code factor integrated with the flow, a step-up path for accounts without TOTP, the phone confirmation step of the reset, the backup-code recovery and a documented support process with an admin action and audit trail.
+Target checkpoint: the account security and recovery checkpoints (CU-09.13, CU-09.14, CU-03.12)
+
+## DEBT-0068 — Keycloak events are not consumed: factor and password changes are observed lazily and no notice is sent
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: ID-004
+Owner/domain: identity / security
+Description: BananaGig does not consume Keycloak's event stream (no failed-sign-in feed, no recovery-code-used event, no credential-change events). It OBSERVES: the factor and password transitions are read from the admin API at the security overview and at login registration and audited with the OBSERVATION time (`MFA_ENABLED`, `RECOVERY_CODES_ENABLED`, `PASSWORD_CHANGED`, `PASSWORD_RESET_COMPLETED`). Consequences: a recovery code being used, failed sign-ins and a lock-out never appear on the timeline; the other sessions of a user whose password changed elsewhere are revoked only when the owner next logs in or opens `/security` (until then another session, an attacker's for instance, keeps working: the reset form's "sign out of other sessions" box is unchecked by default and Keycloak 26.3.5 has no native default for it); no "password changed" email notice (CU-09.12) is sent; the audit time of a transition is not the time it happened. A factor present the first time it is seen is anchored as a baseline.
+Why deferred: consuming the events needs a listener SPI or event stream and a delivery guarantee; the notification needs the notification engine (NOTIF-001).
+Exit criteria: Keycloak events (or a listener) feed the audit log in real time, a password change or reset ends the other sessions at once, a password-changed notice is sent, and failed sign-ins and recovery-code use are on the timeline.
+Target checkpoint: the account security checkpoints and NOTIF-001
+
+## DEBT-0069 — Refresh-token single-flight is per web process
+
+Status: OPEN
+Severity: LOW
+Introduced by: ID-004
+Owner/domain: web / identity
+Description: The realm rotates refresh tokens and tolerates one reuse (`refreshTokenMaxReuse` 1, measured in the lab: with 0 a racing refresh loses a request in most trials, with 1 two concurrent refreshes both succeeded and three kill the chain). The web server makes the refresh single-flight per session id, but only within one process (`getSession`, a map keyed by the store): with several web instances, or a refresh in a second process, three or more concurrent refreshes of one session can still kill its chain and sign the person out. Valkey is not used as a lock.
+Why deferred: one web instance runs today; a distributed single-flight (a Valkey lock or a refresh-ahead job) is not needed until the web tier scales out.
+Exit criteria: a cross-process single-flight (for example a Valkey lock with a short TTL keyed by the session id) or a refresh strategy that cannot race, with a test using two processes.
+Target checkpoint: before the web tier runs more than one instance
+
+## DEBT-0070 — Three security parameters are assumptions and one value is configured in two places
+
+Status: OPEN
+Severity: LOW
+Introduced by: ID-004
+Owner/domain: identity / security
+Description: `session.trusted_browser_days` (30, CU-09.13), `session.keep_signed_in_days` (30, SV-01.12) and `reset_link.validity_minutes` (60, CU-03.11) are PRD values. `security.step_up_valid_minutes` (15), `security.activity_log_days` (90; CU-09.20 says "the configured period" without a value) and `reset_link.max_requests_per_hour` (5 per address and per source address) are ID-004's engineering assumptions, not reviewed by the security owner. In addition `session.keep_signed_in_days` duplicates the realm's "Keep me signed in" lifetimes (`ssoSessionIdleTimeoutRememberMe`, `ssoSessionMaxLifespanRememberMe`, 2592000 s): a configuration change request does not move the realm, so the two can drift; a unit test only compares the realm file with the seeded default.
+Why deferred: the security owner has not reviewed the values; the realm is configured by file, not by the registry.
+Exit criteria: the owner confirms or changes the three assumptions through a configuration change request (second approver); the remember-me lifetimes are derived from the parameter (a deployment step that renders the realm from configuration) or a runtime check compares them and alerts.
+Target checkpoint: before launch
+
+## DEBT-0071 — The security service account holds manage-users (realm-wide user administration)
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: ID-004
+Owner/domain: identity / security
+Description: `bananagig-security` (ADR-0035) needs `realm-management` `manage-users`, the lab-measured minimum for ending sessions and sending the reset email. Whoever holds its secret can create, change and delete any user of the realm, set credentials, end any session and send required-action emails (it cannot change realm settings or clients). The API uses only five operations. Keycloak's fine-grained admin permissions (restricting the role to specific users or operations) are not used: the feature is disabled in this stack (`ADMIN_FINE_GRAINED_AUTHZ` needs a `--features` change) and was not tried. The production secret is generated by Keycloak after the realm import and must be read, injected and rotated by hand (DEBT-0016); `${ENV}` placeholders in the import file were not verified.
+Why deferred: production hosting and the secret store are undecided; fine-grained permissions are a Keycloak feature flag and a tested configuration.
+Exit criteria: the secret is generated or injected by the secret manager and rotated on a schedule, fine-grained admin permissions (or a narrower gateway) limit the client to the five operations, and an alert fires on use outside them.
+Target checkpoint: production deployment checkpoint (with DEBT-0016)
+
+## DEBT-0072 — Keycloak propagation is best effort without a retry queue, and the admin calls are not throttled or cached
+
+Status: OPEN
+Severity: LOW
+Introduced by: ID-004
+Owner/domain: identity / platform
+Description: Ending Keycloak sessions after a revocation, the detached password-reset work (lookup, audit, Keycloak calls) and the reconciliation are best effort. A Keycloak failure never undoes the application revocation (the registry refuses the session at once), but the Keycloak session (and its refresh token and SSO cookie) then lives until it is retried: the retry happens only when the next revoke or session listing sees the session still listed (bounded to 20 per call), and a revocation made while Keycloak is down for good is never retried. The detached password-reset task is lost if the process dies after the 202 (the person asks again). `GET /account/security` makes two admin calls (the user and its credentials) and `GET /account/security/sessions` one plus up to 20 session-ending retries per request; they are not throttled or cached, so a hostile or busy client multiplies load on Keycloak (bounded only by the API's own request limits, which do not cover these routes).
+Why deferred: a queue or a worker job (pg-boss) and a cache need a design; the application-side enforcement does not depend on them.
+Exit criteria: a durable retry for the propagation (an outbox consumer or a pg-boss job keyed by the revoked session), a short cache or coalescing of the overview's admin calls, a rate limit on the two read routes, and the password-reset work queued instead of detached.
+Target checkpoint: the account security checkpoints and the worker checkpoint
+
+## DEBT-0073 — Password-reset abuse residuals
+
+Status: OPEN
+Severity: LOW
+Introduced by: ID-004
+Owner/domain: identity / security
+Description: Accepted residuals of the public reset endpoint: (1) the per-address bucket (`reset_link.max_requests_per_hour`) can be burned by a third party who knows the address, so the owner's own request gets `429` for up to an hour; it is uniform on purpose (the answer must not depend on whether an account exists); (2) the per-source bucket is only as good as `TRUSTED_PROXY_HOPS` (ADR-0033): with a wrong count every visitor shares one bucket or a client picks its own; (3) the link goes only to the address Keycloak holds when it equals the verified one, so a person whose Keycloak address differs gets no email and no error; (4) Keycloak's brute-force lock-out (5 failures in 15 minutes lock the user for 15 minutes, PRD CU-03.11) is mandated and abusable: anyone who knows an address can lock that user out of password sign-in by failing five times; (5) there is no bot protection on the endpoint (DEBT-0054); (6) the audit row `PASSWORD_RESET_REQUESTED` means "requested", it is written before Keycloak's address is compared and before the email is sent, so it does not prove delivery.
+Why deferred: each needs a product or security decision (limits, a proof-of-work or CAPTCHA, a per-account lock-out policy) or a deployment fact (the proxy topology).
+Exit criteria: bot protection and a lock-out policy that does not let a third party deny sign-in (for example lock the source, not only the user), a delivery outcome recorded with the request, and a production proxy topology check.
+Target checkpoint: before launch, with the sign-up hardening checkpoint
+
+## DEBT-0074 — Session and security residuals found in the ID-004 review
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: ID-004
+Owner/domain: identity / security / web
+Description: Accepted residuals: (1) no approximate location for sessions (CU-09.20 asks for one; no GeoIP) and no admin security console; (2) sessions, devices and the security audit rows are never purged (DEBT-0057); (3) routes that use only `requireAuthenticated()` (for example `GET /system/whoami`) do not consult the session registry and accept a revoked session's token until it expires; (4) suspending or closing an account does not revoke its sessions (the account routes refuse it with 403 anyway, but a Keycloak session survives); (5) removing the current browser needs the cookie rotation, which only the web server performs (a client that ignores `deviceId: null` keeps presenting a removed secret); (6) the number of remaining recovery codes is readable from Keycloak (`remainingCodes`) but not surfaced, and `hasMfaEnrolled` looks at TOTP only, so a person with recovery codes but no TOTP gets `403 MFA_ENROLLMENT_REQUIRED`; (7) MFA transitions are audited at OBSERVATION time (DEBT-0068); (8) password-only users re-enter their password on every authorization request (their SSO cookie is below the MFA floor); (9) the timeline cursor is a microsecond timestamp, so rows sharing a microsecond across a page boundary could be skipped, and the session and device lists are capped at 200 rows; (10) a session's `last_seen_at` is touched at most once a minute, so "last active" can be a minute stale.
+Why deferred: each needs a dependency (GeoIP, the admin console, account closure rules), a product decision or a Keycloak change; none lets a revoked session act on a `requireAccount` route.
+Exit criteria: GeoIP and the admin console, a retention job, the registry consulted by every authenticated route (or `requireAuthenticated` retired in favour of `requireAccount`), session revocation on suspension and closure, the recovery-code count on the security page, and a cursor with a tie-breaker.
+Target checkpoint: the account security, closure and admin console checkpoints
+
+## DEBT-0075 — No metrics or alerts for the security layer's Keycloak failures
+
+Status: OPEN
+Severity: LOW
+Introduced by: ID-004
+Owner/domain: identity / platform
+Description: Every failure of the Keycloak admin client, the detached password-reset task and the transition observation is reduced to a warn-level log line with a CODE (`TOKEN_REJECTED`, `FORBIDDEN`, `TIMEOUT`, ...). No counter, gauge or alert exists. A wrong or rotated `KEYCLOAK_SECURITY_CLIENT_SECRET` or a realm that was not re-imported makes the security page show the second factor as unknown, revocations report `keycloak: UNAVAILABLE` and the password reset accept requests (202) but send nothing, with nothing but a log line to say so.
+Why deferred: the metrics and alerting conventions for domain services are not designed yet.
+Exit criteria: counters by code for the admin client and the detached work, a gauge for the last successful call, and an alert on a sustained failure ratio, plus an operations note.
+Target checkpoint: the observability hardening checkpoint

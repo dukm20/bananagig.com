@@ -3,7 +3,7 @@ asyncapi: 3.0.0
 info:
   title: BananaGig Events
   version: 1.0.0
-  description: Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events, the identity account events, the email verification events and the phone verification events exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.
+  description: Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events, the identity account events, the email verification events, the phone verification events and the account security events (sessions, second factor, password reset) exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.
 defaultContentType: application/json
 channels:
   infraPing:
@@ -204,6 +204,48 @@ channels:
     messages:
       IdentityPhoneChangeRequested:
         $ref: "#/components/messages/IdentityPhoneChangeRequested"
+  identity_security_sessionCreated:
+    address: bananagig.identity.session-created.v1
+    description: The API saw a new login session of an account for the first time (an application session was created). Published through the transactional outbox (aggregate identity_account); the payload carries identifiers only, never a token, a Keycloak session id, a device secret, an address, a password, a code or a link.
+    messages:
+      IdentitySessionCreated:
+        $ref: "#/components/messages/IdentitySessionCreated"
+  identity_security_sessionRevoked:
+    address: bananagig.identity.session-revoked.v1
+    description: "An application session ended: the person signed out, revoked it from another session, removed its browser, or the identity provider ended it. reason names why. A revoked session is refused by the API at once. Published through the transactional outbox (aggregate identity_account); the payload carries identifiers only, never a token, a Keycloak session id, a device secret, an address, a password, a code or a link."
+    messages:
+      IdentitySessionRevoked:
+        $ref: "#/components/messages/IdentitySessionRevoked"
+  identity_security_sessionsRevokedAll:
+    address: bananagig.identity.sessions-revoked-all.v1
+    description: "The person signed out everywhere: all sessions (except the current one unless includeCurrent) were revoked and the account revocation watermark was raised. Published through the transactional outbox (aggregate identity_account); the payload carries identifiers only, never a token, a Keycloak session id, a device secret, an address, a password, a code or a link."
+    messages:
+      IdentitySessionsRevokedAll:
+        $ref: "#/components/messages/IdentitySessionsRevokedAll"
+  identity_security_mfaEnabled:
+    address: bananagig.identity.mfa-enabled.v1
+    description: A second factor (method TOTP or RECOVERY_CODES) was observed as set up in the identity provider. The payload never carries a secret or a code. Published through the transactional outbox (aggregate identity_account); the payload carries identifiers only, never a token, a Keycloak session id, a device secret, an address, a password, a code or a link.
+    messages:
+      IdentityMfaEnabled:
+        $ref: "#/components/messages/IdentityMfaEnabled"
+  identity_security_mfaDisabled:
+    address: bananagig.identity.mfa-disabled.v1
+    description: A second factor (method TOTP or RECOVERY_CODES) was observed as removed in the identity provider. Published through the transactional outbox (aggregate identity_account); the payload carries identifiers only, never a token, a Keycloak session id, a device secret, an address, a password, a code or a link.
+    messages:
+      IdentityMfaDisabled:
+        $ref: "#/components/messages/IdentityMfaDisabled"
+  identity_security_passwordResetRequested:
+    address: bananagig.identity.password-reset-requested.v1
+    description: A password reset email was requested for an account (through the public request or by the owner). The payload carries the account id only, never an address or a link. Published through the transactional outbox (aggregate identity_account); the payload carries identifiers only, never a token, a Keycloak session id, a device secret, an address, a password, a code or a link.
+    messages:
+      IdentityPasswordResetRequested:
+        $ref: "#/components/messages/IdentityPasswordResetRequested"
+  identity_security_passwordResetCompleted:
+    address: bananagig.identity.password-reset-completed.v1
+    description: "A password reset was completed: the identity provider password changed after a reset request. Observed, never the password. Published through the transactional outbox (aggregate identity_account); the payload carries identifiers only, never a token, a Keycloak session id, a device secret, an address, a password, a code or a link."
+    messages:
+      IdentityPasswordResetCompleted:
+        $ref: "#/components/messages/IdentityPasswordResetCompleted"
 operations:
   receiveInfraPing:
     action: receive
@@ -370,6 +412,41 @@ operations:
     channel:
       $ref: "#/channels/identity_phone_changeRequested"
     summary: A replacement for the verified primary number was requested; the old number stays active until the new one verifies.
+  sendIdentitySessionCreated:
+    action: send
+    channel:
+      $ref: "#/channels/identity_security_sessionCreated"
+    summary: The API saw a new login session of an account for the first time (an application session was created).
+  sendIdentitySessionRevoked:
+    action: send
+    channel:
+      $ref: "#/channels/identity_security_sessionRevoked"
+    summary: "An application session ended: the person signed out, revoked it from another session, removed its browser, or the identity provider ended it. reason names why. A revoked session is refused by the API at once."
+  sendIdentitySessionsRevokedAll:
+    action: send
+    channel:
+      $ref: "#/channels/identity_security_sessionsRevokedAll"
+    summary: "The person signed out everywhere: all sessions (except the current one unless includeCurrent) were revoked and the account revocation watermark was raised."
+  sendIdentityMfaEnabled:
+    action: send
+    channel:
+      $ref: "#/channels/identity_security_mfaEnabled"
+    summary: A second factor (method TOTP or RECOVERY_CODES) was observed as set up in the identity provider. The payload never carries a secret or a code.
+  sendIdentityMfaDisabled:
+    action: send
+    channel:
+      $ref: "#/channels/identity_security_mfaDisabled"
+    summary: A second factor (method TOTP or RECOVERY_CODES) was observed as removed in the identity provider.
+  sendIdentityPasswordResetRequested:
+    action: send
+    channel:
+      $ref: "#/channels/identity_security_passwordResetRequested"
+    summary: A password reset email was requested for an account (through the public request or by the owner). The payload carries the account id only, never an address or a link.
+  sendIdentityPasswordResetCompleted:
+    action: send
+    channel:
+      $ref: "#/channels/identity_security_passwordResetCompleted"
+    summary: "A password reset was completed: the identity provider password changed after a reset request. Observed, never the password."
 components:
   messages:
     EventEnvelope:
@@ -702,6 +779,76 @@ components:
             type: string
       payload:
         $ref: "#/components/schemas/IdentityPhoneChangeRequested"
+    IdentitySessionCreated:
+      name: IdentitySessionCreated
+      title: The API saw a new login session of an account for the first time (an application session was created).
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/IdentitySessionCreated"
+    IdentitySessionRevoked:
+      name: IdentitySessionRevoked
+      title: "An application session ended: the person signed out, revoked it from another session, removed its browser, or the identity provider ended it. reason names why. A revoked session is refused by the API at once."
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/IdentitySessionRevoked"
+    IdentitySessionsRevokedAll:
+      name: IdentitySessionsRevokedAll
+      title: "The person signed out everywhere: all sessions (except the current one unless includeCurrent) were revoked and the account revocation watermark was raised."
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/IdentitySessionsRevokedAll"
+    IdentityMfaEnabled:
+      name: IdentityMfaEnabled
+      title: A second factor (method TOTP or RECOVERY_CODES) was observed as set up in the identity provider. The payload never carries a secret or a code.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/IdentityMfaEnabled"
+    IdentityMfaDisabled:
+      name: IdentityMfaDisabled
+      title: A second factor (method TOTP or RECOVERY_CODES) was observed as removed in the identity provider.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/IdentityMfaDisabled"
+    IdentityPasswordResetRequested:
+      name: IdentityPasswordResetRequested
+      title: A password reset email was requested for an account (through the public request or by the owner). The payload carries the account id only, never an address or a link.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/IdentityPasswordResetRequested"
+    IdentityPasswordResetCompleted:
+      name: IdentityPasswordResetCompleted
+      title: "A password reset was completed: the identity provider password changed after a reset request. Observed, never the password."
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/IdentityPasswordResetCompleted"
   schemas:
     EventEnvelope:
       type: object
@@ -3366,6 +3513,502 @@ components:
             - accountId
             - phoneContactId
             - replacesPhoneContactId
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    IdentitySessionCreated:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.identity.session-created.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            accountId:
+              type: string
+            applicationSessionId:
+              type: string
+            accountDeviceId:
+              type:
+                - string
+                - "null"
+          required:
+            - accountId
+            - applicationSessionId
+            - accountDeviceId
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    IdentitySessionRevoked:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.identity.session-revoked.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            accountId:
+              type: string
+            applicationSessionId:
+              type: string
+            reason:
+              type: string
+              enum:
+                - SIGN_OUT
+                - REVOKED_BY_USER
+                - SIGN_OUT_EVERYWHERE
+                - KEYCLOAK_ENDED
+                - DEVICE_REMOVED
+                - PASSWORD_CHANGED
+          required:
+            - accountId
+            - applicationSessionId
+            - reason
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    IdentitySessionsRevokedAll:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.identity.sessions-revoked-all.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            accountId:
+              type: string
+            revokedCount:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
+            includeCurrent:
+              type: boolean
+          required:
+            - accountId
+            - revokedCount
+            - includeCurrent
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    IdentityMfaEnabled:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.identity.mfa-enabled.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            accountId:
+              type: string
+            method:
+              type: string
+              enum:
+                - TOTP
+                - RECOVERY_CODES
+          required:
+            - accountId
+            - method
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    IdentityMfaDisabled:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.identity.mfa-disabled.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            accountId:
+              type: string
+            method:
+              type: string
+              enum:
+                - TOTP
+                - RECOVERY_CODES
+          required:
+            - accountId
+            - method
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    IdentityPasswordResetRequested:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.identity.password-reset-requested.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            accountId:
+              type: string
+          required:
+            - accountId
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    IdentityPasswordResetCompleted:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.identity.password-reset-completed.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            accountId:
+              type: string
+          required:
+            - accountId
           additionalProperties: false
       required:
         - eventId

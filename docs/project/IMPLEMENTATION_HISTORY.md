@@ -735,3 +735,48 @@ ADR-0030, ADR-0031, ADR-0032, ADR-0033.
 
 ### Known follow-up
 DEBT-0059 to DEBT-0065 (production SMS provider and spend caps, telecom risk vendor, contested numbers and lost phones, change step-up and screens, account market, unconfirmed limits, abuse residuals). DEBT-0055 is RESOLVED. Confirm or change the two assumed limits and the channel-specific key decision with the security owner. Push and confirm CI is green end to end (the Phone verification smoke scenario has not run in CI).
+
+## ID-004 — 2026-10-16
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(ID-004)"`.
+Summary: The application security layer around the Keycloak authentication foundation: an application session registry that references the Keycloak `sid` (no token or credential is stored) and is enforced on every web-context request, so revocation takes effect at once although access tokens live 300 s; devices with a keyed-hash secret and coarse browser metadata, plus the trusted-browser record; sign out one, everywhere or the current session; the security timeline as a read model over the audit log; step-up guards on the verified `auth_time` and `acr`; the Keycloak browser flow with an unskippable second factor, TOTP and recovery codes owned by Keycloak; password-reset orchestration; the Keycloak admin client and a dedicated service account; realm hardening. Resolves nothing silently: the trusted browser has no login-time effect (DEBT-0066) and the email/SMS second factor is not built (DEBT-0067).
+
+### Housekeeping at the start (requested)
+`PROJECT_STATE` records the verified ID-003 CI result (run 38946842804 for `bd2be1c`, green end to end: `verify` 6m 55s and `compose-smoke` 4m 43s, including the phone integration tests and the `Phone verification` smoke scenario). `la-oc` stays PLANNED; DEBT-0030, DEBT-0064 and DEBT-0065 stay OPEN. Found and fixed while verifying: the OpenAPI file committed with ID-003 had NO phone routes (`scripts/generate-specs.mjs` never passed the phone service; `specs:check` could not notice); the regenerated spec has them and `apps/api/src/spec-completeness.test.ts` now fails whenever a route module of the app is missing from the generator or the committed spec.
+
+### Delivered
+- Migration `0012_application_sessions.sql`: `identity.application_sessions` (one row per Keycloak session id, terminal revocation with a reason, `fillfactor` 80 so the once-a-minute touch is a HOT update), `identity.account_devices` (keyed device hash, coarse families, trusted-browser window, removal), `identity.accounts.sessions_not_before` (the revocation watermark, with its own guard), the audit extension (16 security actions, session and device references with composite foreign keys), guard triggers with `identity_rule:<KEY>` details, a partial index for the observed-state lookups, six configuration parameters and 86 managed content entries.
+- Contracts `security.ts` (vocabularies, strict request bodies, read models, seven events, error codes) and `SecurityService` in `packages/accounts` behind the `SecurityIdentityProvider` port, with fakes.
+- API: 13 operations under `/api/v1/account/security/*` and the public `POST /api/v1/auth/password-reset`, the step-up guards (RFC 9470), session enforcement in `requireAccount`, a bounded drain of detached work at shutdown, `no-store` on every error under the account and auth prefixes, the device id fed into the email and phone rate limits.
+- Identity package: `Principal.authTime`, validated step-up authorize parameters, `kc_action_status` helper, `KeycloakAdminClient`. Config: `KEYCLOAK_SECURITY_CLIENT_ID/SECRET`.
+- Realm: the `bananagig-browser` flow family with `minimum.acr.value` (the second factor cannot be skipped by editing the URL), the `bananagig-security` service account (`manage-users` only), brute force 5 in 15 minutes locking 15 minutes, remember-me 30 days, refresh rotation with one reuse, SMTP to Mailpit; the built-in account console and the credential-deleting, WebAuthn and identity-link actions disabled; Caddy denies the account console and the reset-credentials URL; lint rules and a production build that keeps only the service account.
+- Web: device cookie, session registration at login with cookie rotation after a removed device, single-flight token refresh, revoked-session handling, same-origin POST handlers, the `/security` and `/forgot-password` pages, one-shot server marker for credential setup.
+- Smoke scenario "Sessions and security" (two real logins, revocation in milliseconds, TOTP and recovery enrolment with guaranteed removal, step-up refusal with a real aged login in the opt-in mode, no secret in any response or log).
+- Docs: `docs/engineering/SESSIONS_AND_MFA.md`, ADR-0034 to ADR-0036, the data-model documents, engineering documents, seven skills, DEBT-0066 to DEBT-0075, LRN-0042 to LRN-0045.
+- Quality process: a Keycloak research probe and a lab in scratch realms (nine requirements verified before any design was fixed); parallel authors with disjoint ownership; two independent read-only reviews (security, concurrency and database); independent test authors for the database model, the service, the API and the contracts. Findings fixed: retried revokes never re-reached Keycloak; the password-reset path leaked a timing difference; every session touch was a non-HOT update; the overview scanned the whole audit history; the first observation of an existing factor wrote false history and events; a presented device created ghost rows; liveness depended on reconciliation; the watermark refused a genuine login within the same second; a password reset left other sessions alive (the reset form's sign-out checkbox cannot be defaulted on in Keycloak 26.3.5); the credential-setup login skipped the recent-authentication proof; a user could delete their own second factor outside BananaGig through `kc_action=delete_credential`; the built-in account console was live; the timeline cursor skipped events that share a timestamp; impossible calendar values in the cursor leaked a database error; router-level errors lacked `no-store`; the sign-out-everywhere button was hidden when no other session was visible.
+
+### Decisions
+- ADR-0034: the registry, per-request enforcement, the watermark, the timeline as a read model, derived session state. Rejected: storing tokens, introspection per request, a separate activity table.
+- ADR-0035: the Keycloak admin client and the `SecurityIdentityProvider` port; best-effort propagation with explicit outcomes.
+- ADR-0036: Keycloak owns the factors and the recovery codes; claims-based step-up; the trusted browser is recorded without a login effect (offline-session-backed trust or a signed request object plus a custom authenticator are the future options).
+- The email and phone change flows are NOT given a step-up check here (the prompt excluded those business flows); the primitive exists (DEBT-0050, DEBT-0062).
+- Trusted browser honesty: the UI, API and documents say plainly that trust does not change when Keycloak asks for a code.
+
+### Schema
+Two new tables, one new column on `identity.accounts`, two new columns on `identity.account_audit_events`, 121 constraints in the `identity` schema; see `docs/data/DATA_MODEL_CHANGELOG.md` and `NORMALIZATION_LOG.md` (ID-004). No stored status, no `expires_at`, no activity table, no MFA flag, no recovery code, no raw IP or user agent. The only accepted denormalization is the audit action prefix paired with its foreign key column.
+
+### Contracts
+OpenAPI: thirteen security operations, the public password-reset operation, and (found missing) the four phone operations of ID-003. AsyncAPI: `bananagig.identity.session-created`, `session-revoked`, `sessions-revoked-all`, `mfa-enabled`, `mfa-disabled`, `password-reset-requested`, `password-reset-completed` (v1).
+
+### Tests
+Unit 7582, root script tests 163, integration 3747 in 35 files (security data model 571, security service 332, API security 148, live Keycloak 17), smoke 35 checks (run three times: twice normal and once with the step-up aging path).
+
+### Skills updated
+`skills/identity`, `skills/api`, `skills/web`, `skills/testing`, `skills/database`, `skills/configuration`, `skills/content`.
+
+### ADRs
+ADR-0034, ADR-0035, ADR-0036.
+
+### Known follow-up
+DEBT-0066 to DEBT-0075 (trusted browser effect, email/SMS second factor and phone-confirmed recovery, Keycloak events, multi-instance refresh, assumed parameters, service account scope, propagation retries and admin-call throttling, reset abuse residuals, session residuals, security metrics). Push and confirm CI is green (the Sessions and security smoke scenario and the live Keycloak integration test have not run in CI). Confirm the three assumed security values with the security owner. Apply the step-up guard to the email and phone change when those flows are built.

@@ -367,7 +367,7 @@ erDiagram
 
 `geography` has no foreign key to `integration.outbox_events`: geography events (aggregate types `geography_country`, `geography_market` and `geography_address_format`) point at their aggregate by value, as for every outbox producer. `configuration` and `content` `scope_ref` values for COUNTRY (ISO alpha-2, upper case) and MARKET (market code, lower-case kebab) scopes stay opaque text with no foreign key (DEBT-0024 remains open); they are validated against `geography` by the service layer through a port, not by the database.
 
-## identity schema (ID-001, ID-002, ID-003)
+## identity schema (ID-001, ID-002, ID-003, ID-004)
 
 The `identity` schema is a fourth cluster and the first application (not registry) schema. It depends on `content` (role display names, the preferred locale) and `geography` (the time zone override) and nothing depends on it yet: foreign keys go identity -> content and identity -> geography, never the other way, and `integration.outbox_events` points at it by value. Entity names are prefixed `ID_` (the referenced tables are the same tables as `GEO_CONTENT_ENTRIES`, `GEO_CONTENT_LOCALES` and `GEO_TIME_ZONES` above).
 
@@ -401,6 +401,7 @@ erDiagram
     timestamptz created_at
     timestamptz updated_at
     timestamptz closed_at
+    timestamptz sessions_not_before "revocation watermark of the latest revoke-all, NULL until then, ID-004"
   }
   ID_ACCOUNT_ROLES {
     uuid account_id PK
@@ -451,6 +452,8 @@ erDiagram
     uuid role_id FK
     uuid email_contact_id FK "composite FK with account_id, set exactly for EMAIL_* actions, ID-002"
     uuid phone_contact_id FK "composite FK with account_id, set exactly for PHONE_* actions, ID-003"
+    uuid application_session_id FK "composite FK with account_id, set exactly for SESSION_CREATED, SESSION_ENDED, SESSION_REVOKED, ID-004"
+    uuid account_device_id FK "composite FK with account_id, set exactly for DEVICE_* actions, ID-004"
     jsonb changes
     text reason
     text correlation_id
@@ -519,6 +522,29 @@ erDiagram
     timestamptz created_at
     text correlation_id
   }
+  ID_ACCOUNT_DEVICES {
+    uuid account_device_id PK
+    uuid account_id FK "unique with account_device_id (target of the composite FKs) and with device_hash"
+    char device_hash UK "char(64), keyed HMAC of the device secret, bound to the account, pseudonymous, NOT a credential; unique per account"
+    text browser_family "CHROME, FIREFOX, SAFARI, EDGE, OPERA, OTHER, first classification"
+    text os_family "WINDOWS, MACOS, LINUX, IOS, ANDROID, OTHER"
+    text device_class "DESKTOP, MOBILE, TABLET, OTHER"
+    timestamptz first_seen_at
+    timestamptz last_seen_at "last registered login; displayed value is derived with the sessions"
+    timestamptz trusted_at "NULL together with trusted_until"
+    timestamptz trusted_until "trusted-browser window, evaluated against the clock"
+    timestamptz removed_at "terminal, never trusted"
+  }
+  ID_APPLICATION_SESSIONS {
+    uuid application_session_id PK
+    uuid account_id FK "unique with application_session_id (target of the audit composite FK)"
+    text keycloak_session_id UK "the sid claim, a protocol reference, unique across accounts, never exposed"
+    uuid account_device_id FK "composite FK with account_id, nullable, set once"
+    timestamptz created_at
+    timestamptz last_seen_at "touched at most once a minute, fillfactor 80"
+    timestamptz revoked_at "terminal, NULL together with revocation_reason"
+    text revocation_reason "SIGN_OUT, REVOKED_BY_USER, SIGN_OUT_EVERYWHERE, KEYCLOAK_ENDED, DEVICE_REMOVED, PASSWORD_CHANGED"
+  }
   ID_CONTENT_ENTRIES ||--o{ ID_ROLES : "display name (name_content_key -> key)"
   ID_ACCOUNTS ||--o{ ID_ACCOUNT_ROLES : "holds (account_id)"
   ID_ROLES ||--o{ ID_ACCOUNT_ROLES : "granted as (role_id)"
@@ -537,6 +563,11 @@ erDiagram
   ID_GEO_COUNTRIES ||--o{ ID_PHONE_CONTACTS : "country of the number (country_code -> iso_alpha2)"
   ID_PHONE_CONTACTS ||--o{ ID_PHONE_VERIFICATION_CHALLENGES : "one per send (phone_contact_id)"
   ID_PHONE_CONTACTS |o--o{ ID_ACCOUNT_AUDIT_EVENTS : "PHONE_* actions only (account_id, phone_contact_id)"
+  ID_ACCOUNTS ||--o{ ID_ACCOUNT_DEVICES : "browsers (account_id)"
+  ID_ACCOUNTS ||--o{ ID_APPLICATION_SESSIONS : "sessions the API has seen (account_id)"
+  ID_ACCOUNT_DEVICES |o--o{ ID_APPLICATION_SESSIONS : "browser of a session (account_id, account_device_id), optional, set once"
+  ID_APPLICATION_SESSIONS |o--o{ ID_ACCOUNT_AUDIT_EVENTS : "SESSION_* actions only (account_id, application_session_id)"
+  ID_ACCOUNT_DEVICES |o--o{ ID_ACCOUNT_AUDIT_EVENTS : "DEVICE_* actions only (account_id, account_device_id)"
 ```
 
 **Account versus external identity.** `ID_ACCOUNTS` carries no Keycloak subject. `ID_EXTERNAL_IDENTITIES` maps `(provider_type, issuer, provider_subject)`, one unique key marked `UK` on the three columns in the diagram, to an account: one login links at most one account, an account may have several links (no unique key on `account_id`). No Keycloak table is referenced, and nothing of credentials, MFA or sessions is mirrored.
@@ -550,3 +581,5 @@ erDiagram
 **Email contacts and verification (ID-002).** The chain is `ID_ACCOUNTS` to `ID_EMAIL_CONTACTS` to `ID_EMAIL_VERIFICATION_CHALLENGES`, and the audit rows point at the contact: an account has zero or more contact rows (the primary, at most one open candidate and the `DISABLED` history), a contact has zero or more challenges (one per send, at most one of them open at a time), and an audit row names at most one contact. The audit relationship is a COMPOSITE foreign key `(account_id, email_contact_id)` to `email_contacts (account_id, email_contact_id)` (target: the unique constraint `uq_email_contacts__account_contact`, a superset of the primary key; MATCH SIMPLE, so it is not checked when `email_contact_id` is NULL), which is why an audit row can only name a contact of the audited account; this is the same device as `fk_accounts__primary_role` above. All three foreign keys are `ON DELETE RESTRICT` and no row is deleted. What a diagram cannot show: `ID_EMAIL_CONTACTS.email_normalized` carries no `UK` because its uniqueness is deliberately partial (unique across accounts only while `VERIFIED`, `uq_email_contacts__verified_address`; unique per account while live, `uq_email_contacts__live_address_per_account`; PENDING claims may repeat across accounts), and the per-account rules are partial unique indexes too (one primary, one open candidate). `ID_EMAIL_VERIFICATION_CHALLENGES.magic_token_hash` is a plain unique key (the lookup of a link confirmation); `code_hash` is not unique. `purpose` is a frozen snapshot of the contact status at issuance, not a relationship. `ID_ACCOUNT_AUDIT_EVENTS.email_contact_id` is the second nullable subject key next to `role_id`: it is set exactly for the `EMAIL_*` actions (`ck_account_audit_events__email_contact`), so a row never names both a role and a contact, and `account_id` repeats the contact's account on purpose (the composite key makes the repeated value impossible to get wrong). `ID_ACCOUNTS` has no column that points at a contact: the primary address is the contact row with `is_primary`, so accounts and contacts reference each other in one direction only and no deferred key is needed. The Keycloak email is not an entity here (not copied), no full address and no hash is copied outside these two tables (the audit rows carry the masked form), and nothing references `integration.outbox_events` (email events, aggregate type `identity_account`, point at their aggregate by value).
 
 **Phone contacts and verification (ID-003).** The phone model is a parallel chain, not a shared one: `ID_ACCOUNTS` to `ID_PHONE_CONTACTS` to `ID_PHONE_VERIFICATION_CHALLENGES`, with the audit rows pointing at the contact, exactly as for email, and with ONE extra relationship: `ID_PHONE_CONTACTS.country_code` is a foreign key to `geography.countries (iso_alpha2)` (shown as `ID_GEO_COUNTRIES`, the same table as in the geography diagram; identity -> geography only). The email and phone tables are deliberately separate entities and no `contacts` supertable exists (different canonical form, uniqueness policy, attributes and lifecycle guards; ADR-0030 and the normalization log): a phone number can never be confused with an email address by a foreign key, and the audit table has one precise composite key per channel. The audit relationship is a COMPOSITE foreign key `(account_id, phone_contact_id)` to `phone_contacts (account_id, phone_contact_id)` (target: the unique constraint `uq_phone_contacts__account_contact`; MATCH SIMPLE, so it is not checked when `phone_contact_id` is NULL), so an audit row can only name a contact of the audited account. `ID_ACCOUNT_AUDIT_EVENTS` now has three nullable subject keys (`role_id`, `email_contact_id`, `phone_contact_id`), each set exactly for its own action prefix (`ROLE_*`, `EMAIL_*`, `PHONE_*`), so a row names at most one subject. What a diagram cannot show: `ID_PHONE_CONTACTS.phone_e164` carries no `UK` because a verified number is NOT unique across accounts at the database level; how many accounts may verify one number is the configuration parameter `verification.phone.max_accounts_per_number` (default 1, scoped by country and market), enforced by the service and by the guard trigger (`PHONE_NUMBER_CAP`: advisory lock on the number, a count of the other holders on accounts that are not `CLOSED`, the transaction setting `app.phone_max_accounts`, structural ceiling 5), with only a non-unique partial index `idx_phone_contacts__verified_number` for the count. The per-account rules are partial unique indexes (one primary, one open candidate, one live row per number); pending claims may repeat across accounts. `ID_PHONE_VERIFICATION_CHALLENGES` has no magic token and no unique key on `code_hash`; `purpose` is a frozen snapshot, not a relationship. All foreign keys are `ON DELETE RESTRICT` and no row is deleted. `ID_ACCOUNTS` has no column that points at a contact and no phone or verification column (the verified state is derived into the `contacts` summary of `GET /account/me`), no full number or hash is copied outside the two tables (the audit rows carry the masked form), nothing of the number is stored in or referenced from Keycloak, and nothing references `integration.outbox_events` (phone events, aggregate type `identity_account`, point at their aggregate by value).
+
+**Sessions, devices and the watermark (ID-004).** Two new tables hang off the account: `ID_ACCOUNT_DEVICES` (the browsers of an account) and `ID_APPLICATION_SESSIONS` (the Keycloak sessions the API has seen). A session optionally points at a device through the COMPOSITE foreign key `fk_application_sessions__account_device (account_id, account_device_id)` (target `uq_account_devices__account_device`, MATCH SIMPLE: NULL until the web server attaches the browser after login, never changed afterwards), so a session can only name a browser of its own account; a device has zero or more sessions, a session at most one device. The audit rows point at both by composite keys, exactly as for the email and phone contacts: `fk_account_audit_events__account_session (account_id, application_session_id)` (target `uq_application_sessions__account_session`) for the `SESSION_CREATED`, `SESSION_ENDED` and `SESSION_REVOKED` actions and `fk_account_audit_events__account_device (account_id, account_device_id)` for the three `DEVICE_*` actions; `ck_account_audit_events__session` and `ck_account_audit_events__device` set each column exactly for its prefix (`SESSION\_%` does not match `SESSIONS_REVOKED_ALL`, which names no session). The repeated `account_id` is the one accepted denormalization of ID-004 and the composite keys make it impossible to get wrong. `ID_ACCOUNTS.sessions_not_before` is a plain column, not a relationship: it is the revocation watermark of the account and covers the sessions that have no row yet, so no foreign key can carry it. All foreign keys are `ON DELETE RESTRICT` and no row is deleted. What is deliberately absent: no table of second factors, recovery codes or password state (Keycloak owns them; transitions are observed and written as audit rows), no `security_activity_events` table (the timeline is a read model over `ID_ACCOUNT_AUDIT_EVENTS`), no `trusted_devices` table (trust is the window `trusted_at`/`trusted_until` on `ID_ACCOUNT_DEVICES`), no column that holds a token, a credential, a raw IP address, a raw user agent or a location, and no relationship to a Keycloak table (the `sid` is stored as a value). Security events (aggregate type `identity_account`) point at their aggregate by value, with no foreign key to `integration.outbox_events`.

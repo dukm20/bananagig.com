@@ -620,3 +620,198 @@ describe('api client: getAccount carries the phone summary and the derived conta
       });
   });
 });
+
+// ---------------------------------------------------------------- account security (ID-004)
+describe('api client: account security', () => {
+  const SESSION = '5b0c9d3e-7a41-4f68-9c2d-1e8f0a6b4d21';
+  const DEVICE = '2d6f8a10-5c93-4e7b-b4a1-7f3e9c0d5a82';
+  const CALL = { correlationId: () => 'web-corr-12345', accessToken: () => 'tok' };
+  const device = { browser: 'FIREFOX', os: 'LINUX', deviceClass: 'DESKTOP' };
+  const run = async <T>(respond: unknown, call: (c: ReturnType<typeof clientWith>) => Promise<T>, status = 200) => {
+    const f = stubFetch(() => json(status, respond));
+    const out = await call(clientWith(f, CALL));
+    const [rawUrl, init] = f.mock.calls[0]!;
+    const url = String(rawUrl);
+    return { out, url, init: init as RequestInit & { headers: Record<string, string> }, f };
+  };
+  const ok = (data: unknown) => ({ data, meta });
+
+  it('registerSession POSTs the device secret and user agent in the BODY of /account/security/sessions/current with the bearer token and the role', async () => {
+    const secret = 'A'.repeat(43);
+    const { out, url, init } = await run(ok({ sessionId: SESSION, deviceId: DEVICE, deviceTrusted: false, trustedUntil: null }), (c) =>
+      c.registerSession({ device: secret, userAgent: 'UA/1' }, { activeRole: 'CUSTOMER' }),
+    );
+    expect(out).toEqual({ sessionId: SESSION, deviceId: DEVICE, deviceTrusted: false, trustedUntil: null });
+    expect(url).toBe('http://api.test/api/v1/account/security/sessions/current');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({ device: secret, userAgent: 'UA/1' });
+    expect(init.headers).toMatchObject({ authorization: 'Bearer tok', [ACTIVE_ROLE_HEADER]: 'CUSTOMER', [CORRELATION_HEADER]: 'web-corr-12345' });
+    expect(url).not.toContain(secret);
+    expect(JSON.stringify(init.headers)).not.toContain(secret);
+  });
+  it('getSecurityOverview GETs /account/security and validates the contract', async () => {
+    const data = {
+      mfa: { available: true, totpConfigured: true, recoveryCodesConfigured: false },
+      stepUp: { authenticatedAt: '2026-10-16T10:00:00.000Z', mfaSatisfied: false, recentUntil: null },
+      currentSession: { sessionId: SESSION, deviceId: null, deviceTrusted: false, trustedUntil: null },
+      policy: { trustedBrowserDays: 30, stepUpValidMinutes: 15, activityLogDays: 90 },
+    };
+    const { out, url, init } = await run(ok(data), (c) => c.getSecurityOverview({ activeRole: 'PROVIDER' }));
+    expect(out).toEqual(data);
+    expect(url).toBe('http://api.test/api/v1/account/security');
+    expect(init.method).toBe('GET');
+    expect(init.body).toBeUndefined();
+    expect(init.headers[ACTIVE_ROLE_HEADER]).toBe('PROVIDER');
+  });
+  it('listSecuritySessions and listSecurityDevices GET their lists', async () => {
+    const session = {
+      sessionId: SESSION,
+      current: true,
+      status: 'ACTIVE',
+      device,
+      deviceId: DEVICE,
+      createdAt: 'a',
+      lastSeenAt: 'b',
+      trusted: false,
+      trustedUntil: null,
+    };
+    const a = await run(ok({ sessions: [session], reconciled: true }), (c) => c.listSecuritySessions());
+    expect(a.url).toBe('http://api.test/api/v1/account/security/sessions');
+    expect(a.out.sessions[0]!.sessionId).toBe(SESSION);
+    const b = await run(
+      ok({ devices: [{ deviceId: DEVICE, current: true, device, firstSeenAt: 'a', lastSeenAt: 'b', trusted: false, trustedUntil: null }] }),
+      (c) => c.listSecurityDevices(),
+    );
+    expect(b.url).toBe('http://api.test/api/v1/account/security/devices');
+    expect(b.out.devices[0]!.deviceId).toBe(DEVICE);
+  });
+  it('listSecurityActivity sends limit and before as query parameters only when given, and encodes them', async () => {
+    const data = {
+      entries: [{ id: 'e1', type: 'SESSION_CREATED', occurredAt: 't', outcome: 'SUCCESS', labelContentKey: 'k', sessionId: null, device: null }],
+      nextBefore: null,
+    };
+    expect((await run(ok(data), (c) => c.listSecurityActivity())).url).toBe('http://api.test/api/v1/account/security/activity');
+    const q = await run(ok(data), (c) => c.listSecurityActivity({ limit: 10, before: '2026-10-16T10:00:00.000Z&x=1' }));
+    expect(new URL(q.url).searchParams.get('limit')).toBe('10');
+    expect(new URL(q.url).searchParams.get('before')).toBe('2026-10-16T10:00:00.000Z&x=1');
+    expect(new URL(q.url).searchParams.has('x')).toBe(false);
+  });
+  it('rejects an activity entry with a type the contract does not know', async () => {
+    const bad = {
+      entries: [{ id: 'e1', type: 'SOMETHING_ELSE', occurredAt: 't', outcome: 'SUCCESS', labelContentKey: 'k', sessionId: null, device: null }],
+      nextBefore: null,
+    };
+    await expect(run(ok(bad), (c) => c.listSecurityActivity())).rejects.toMatchObject({ code: 'UNEXPECTED_RESPONSE' });
+  });
+  it('revokeSecuritySession DELETEs the session path with no body and encodes the id', async () => {
+    const { out, url, init } = await run(ok({ sessionId: SESSION, changed: true, current: false, keycloak: 'ENDED' }), (c) => c.revokeSecuritySession(SESSION));
+    expect(out).toMatchObject({ changed: true, current: false, keycloak: 'ENDED' });
+    expect(url).toBe(`http://api.test/api/v1/account/security/sessions/${SESSION}`);
+    expect(init.method).toBe('DELETE');
+    expect(init.body).toBeUndefined();
+    expect(init.headers['content-type']).toBeUndefined();
+    const evil = await run(ok({ sessionId: 'x', changed: true, current: false, keycloak: 'ENDED' }), (c) => c.revokeSecuritySession('../devices/x?y=1#z'));
+    expect(evil.url).toBe('http://api.test/api/v1/account/security/sessions/..%2Fdevices%2Fx%3Fy%3D1%23z');
+  });
+  it('revokeAllSecuritySessions POSTs includeCurrent and returns the count', async () => {
+    const { out, url, init } = await run(ok({ revokedCount: 2, keycloak: 'UNAVAILABLE' }), (c) => c.revokeAllSecuritySessions({ includeCurrent: false }));
+    expect(out).toEqual({ revokedCount: 2, keycloak: 'UNAVAILABLE' });
+    expect(url).toBe('http://api.test/api/v1/account/security/sessions/revoke-all');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({ includeCurrent: false });
+  });
+  it('signOutCurrentSession POSTs an empty object to the sign-out path', async () => {
+    const { out, url, init } = await run(ok({ changed: true, keycloak: 'NOT_NEEDED' }), (c) => c.signOutCurrentSession());
+    expect(out).toEqual({ changed: true, keycloak: 'NOT_NEEDED' });
+    expect(url).toBe('http://api.test/api/v1/account/security/sessions/current/sign-out');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({});
+  });
+  it('trustCurrentDevice POSTs and untrustCurrentDevice DELETEs the same path', async () => {
+    const trust = await run(ok({ deviceId: DEVICE, trusted: true, trustedUntil: '2026-11-15T10:00:00.000Z' }), (c) => c.trustCurrentDevice());
+    expect(trust.url).toBe('http://api.test/api/v1/account/security/devices/current/trust');
+    expect(trust.init.method).toBe('POST');
+    expect(trust.out.trusted).toBe(true);
+    const untrust = await run(ok({ deviceId: DEVICE, trusted: false, trustedUntil: null }), (c) => c.untrustCurrentDevice());
+    expect(untrust.url).toBe('http://api.test/api/v1/account/security/devices/current/trust');
+    expect(untrust.init.method).toBe('DELETE');
+    expect(untrust.init.body).toBeUndefined();
+    expect(untrust.out.trusted).toBe(false);
+  });
+  it('removeSecurityDevice DELETEs the device path', async () => {
+    const { out, url, init } = await run(ok({ deviceId: DEVICE, changed: true, sessionsRevoked: 1, keycloak: 'ENDED' }), (c) => c.removeSecurityDevice(DEVICE));
+    expect(out).toMatchObject({ sessionsRevoked: 1 });
+    expect(url).toBe(`http://api.test/api/v1/account/security/devices/${DEVICE}`);
+    expect(init.method).toBe('DELETE');
+  });
+  it('startMfaEnrollment POSTs the method and returns the Keycloak action name (nothing secret)', async () => {
+    const { out, url, init } = await run(ok({ method: 'TOTP', keycloakAction: 'CONFIGURE_TOTP' }), (c) => c.startMfaEnrollment('TOTP'));
+    expect(out).toEqual({ method: 'TOTP', keycloakAction: 'CONFIGURE_TOTP' });
+    expect(url).toBe('http://api.test/api/v1/account/security/mfa/enrollment');
+    expect(JSON.parse(init.body as string)).toEqual({ method: 'TOTP' });
+  });
+  it('requestPasswordReset POSTs the address in the body of the PUBLIC path, forwards the client address and sends no role', async () => {
+    const f = stubFetch(() => json(202, ok({ accepted: true })));
+    const out = await createApiClient({ baseUrl: 'http://api.test/', fetch: f as unknown as typeof fetch }).requestPasswordReset('leak.marker@example.test', {
+      clientIp: '203.0.113.9',
+    });
+    expect(out).toEqual({ accepted: true });
+    const [url, init] = f.mock.calls[0]!;
+    expect(url).toBe('http://api.test/api/v1/auth/password-reset');
+    const headers = (init as RequestInit).headers as Record<string, string>;
+    expect((init as RequestInit).method).toBe('POST');
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({ email: 'leak.marker@example.test' });
+    expect(headers['x-forwarded-for']).toBe('203.0.113.9');
+    expect(headers.authorization).toBeUndefined();
+    expect(String(url)).not.toContain('leak.marker');
+  });
+  it('requires the exact accepted body: anything else from the API is a contract fault', async () => {
+    for (const body of [ok({ accepted: false }), ok({}), { data: { accepted: true } }]) {
+      await expect(run(body, (c) => c.requestPasswordReset('a@example.test'), 202)).rejects.toMatchObject({ code: 'UNEXPECTED_RESPONSE' });
+    }
+  });
+  it('maps the guard and domain errors to ApiError with status, code and details', async () => {
+    const stepUp = errorBody('STEP_UP_REQUIRED', 'AUTHENTICATION', { requirement: 'MFA', maxAgeSeconds: 900, acrValues: 'bananagig:mfa' });
+    await expect(run(stepUp, (c) => c.trustCurrentDevice(), 401)).rejects.toMatchObject({
+      status: 401,
+      code: 'STEP_UP_REQUIRED',
+      details: { requirement: 'MFA', maxAgeSeconds: 900 },
+    });
+    await expect(run(errorBody('SESSION_REVOKED', 'AUTHENTICATION'), (c) => c.getSecurityOverview(), 401)).rejects.toMatchObject({
+      status: 401,
+      code: 'SESSION_REVOKED',
+    });
+    await expect(run(errorBody('ACCOUNT_DEVICE_REQUIRED', 'CONFLICT'), (c) => c.trustCurrentDevice(), 409)).rejects.toMatchObject({
+      status: 409,
+      code: 'ACCOUNT_DEVICE_REQUIRED',
+    });
+    await expect(
+      run(errorBody('ACCOUNT_PASSWORD_RESET_RATE_LIMITED', 'RATE_LIMIT'), (c) => c.requestPasswordReset('a@example.test'), 429),
+    ).rejects.toMatchObject({
+      status: 429,
+      code: 'ACCOUNT_PASSWORD_RESET_RATE_LIMITED',
+    });
+  });
+  it('every method reports an unreachable API as API_UNREACHABLE without leaking the request', async () => {
+    const f = vi.fn(async () => {
+      throw new Error('connect ECONNREFUSED');
+    });
+    const client = clientWith(f as unknown as ReturnType<typeof stubFetch>, CALL);
+    for (const call of [
+      () => client.getSecurityOverview(),
+      () => client.listSecuritySessions(),
+      () => client.listSecurityDevices(),
+      () => client.listSecurityActivity(),
+      () => client.registerSession({ device: 'A'.repeat(43) }),
+      () => client.revokeSecuritySession(SESSION),
+      () => client.revokeAllSecuritySessions(),
+      () => client.signOutCurrentSession(),
+      () => client.trustCurrentDevice(),
+      () => client.untrustCurrentDevice(),
+      () => client.removeSecurityDevice(DEVICE),
+      () => client.startMfaEnrollment('TOTP'),
+      () => client.requestPasswordReset('a@example.test'),
+    ])
+      await expect(call()).rejects.toMatchObject({ status: 0, code: 'API_UNREACHABLE' });
+  });
+});

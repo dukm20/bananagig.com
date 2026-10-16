@@ -318,6 +318,7 @@ describe('account API: account creation and identity mapping', () => {
       'closed_at',
       'created_at',
       'primary_role_id',
+      'sessions_not_before',
       'status',
       'updated_at',
     ]);

@@ -16,6 +16,7 @@ Build web UI and the server-side API client without breaking the workspace bound
 - `apps/web/src/lib/api-client.ts`, `apps/web/src/lib/server.ts`, `apps/web/src/instrumentation.ts`, `apps/web/src/lib/auth/handlers.ts`, `apps/web/src/lib/auth/runtime.ts`, `apps/web/src/app/session/page.tsx`, `apps/web/src/app/auth/active-role/route.ts`, `apps/web/src/testing/account-stub.ts`
 - `apps/web/next.config.ts`, `apps/web/src/web.test.tsx`
 - `Dockerfile` (target `runtime-web`)
+- ID-004: `apps/web/src/lib/auth/{device,security-handlers}.ts`, `apps/web/src/app/{security,forgot-password}/page.tsx`, `apps/web/src/app/auth/{security/[action],password-reset,revoked}/route.ts`, `apps/web/src/security-handlers.test.ts`, `apps/web/src/security.test.tsx`
 
 ## Architecture rules
 
@@ -27,6 +28,10 @@ Build web UI and the server-side API client without breaking the workspace bound
 - The application role a signed-in person acts as (ID-001, ADR-0026) is session state on the SERVER: `SessionRecord.activeRole` in the Valkey session record, never a cookie, a URL or browser storage. The switch is the BFF route `POST /auth/active-role` (`handleActiveRole`): POST only, `Origin` must equal the web origin (like logout), the role is a form field, the server calls the API's `POST /api/v1/account/active-role` with the session token and stores the role only when the API confirms it, then answers 303 to `/session` (a refusal redirects to `/session?error=role` and changes nothing). Every server-side account read sends the remembered role as `x-active-role`; the API validates it on every request, so the stored role is a hint, not authority. A remembered role the API refuses (`ACCOUNT_ROLE_NOT_HELD`, `ACCOUNT_ROLE_NOT_ACTIVE`) is forgotten. Switching role never touches the Keycloak session or any token.
 - The `/session` page (infrastructure, no account screens yet) shows the account id, status, application roles and active role and a switch for each other held role; labels, status names and role names are managed content keys (`session.account.*`, `account.status.*`, `identity.role.*.name`), omitted when the registry cannot serve them, and `session.account.unavailable` shows when the account could not be loaded. The web app reaches the account only through `getAccount`, `setActiveRole` and `updateProfile` of the API client; it never imports `@bananagig/accounts`.
 - Keep the accessibility baseline: skip link, landmarks, `role=status/alert`, focus styles.
+- Security actions (ID-004, `docs/engineering/SESSIONS_AND_MFA.md`): the `/security` page (server component, `force-dynamic`, copy only from the registry) posts no-JS forms to `POST /auth/security/<revoke-session|revoke-all|trust-device|untrust-device|remove-device|mfa-enroll>` (`handleSecurityAction`): POST only, `Origin` = web origin, session required, EXACTLY the action's fields (an unknown or repeated field or a value outside its closed set is a 400), every result a 303 back to `/security?notice=<word>` or `?error=<API code>`, never a submitted value in a redirect, cookie or log. The page maps only known words to registry keys; an unknown error word shows the generic "unavailable" copy, and a "factor set up" notice is shown only when the overview proves a factor exists.
+- A `401 STEP_UP_REQUIRED` becomes ONE login round trip (`/auth/login?returnTo=/security&stepUp=recent|mfa`); coming back does not repeat the action. `handleLogin` accepts only closed-list `stepUp` / `kcAction`, records the step-up in the login transaction and the callback verifies the VERIFIED token reached it (no second trip; the page gets `error=step_up_required`). `kcAction` is honoured only when `takeEnrollment(sessionId)` returns the one-shot marker `mfa-enroll` stored after the API accepted the request; it forces `prompt=login`. The callback appends the whitelisted `kc_action_status` to the return URL.
+- A `401 SESSION_REVOKED` ends the session: `endRevokedSession` deletes the Valkey session, clears the cookie and goes through Keycloak's end-session endpoint to `/session?error=session_revoked` (the URI is registered in the realm); a PAGE cannot clear a cookie while rendering, so it redirects to `GET /auth/revoked`, which asks the API again with the session's own token and ends the session only if the API confirms. Logout first tells the API (best effort, 2 s). Token refresh is single-flight per session id (`getSession`), because the realm rotates refresh tokens and tolerates one reuse; it is per process (DEBT-0069).
+- The device cookie (`bg_device` / `__Host-bg_device`, HttpOnly, SameSite=Lax, 400 days, 43 base64url chars from `randomToken(32)`) is minted and renewed at login (`ensureDeviceSecret`), sent to the API ONCE in a request body (`registerSession`, best effort 2 s) and never stored in Valkey, a URL, a redirect or a log; when the API answers `deviceId: null` for a secret that was not minted in this request (a removed browser), mint a new one and register once more; removing the current browser clears the cookie. The public password-reset handler forwards the last `x-forwarded-for` entry and always shows the same registry text for an accepted request.
 
 ## Implementation pattern
 
@@ -79,11 +84,11 @@ The web app has no database access and no data-model impact. Needing data means 
 - Do not render tokens, put them in URLs, or build GET endpoints that change state (logout and the role switch are POST with an Origin check).
 - Do not store the active role in a cookie, URL or browser storage, trust it without the API validating it, import `@bananagig/accounts`, or treat the Keycloak realm roles of the session as application roles.
 - Do not put a one-time code or token in a query string, a redirect URL, a cookie or a log line, and do not let a GET request change state.
+- Do not put the device secret, a session id of Keycloak, an access token or a submitted value in a URL, redirect, cookie value (other than the device cookie itself), Valkey record or log; do not claim in copy that a trusted browser skips a verification code.
+- Do not honour a `kc_action` without the enrollment marker, trust an `acr_values` the browser sent, or start a second step-up round trip from the callback.
 
 ## Related ADRs
-
-ADR-0006, ADR-0007, ADR-0014, ADR-0026, ADR-0033
+ADR-0006, ADR-0007, ADR-0014, ADR-0026, ADR-0033, ADR-0034, ADR-0036
 
 ## Last reviewed
-
-2026-10-08 (ID-003)
+2026-10-16 (ID-004)

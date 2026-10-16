@@ -823,6 +823,13 @@ describe('account API error mapping', () => {
     PHONE_RISK_UNAVAILABLE: [503, 'DEPENDENCY'],
     PHONE_DELIVERY_FAILED: [503, 'DEPENDENCY'],
     PHONE_RATE_LIMITED: [429, 'RATE_LIMIT'],
+    // ID-004 (the HTTP behaviour of these is covered by security.test.ts; they are mapped here too so the table stays exhaustive)
+    SESSION_NOT_FOUND: [404, 'NOT_FOUND'],
+    DEVICE_NOT_FOUND: [404, 'NOT_FOUND'],
+    DEVICE_REQUIRED: [409, 'CONFLICT'],
+    SECURITY_UNAVAILABLE: [503, 'DEPENDENCY'],
+    PASSWORD_RESET_RATE_LIMITED: [429, 'RATE_LIMIT'],
+    SESSION_REVOKED: [401, 'AUTHENTICATION'],
   };
   it('covers every AccountError code', () => {
     expect(Object.keys(expected).sort()).toEqual([...ACCOUNT_ERROR_CODES].sort());
@@ -853,7 +860,7 @@ describe('account API error mapping', () => {
     const [status, category] = expected[code];
     const check = (r: { statusCode: number; body: string; json: () => unknown }, where: string) => {
       expect(r.statusCode, where).toBe(status);
-      expect(errorOf(r), where).toMatchObject({ category, code: `ACCOUNT_${code}` });
+      expect(errorOf(r), where).toMatchObject({ category, code: code === 'SESSION_REVOKED' ? code : `ACCOUNT_${code}` });
       expect(errorOf(r).correlationId, where).toBeTruthy();
       for (const leak of LEAKS) expect(r.body, `${where} leaks ${leak}`).not.toContain(leak);
       if (code === 'UNAVAILABLE') {
@@ -870,6 +877,13 @@ describe('account API error mapping', () => {
       } else if (code === 'PHONE_DELIVERY_FAILED') {
         expect(errorOf(r).message, where).toBe('The verification text could not be sent');
         expect(errorOf(r).details, where).toEqual({ retryable: false, messageKey: 'account.phone.error.delivery_failed' });
+      } else if (
+        ['SESSION_NOT_FOUND', 'DEVICE_NOT_FOUND', 'DEVICE_REQUIRED', 'SECURITY_UNAVAILABLE', 'PASSWORD_RESET_RATE_LIMITED', 'SESSION_REVOKED'].includes(code)
+      ) {
+        // the security codes (ID-004) use fixed messages and carry the managed message key only: no service text, no ids, no other details
+        expect(errorOf(r).message, where).not.toContain('happened');
+        expect(Object.keys(errorOf(r).details ?? {}), where).toContain('messageKey');
+        expect(JSON.stringify(errorOf(r).details), where).not.toContain('SOME_REASON');
       } else {
         expect(errorOf(r).message, where).toBe(`${code} happened`);
         // the email codes (except the issue-based EMAIL_INVALID) also carry the key of their managed message

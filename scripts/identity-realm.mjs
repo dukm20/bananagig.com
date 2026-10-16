@@ -1,8 +1,9 @@
 // pnpm identity:check              lint infra/keycloak/bananagig-realm.json against the identity policy
 // pnpm identity:build-prod -- --web-url https://app.example.com --admin-url https://admin.example.com [--out realm.json]
-//                                  build a production realm (dev-only clients/users removed, admin OTP required) and lint it
+//                                  build a production realm (dev-only clients/users removed, admin OTP required, service-account users kept,
+//                                  dev secret and dev SMTP server stripped) and lint it
 import { readFileSync, writeFileSync } from 'node:fs';
-import { buildProductionRealm, lintRealm } from './lib/realm.mjs';
+import { buildProductionRealm, lintRealm, SMTP_NOTICE } from './lib/realm.mjs';
 
 const arg = (k) =>
   process.argv
@@ -25,13 +26,15 @@ if (process.argv.includes('--build-prod')) {
   }
   const problems = lintRealm(realm, { production: true });
   if (problems.length) fail(problems);
+  console.error(`notice: ${SMTP_NOTICE}`);
   const out = arg('out');
   if (out) {
     writeFileSync(out, `${JSON.stringify(realm, null, 2)}\n`);
-    console.log(`production realm written to ${out} (${realm.clients.length} clients, ${realm.users.length} users)`);
+    console.log(`production realm written to ${out} (${realm.clients.length} clients, ${realm.users.length} service-account users)`);
   } else console.log(JSON.stringify(realm, null, 2));
 } else {
   const problems = lintRealm(dev);
   if (problems.length) fail(problems);
-  console.log(`identity realm policy: OK (${dev.clients.length} clients, ${dev.users.length} dev users)`);
+  const service = dev.users.filter((u) => u.serviceAccountClientId).length;
+  console.log(`identity realm policy: OK (${dev.clients.length} clients, ${dev.users.length - service} dev users, ${service} service-account users)`);
 }

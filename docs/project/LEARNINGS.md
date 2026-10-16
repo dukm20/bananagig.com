@@ -1034,3 +1034,103 @@ When an unchanged integration file fails on a time comparison, check the host an
 
 ### Evidence
 `apps/worker/src/outbox.itest.ts` (host `Date.now()` against `next_attempt_at`); host 1792173169 against container 1792173140 on 2026-10-16, equal again seconds later.
+
+## LRN-0042 — Keycloak ignores acr_values for a user without a factor and the browser can drop any authorization parameter, so the second factor must be enforced by the flow and the app must read the acr claim
+
+Date: 2026-10-16
+Checkpoint: ID-004
+Domain: identity / security
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0036
+Related skill: skills/identity/SKILL.md
+
+### Context
+The web client's browser flow had no second-factor step, and DEBT-0018 assumed a feature that needs step-up would request `acr_values=bananagig:mfa`. The ID-004 lab (Keycloak 26.3.5) tried the obvious designs against a real realm.
+
+### Learning
+A level-of-authentication condition in the flow is false when the request asks for no level, so a login without `acr_values` never meets the OTP step; `acr_values` is ignored (no error, no forced enrolment) for a user who has no factor, and an essential `claims` acr is not enforced for such a user either (a token with `acr=bananagig:password` is issued); and the browser carries every authorization parameter, so it can drop or change them. The requirement therefore cannot live in the request. Make it intrinsic to the flow: a dedicated flow bound to the client, with the OTP step conditional on "user has a factor", and the client attribute `minimum.acr.value=bananagig:mfa`, which makes level 2 the floor for every request whatever the URL says. Then read the `acr` and `auth_time` of the VERIFIED token in the API (`requireMfa()`, `requireRecentAuthentication()`) and have the web callback check the token, not the URL, before it believes a step-up happened. Costs found on the way: a password-only user's SSO cookie is below the floor, so every new authorization request asks the password again (do not gate the password form by level: it fails with "Invalid username or password" on SSO re-entry), and the factors must be flat siblings (nesting them under the user-configured condition breaks every login).
+
+### Why it matters
+A design that "requests MFA" from the browser looks correct in a happy-path test with a user who has a factor and silently lets the same user skip it by dropping one query parameter; and a guard that trusts what the URL asked for is bypassed the same way.
+
+### Reuse rule
+Never enforce an authentication requirement from `acr_values`, `max_age` or `claims` sent through the browser. Put the floor in the flow (client attribute plus a bound flow), read the claims of the verified token on the server, and keep the web callback from looping by recording the step-up in the login transaction. Change the flow only with the lab scripts or the live tests at hand.
+
+### Evidence
+`infra/keycloak/bananagig-realm.json` (flow `bananagig-browser`, `minimum.acr.value`), `scripts/lib/realm.mjs` (`lintWebSecurity`), `apps/api/src/plugins/step-up.ts`, `apps/web/src/lib/auth/handlers.ts` (`handleCallback`, `stepUpReached`), `packages/identity/src/keycloak-security.itest.ts` ("second factor floor and recovery codes (live)").
+
+## LRN-0043 — A partial requiredActions list in a realm import replaces Keycloak's defaults, an undeclared built-in client is created enabled, and any client can start kc_action=delete_credential
+
+Date: 2026-10-16
+Checkpoint: ID-004
+Domain: identity / security
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0036
+Related skill: skills/identity/SKILL.md
+
+### Context
+ID-004 moved account security into BananaGig (step-up, audit, session registry). Keycloak, however, ships a self-service surface of its own, and the realm file only declared the parts BananaGig used.
+
+### Learning
+Declaring `requiredActions` in a realm file REPLACES Keycloak's default list, and omitting it leaves `delete_credential` enabled: any client, including `bananagig-web`, can then send a signed-in user to `kc_action=delete_credential` and remove their second factor with no step-up, no audit and no registry entry. The built-in `account` and `account-console` clients are created ENABLED by the import unless the file declares them with `enabled: false`, which opens an account console where a user manages credentials and sessions outside BananaGig. So the file must declare the product actions explicitly and enabled (`CONFIGURE_TOTP`, `CONFIGURE_RECOVERY_AUTHN_CODES`, `UPDATE_PASSWORD`, the usual ones), declare `delete_credential`, WebAuthn registration and `idp_link` disabled, declare both built-in clients disabled, and the proxy should refuse the console and the self-service reset path as a second line while leaving the action-token path of the reset email open.
+
+### Why it matters
+Nothing fails when the surface is open: the realm imports, the app works and the tests of the happy path pass. The hole is only visible to someone who looks for it, and a later partial `requiredActions` edit can silently drop the product actions.
+
+### Reuse rule
+Lint the realm file for every Keycloak surface BananaGig replaces (the linter rules and their negative tests), declare things explicitly rather than rely on defaults, and re-enable a disabled action only together with the feature that uses it (WebAuthn: DEBT-0018).
+
+### Evidence
+`scripts/lib/realm.mjs` (`lintBuiltInSurface`, `REQUIRED_ACTIONS_ENABLED`, `REQUIRED_ACTIONS_DISABLED`), `scripts/identity-realm.test.mjs` ("built-in account surface"), `infra/caddy/Caddyfile` (`@blocked`), `packages/identity/src/keycloak-security.itest.ts` ("built-in account surface is closed (live)").
+
+## LRN-0044 — The generated OpenAPI silently lacked routes whose service the generator never received, and spec:check could not notice
+
+Date: 2026-10-16
+Checkpoint: ID-004
+Domain: api / governance
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/api/SKILL.md
+
+### Context
+While regenerating the specs for ID-004 it turned out that `docs/api/openapi.yaml` did not document the ID-003 phone routes. Each optional service of `AppDeps` enables a route module, and `scripts/generate-specs.mjs` builds the app without a database, so it must pass a stand-in for every service; it never passed the phone service.
+
+### Learning
+`pnpm specs:check` compares the committed file with what the generator produces. If the generator omits a module, both files are equally incomplete and the check passes, so a missing module is invisible to every gate. Guard the generator itself: `apps/api/src/spec-completeness.test.ts` parses the `AppDeps` interface and the keys the generator passes to `buildApp` and fails when a property is not passed, and asserts that the committed spec contains a path of each route module.
+
+### Why it matters
+The spec is the contract clients and reviewers read; an undocumented route is not linted, not diffed and not discoverable, and it happened to a whole feature for a checkpoint.
+
+### Reuse rule
+When a check compares generated output with a committed copy, also check that the generator is complete. When you add an optional service to `AppDeps`, pass it in `scripts/generate-specs.mjs` and add its module to the spec-completeness test.
+
+### Evidence
+`apps/api/src/spec-completeness.test.ts`, `scripts/generate-specs.mjs`, `apps/api/src/app.ts` (`AppDeps`).
+
+## LRN-0045 — A per-sid upsert next to a bulk revoke needs the account row locked FOR SHARE by the creator and FOR UPDATE by the bulk operation
+
+Date: 2026-10-16
+Checkpoint: ID-004
+Domain: database / identity
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0034
+Related skill: skills/database/SKILL.md
+
+### Context
+"Sign out everywhere" must also stop a Keycloak session the API has never seen (the person signed in elsewhere and has not made a request yet). Such a session has no row to revoke. The registry creates a row on first sight (`INSERT ... ON CONFLICT (keycloak_session_id) DO NOTHING`), so a first sight racing a revoke-all could create a live row just after the revoke-all looked.
+
+### Learning
+Give the bulk operation a watermark on the owner row (`identity.accounts.sessions_not_before`) and serialize the two through that row: the creator reads the watermark under `SELECT ... FROM identity.accounts WHERE account_id = $1 FOR SHARE` and refuses a session whose `auth_time` predates it; revoke-all takes the same row `FOR UPDATE`, revokes the existing rows and raises the watermark. Either the new row exists when revoke-all runs (and is revoked) or the creator reads the raised watermark; no interleaving escapes. Two concurrent first sights of one `sid` create ONE row (the conflict loser reads the winner), a `sid` that belongs to another account is treated as revoked, and the watermark applies only to first sight (a session with a row is governed by its own `revoked_at`, so a later login works). `auth_time` has whole-second resolution and comes from another clock, hence a 2-second tolerance. Prove it with two real transactions in both orders, not with sequential calls.
+
+### Why it matters
+Sequential tests pass either way. Without the lock the bug is a sub-second window that lets a session survive a "sign out everywhere", which is exactly the case the feature exists for.
+
+### Reuse rule
+When rows can be created by requests while a bulk operation must cover rows that do not exist yet, use a watermark on the owner row plus FOR SHARE for the creator and FOR UPDATE for the bulk operation, a conflict-safe insert, and a race test in both orders.
+
+### Evidence
+`packages/accounts/src/security-service.ts` (`firstSight`, `revokeAllSessions`), `db/migrations/0012_application_sessions.sql` (the watermark guard), `packages/testing/src/security-model.itest.ts` (section H, "the account row serializes first sight (FOR SHARE) with revoke-all (FOR UPDATE)").

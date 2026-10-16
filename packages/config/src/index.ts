@@ -38,6 +38,13 @@ const raw = z.object({
   KEYCLOAK_API_AUDIENCE: z.string().min(1).default('bananagig-api'),
   KEYCLOAK_WEB_CLIENT_ID: z.string().min(1).default('bananagig-web'),
   KEYCLOAK_ADMIN_CLIENT_ID: z.string().min(1).default('bananagig-admin'),
+  /**
+   * The Keycloak service-account client the API uses to ASK Keycloak about a user's second factor and sessions, to end sessions and to send the reset-password
+   * email (ID-004, admin REST API, client credentials). The secret is a deployment secret: never in the database or git (the checked-in value is a development
+   * placeholder, refused in production).
+   */
+  KEYCLOAK_SECURITY_CLIENT_ID: z.string().min(1).default('bananagig-security'),
+  KEYCLOAK_SECURITY_CLIENT_SECRET: z.string().min(32).max(256).optional(),
   WEB_PUBLIC_URL: url.optional(),
   API_INTERNAL_URL: url.optional(),
   WORKER_ID: z.string().optional(),
@@ -98,6 +105,7 @@ const DEV_DEFAULTS = {
   WEB_PUBLIC_URL: 'http://app.localhost:8080',
   API_INTERNAL_URL: 'http://localhost:3211',
   VERIFICATION_HASH_SECRET: 'bananagig-dev-only-verification-hash-key-0001',
+  KEYCLOAK_SECURITY_CLIENT_SECRET: 'bananagig_security_dev_only_secret_0001',
 } as const;
 
 export interface AppConfig {
@@ -130,6 +138,11 @@ export interface AppConfig {
     /** Minimum seconds between two updates of external_identities.last_seen_at (0 = every request). */
     lastSeenTouchSeconds: number;
   };
+  /**
+   * The Keycloak admin REST client of the account security layer (ID-004). `baseUrl` is the internal back-channel URL (`KEYCLOAK_URL`); the secret never reaches a
+   * log (redactConfig masks it).
+   */
+  keycloakAdmin: { baseUrl: string; realm: string; clientId: string; clientSecret: string };
   sms: { transport: 'fake' | 'disabled' };
   phoneIntelligence: 'fake' | 'unknown';
   /** Exact number of trusted reverse proxies in front of the API (0 = trust no forwarding header). */
@@ -158,7 +171,15 @@ type DevKey = keyof typeof DEV_DEFAULTS;
 /** Settings that must be explicit in production for each process role. Others are optional there. */
 const ROLE_REQUIRED: Record<Role, DevKey[]> = {
   web: ['API_INTERNAL_URL', 'OTEL_EXPORTER_OTLP_ENDPOINT', 'KEYCLOAK_URL', 'KEYCLOAK_PUBLIC_URL', 'WEB_PUBLIC_URL', 'VALKEY_URL'],
-  api: ['DATABASE_URL', 'OTEL_EXPORTER_OTLP_ENDPOINT', 'KEYCLOAK_URL', 'KEYCLOAK_PUBLIC_URL', 'WEB_PUBLIC_URL', 'VERIFICATION_HASH_SECRET'],
+  api: [
+    'DATABASE_URL',
+    'OTEL_EXPORTER_OTLP_ENDPOINT',
+    'KEYCLOAK_URL',
+    'KEYCLOAK_PUBLIC_URL',
+    'WEB_PUBLIC_URL',
+    'VERIFICATION_HASH_SECRET',
+    'KEYCLOAK_SECURITY_CLIENT_SECRET',
+  ],
   worker: ['DATABASE_URL', 'NATS_URL', 'OTEL_EXPORTER_OTLP_ENDPOINT'],
   tool: [],
 };
@@ -223,6 +244,12 @@ export function loadConfig(opts: LoadOptions): Readonly<AppConfig> {
         lastSeenTouchSeconds: e.IDENTITY_LAST_SEEN_TOUCH_SECONDS,
       };
     })(),
+    keycloakAdmin: {
+      baseUrl: need('KEYCLOAK_URL').replace(/\/$/, ''),
+      realm: e.KEYCLOAK_REALM,
+      clientId: e.KEYCLOAK_SECURITY_CLIENT_ID,
+      clientSecret: need('KEYCLOAK_SECURITY_CLIENT_SECRET'),
+    },
     sms: { transport: e.SMS_TRANSPORT ?? (prod ? 'disabled' : 'fake') },
     phoneIntelligence: e.PHONE_INTELLIGENCE ?? (prod ? 'unknown' : 'fake'),
     trustedProxyHops: e.TRUSTED_PROXY_HOPS ?? 1,
@@ -253,6 +280,9 @@ export function loadConfig(opts: LoadOptions): Readonly<AppConfig> {
   // the published development key must never protect real code hashes and rate-limit keys
   if (prod && e.VERIFICATION_HASH_SECRET === DEV_DEFAULTS.VERIFICATION_HASH_SECRET)
     missing.push('VERIFICATION_HASH_SECRET: the development value is not allowed in production');
+  // the published development secret must never authenticate the service account of a real realm
+  if (prod && e.KEYCLOAK_SECURITY_CLIENT_SECRET === DEV_DEFAULTS.KEYCLOAK_SECURITY_CLIENT_SECRET)
+    missing.push('KEYCLOAK_SECURITY_CLIENT_SECRET: the development value is not allowed in production');
   if (missing.length) throw new ConfigError(missing);
   return Object.freeze(cfg);
 }
