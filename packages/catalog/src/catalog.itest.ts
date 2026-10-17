@@ -371,7 +371,7 @@ describe('the seeded taxonomy', () => {
     expect((await one<{ n: number }>('SELECT count(*)::int AS n FROM catalog.market_categories')).n).toBe(0);
     expect((await one<{ n: number }>('SELECT count(*)::int AS n FROM catalog.market_service_types')).n).toBe(0);
     const audit = await q<{ actor: string; action: string; reason: string }>(
-      "SELECT actor, action, reason FROM catalog.audit_events WHERE actor = 'system:migration' ORDER BY action, audit_event_id",
+      "SELECT actor, action, reason FROM catalog.audit_events WHERE actor = 'system:migration' AND action NOT LIKE 'GIG\\_TEMPLATE\\_%' ORDER BY action, audit_event_id",
     );
     expect(audit).toHaveLength(6);
     expect(new Set(audit.map((a) => a.actor))).toEqual(new Set(['system:migration']));
@@ -384,7 +384,9 @@ describe('the seeded taxonomy', () => {
     const m = await mkMarket(true);
     expect(await bare.getMarketCatalog(m)).toMatchObject({ categories: [], serviceTypes: [] });
     const names = await q<{ key: string }>("SELECT key FROM content.entries WHERE key LIKE 'catalog.%' ORDER BY key");
-    expect(names.filter((n) => !n.key.includes('devtest_'))).toHaveLength(12);
+    // 12 taxonomy entries (0015) + 6 Gig Template entries (0016)
+    expect(names.filter((n) => !n.key.includes('devtest_') && !n.key.startsWith('catalog.gig_template.'))).toHaveLength(12);
+    expect(names.filter((n) => n.key.startsWith('catalog.gig_template.'))).toHaveLength(6);
     const view = await bare.getCategory('auto_services');
     expect(view.nameContentKey).toBe('catalog.category.auto_services.name');
     expect(view.descriptionContentKey).toBe('catalog.category.auto_services.description');
@@ -878,7 +880,7 @@ describe('management reads', () => {
       expect(JSON.stringify(e.details)).not.toContain('invalid byte');
     }
     expect(await worldHash()).toBe(world);
-    expect((await one<{ n: number }>("SELECT count(*)::int AS n FROM pg_tables WHERE schemaname = 'catalog'")).n).toBe(6);
+    expect((await one<{ n: number }>("SELECT count(*)::int AS n FROM pg_tables WHERE schemaname = 'catalog'")).n).toBe(12); // 6 taxonomy tables (0015) + 6 Gig Template tables (0016)
   });
 });
 
@@ -2975,8 +2977,9 @@ describe('documented behaviour (not necessarily desired): what retiring and nest
 describe('shape and privacy', () => {
   it('nothing provider-specific exists in the schema: the catalogue tables hold exactly these columns (no price, duration, radius, capacity, availability window, provider)', async () => {
     const cols = await q<{ table_name: string; columns: string[] }>(
-      `SELECT table_name, array_agg(column_name::text COLLATE "C" ORDER BY column_name COLLATE "C") AS columns FROM information_schema.columns WHERE table_schema = 'catalog' GROUP BY table_name ORDER BY table_name`,
+      `SELECT table_name, array_agg(column_name::text COLLATE "C" ORDER BY column_name COLLATE "C") AS columns FROM information_schema.columns WHERE table_schema = 'catalog' AND table_name NOT LIKE '%gig\\_template%' GROUP BY table_name ORDER BY table_name`,
     );
+    // (the Gig Template tables of 0016 are pinned by gig-template-model.itest.ts)
     expect(Object.fromEntries(cols.map((c) => [c.table_name, c.columns]))).toEqual({
       audit_events: [
         'action',
@@ -2984,6 +2987,8 @@ describe('shape and privacy', () => {
         'category_id',
         'changes',
         'correlation_id',
+        'gig_template_id',
+        'gig_template_version_id',
         'market_id',
         'occurred_at',
         'prohibited_service_id',

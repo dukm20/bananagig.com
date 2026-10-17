@@ -5,3 +5,5 @@ export * from './types';
 export * from './cache';
 export * from './service';
 export * from './scope-validator';
+export * from './gig-template-types';
+export * from './gig-template-service';

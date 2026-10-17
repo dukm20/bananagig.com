@@ -3,7 +3,7 @@ asyncapi: 3.0.0
 info:
   title: BananaGig Events
   version: 1.0.0
-  description: Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events, the identity account events, the email verification events, the phone verification events, the account security events (sessions, second factor, password reset) the consent events (acceptance and withdrawal of a legal document version) and the catalogue events (category and service type activation, market availability) exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.
+  description: Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events, the identity account events, the email verification events, the phone verification events, the account security events (sessions, second factor, password reset) the consent events (acceptance and withdrawal of a legal document version) the catalogue events (category and service type activation, market availability) and the Gig Template events (activation, pause, retirement, publication of a version, market availability) exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.
 defaultContentType: application/json
 channels:
   infraPing:
@@ -288,6 +288,36 @@ channels:
     messages:
       CatalogAvailabilityChanged:
         $ref: "#/components/messages/CatalogAvailabilityChanged"
+  gigTemplate_activated:
+    address: bananagig.catalog.gig-template-activated.v1
+    description: A Gig Template became ACTIVE (DRAFT or INACTIVE to ACTIVE). Published through the transactional outbox (aggregate catalog_gig_template); the payload carries codes and ids only, never display text.
+    messages:
+      GigTemplateActivated:
+        $ref: "#/components/messages/GigTemplateActivated"
+  gigTemplate_deactivated:
+    address: bananagig.catalog.gig-template-deactivated.v1
+    description: "An ACTIVE Gig Template was paused (INACTIVE): nothing new is built from it. Retiring emits GigTemplateRetired instead. Published through the transactional outbox (aggregate catalog_gig_template); the payload carries codes and ids only, never display text."
+    messages:
+      GigTemplateDeactivated:
+        $ref: "#/components/messages/GigTemplateDeactivated"
+  gigTemplate_retired:
+    address: bananagig.catalog.gig-template-retired.v1
+    description: "A Gig Template became RETIRED (terminal): its ACTIVE version is closed and no Gig can be built from it; every version stays. Published through the transactional outbox (aggregate catalog_gig_template); the payload carries codes and ids only, never display text."
+    messages:
+      GigTemplateRetired:
+        $ref: "#/components/messages/GigTemplateRetired"
+  gigTemplate_published:
+    address: bananagig.catalog.gig-template-published.v1
+    description: A version of a Gig Template was published (it is now the frozen ACTIVE version; the previous one is SUPERSEDED). The payload carries the exact version id a Gig will reference. Published through the transactional outbox (aggregate catalog_gig_template); the payload carries codes and ids only, never display text.
+    messages:
+      GigTemplatePublished:
+        $ref: "#/components/messages/GigTemplatePublished"
+  gigTemplate_availabilityChanged:
+    address: bananagig.catalog.gig-template-availability-changed.v1
+    description: A Gig Template was offered, withdrawn or reordered in a market (a row of the market availability changed). Published through the transactional outbox (aggregate catalog_market_availability); the payload carries codes and ids only, never display text.
+    messages:
+      GigTemplateAvailabilityChanged:
+        $ref: "#/components/messages/GigTemplateAvailabilityChanged"
 operations:
   receiveInfraPing:
     action: receive
@@ -524,6 +554,31 @@ operations:
     channel:
       $ref: "#/channels/catalog_availabilityChanged"
     summary: A category or a service type was offered, withdrawn or reordered in a market (a row of the market availability changed). Switching a category off in a market also emits one event per service type it switched off.
+  sendGigTemplateActivated:
+    action: send
+    channel:
+      $ref: "#/channels/gigTemplate_activated"
+    summary: A Gig Template became ACTIVE (DRAFT or INACTIVE to ACTIVE).
+  sendGigTemplateDeactivated:
+    action: send
+    channel:
+      $ref: "#/channels/gigTemplate_deactivated"
+    summary: "An ACTIVE Gig Template was paused (INACTIVE): nothing new is built from it. Retiring emits GigTemplateRetired instead."
+  sendGigTemplateRetired:
+    action: send
+    channel:
+      $ref: "#/channels/gigTemplate_retired"
+    summary: "A Gig Template became RETIRED (terminal): its ACTIVE version is closed and no Gig can be built from it; every version stays."
+  sendGigTemplatePublished:
+    action: send
+    channel:
+      $ref: "#/channels/gigTemplate_published"
+    summary: A version of a Gig Template was published (it is now the frozen ACTIVE version; the previous one is SUPERSEDED). The payload carries the exact version id a Gig will reference.
+  sendGigTemplateAvailabilityChanged:
+    action: send
+    channel:
+      $ref: "#/channels/gigTemplate_availabilityChanged"
+    summary: A Gig Template was offered, withdrawn or reordered in a market (a row of the market availability changed).
 components:
   messages:
     EventEnvelope:
@@ -996,6 +1051,56 @@ components:
             type: string
       payload:
         $ref: "#/components/schemas/CatalogAvailabilityChanged"
+    GigTemplateActivated:
+      name: GigTemplateActivated
+      title: A Gig Template became ACTIVE (DRAFT or INACTIVE to ACTIVE).
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/GigTemplateActivated"
+    GigTemplateDeactivated:
+      name: GigTemplateDeactivated
+      title: "An ACTIVE Gig Template was paused (INACTIVE): nothing new is built from it. Retiring emits GigTemplateRetired instead."
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/GigTemplateDeactivated"
+    GigTemplateRetired:
+      name: GigTemplateRetired
+      title: "A Gig Template became RETIRED (terminal): its ACTIVE version is closed and no Gig can be built from it; every version stays."
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/GigTemplateRetired"
+    GigTemplatePublished:
+      name: GigTemplatePublished
+      title: A version of a Gig Template was published (it is now the frozen ACTIVE version; the previous one is SUPERSEDED). The payload carries the exact version id a Gig will reference.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/GigTemplatePublished"
+    GigTemplateAvailabilityChanged:
+      name: GigTemplateAvailabilityChanged
+      title: A Gig Template was offered, withdrawn or reordered in a market (a row of the market availability changed).
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/GigTemplateAvailabilityChanged"
   schemas:
     EventEnvelope:
       type: object
@@ -4677,6 +4782,384 @@ components:
             - marketCode
             - kind
             - code
+            - enabled
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    GigTemplateActivated:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.catalog.gig-template-activated.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            gigTemplateCode:
+              type: string
+              minLength: 2
+              maxLength: 48
+              pattern: ^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$
+            serviceTypeCode:
+              type: string
+              minLength: 2
+              maxLength: 48
+              pattern: ^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$
+          required:
+            - gigTemplateCode
+            - serviceTypeCode
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    GigTemplateDeactivated:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.catalog.gig-template-deactivated.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            gigTemplateCode:
+              type: string
+              minLength: 2
+              maxLength: 48
+              pattern: ^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$
+            serviceTypeCode:
+              type: string
+              minLength: 2
+              maxLength: 48
+              pattern: ^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$
+          required:
+            - gigTemplateCode
+            - serviceTypeCode
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    GigTemplateRetired:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.catalog.gig-template-retired.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            gigTemplateCode:
+              type: string
+              minLength: 2
+              maxLength: 48
+              pattern: ^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$
+            serviceTypeCode:
+              type: string
+              minLength: 2
+              maxLength: 48
+              pattern: ^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$
+          required:
+            - gigTemplateCode
+            - serviceTypeCode
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    GigTemplatePublished:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.catalog.gig-template-published.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            gigTemplateCode:
+              type: string
+              minLength: 2
+              maxLength: 48
+              pattern: ^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$
+            serviceTypeCode:
+              type: string
+              minLength: 2
+              maxLength: 48
+              pattern: ^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$
+            versionNumber:
+              type: integer
+              minimum: 1
+              maximum: 9007199254740991
+            gigTemplateVersionId:
+              type: string
+          required:
+            - gigTemplateCode
+            - serviceTypeCode
+            - versionNumber
+            - gigTemplateVersionId
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    GigTemplateAvailabilityChanged:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.catalog.gig-template-availability-changed.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            marketCode:
+              type: string
+            gigTemplateCode:
+              type: string
+              minLength: 2
+              maxLength: 48
+              pattern: ^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$
+            enabled:
+              type: boolean
+          required:
+            - marketCode
+            - gigTemplateCode
             - enabled
           additionalProperties: false
       required:

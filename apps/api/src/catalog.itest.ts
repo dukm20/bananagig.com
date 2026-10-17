@@ -282,7 +282,7 @@ describe('the seeded taxonomy and access control (real token verification)', () 
     expect((await api('GET', '/prohibited-services', reader)).body.data).toEqual([]);
     for (const m of ['us-sf', 'la-oc', 'devtest-nothing']) expect((await api('GET', `/categories?market=${m}`)).status).toBe(404);
     expect(await count('catalog.market_categories')).toBe(0);
-    expect(await count('catalog.audit_events')).toBe(6);
+    expect(await count('catalog.audit_events')).toBe(8); // 6 taxonomy rows (0015) + 2 GIG_TEMPLATE_CREATED rows (0016)
   });
 
   it('401 without or with a bad token, 403 for a customer, an admin without a catalog role, a read-only admin and foreign registry roles; the database is untouched', async () => {
@@ -1174,7 +1174,7 @@ describe('audit rows and outbox events: one per effective mutation, identifier-o
     }
     // every audit row has exactly one subject, a reason, an actor, and none holds text or tokens
     const rows = await q<{ n: string }>(
-      `SELECT count(*)::text AS n FROM catalog.audit_events WHERE (category_id IS NOT NULL)::int + (service_type_id IS NOT NULL)::int + (prohibited_service_id IS NOT NULL)::int + (market_id IS NOT NULL)::int < 1 OR length(btrim(reason)) = 0`,
+      `SELECT count(*)::text AS n FROM catalog.audit_events WHERE (category_id IS NOT NULL)::int + (service_type_id IS NOT NULL)::int + (prohibited_service_id IS NOT NULL)::int + (market_id IS NOT NULL)::int + (gig_template_id IS NOT NULL)::int < 1 OR length(btrim(reason)) = 0`,
     );
     expect(rows[0]!.n).toBe('0');
   });

@@ -10,6 +10,10 @@ import {
   AccountRolePayload,
   AccountStatusChangedPayload,
   CATALOG_EVENTS,
+  GIG_TEMPLATE_EVENTS,
+  GigTemplateAvailabilityEventPayload,
+  GigTemplateEventPayload,
+  GigTemplatePublishedPayload,
   CatalogAvailabilityEventPayload,
   CategoryEventPayload,
   CONSENT_EVENTS,
@@ -78,6 +82,7 @@ const app = await buildApp({
   consent: {},
   accountArea: {},
   catalog: {},
+  gigTemplates: {},
   readiness: async () => ({}),
 });
 await app.ready();
@@ -327,6 +332,33 @@ const CATALOG_MESSAGES = {
     'catalog_market_availability',
   ],
 };
+const GIG_TEMPLATE_MESSAGES = {
+  activated: ['GigTemplateActivated', 'A Gig Template became ACTIVE (DRAFT or INACTIVE to ACTIVE).', GigTemplateEventPayload, 'catalog_gig_template'],
+  deactivated: [
+    'GigTemplateDeactivated',
+    'An ACTIVE Gig Template was paused (INACTIVE): nothing new is built from it. Retiring emits GigTemplateRetired instead.',
+    GigTemplateEventPayload,
+    'catalog_gig_template',
+  ],
+  retired: [
+    'GigTemplateRetired',
+    'A Gig Template became RETIRED (terminal): its ACTIVE version is closed and no Gig can be built from it; every version stays.',
+    GigTemplateEventPayload,
+    'catalog_gig_template',
+  ],
+  published: [
+    'GigTemplatePublished',
+    'A version of a Gig Template was published (it is now the frozen ACTIVE version; the previous one is SUPERSEDED). The payload carries the exact version id a Gig will reference.',
+    GigTemplatePublishedPayload,
+    'catalog_gig_template',
+  ],
+  availabilityChanged: [
+    'GigTemplateAvailabilityChanged',
+    'A Gig Template was offered, withdrawn or reordered in a market (a row of the market availability changed).',
+    GigTemplateAvailabilityEventPayload,
+    'catalog_market_availability',
+  ],
+};
 const channels = {
   infraPing: {
     address: INFRA_PING_EVENT_TYPE,
@@ -488,13 +520,29 @@ for (const [k, [name, summary, payload, aggregate]] of Object.entries(CATALOG_ME
   };
   schemas[name] = typedEnvelope(type, payload);
 }
+for (const [k, [name, summary, payload, aggregate]] of Object.entries(GIG_TEMPLATE_MESSAGES)) {
+  const type = GIG_TEMPLATE_EVENTS[k];
+  channels[`gigTemplate_${k}`] = {
+    address: type,
+    description: `${summary} Published through the transactional outbox (aggregate ${aggregate}); the payload carries codes and ids only, never display text.`,
+    messages: { [name]: { $ref: `#/components/messages/${name}` } },
+  };
+  operations[`send${name}`] = { action: 'send', channel: { $ref: `#/channels/gigTemplate_${k}` }, summary };
+  messages[name] = {
+    name,
+    title: summary,
+    headers: { type: 'object', properties: { 'x-correlation-id': { type: 'string' } } },
+    payload: { $ref: `#/components/schemas/${name}` },
+  };
+  schemas[name] = typedEnvelope(type, payload);
+}
 const asyncapi = {
   asyncapi: '3.0.0',
   info: {
     title: 'BananaGig Events',
     version: '1.0.0',
     description:
-      'Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events, the identity account events, the email verification events, the phone verification events, the account security events (sessions, second factor, password reset) the consent events (acceptance and withdrawal of a legal document version) and the catalogue events (category and service type activation, market availability) exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.',
+      'Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events, the identity account events, the email verification events, the phone verification events, the account security events (sessions, second factor, password reset) the consent events (acceptance and withdrawal of a legal document version) the catalogue events (category and service type activation, market availability) and the Gig Template events (activation, pause, retirement, publication of a version, market availability) exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.',
   },
   defaultContentType: 'application/json',
   channels,

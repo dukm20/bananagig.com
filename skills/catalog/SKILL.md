@@ -1,24 +1,25 @@
-# Catalogue taxonomy (categories and service types)
+# Catalogue taxonomy (categories, service types) and Gig Templates
 
 ## Purpose
 
-Read and change the PLATFORM-OWNED taxonomy of what can be sold: categories (Auto Services), service types (Car Detailing; each belongs to exactly one category), their availability and display order per market and the flat prohibited-service list. Providers later create Gigs (Full Detail) from service types; nothing provider-specific lives here.
+Read and change the PLATFORM-OWNED taxonomy of what can be sold: categories (Auto Services), service types (Car Detailing; each belongs to exactly one category), their availability and display order per market and the flat prohibited-service list. Since CAT-002 also the versioned Gig Templates: the platform-approved structure a provider builds a Gig from. Providers later create Gigs (Full Detail) from a template version; nothing provider-specific lives here.
 
 ## When to use
 
 - A feature needs the list of categories or service types of a market (onboarding, the GigMenu, discovery, search, admin), or must reference a service type from another table (a Gig).
 - Adding or retiring a category, a service type or a prohibited service, changing its availability or order in a market, or touching the `catalog` schema, its API, events or cache.
 - Referencing a CATEGORY scope from configuration, or keying a policy (verification, fees) by category.
+- A feature builds on a Gig Template: the Gig builder (CAT-003), the requirements checkpoints (TRUST-001, SV-09), template administration, or anything that must reference "the structure a Gig was built from".
 - Anything that is tempted to store a category or service name, a category list or a menu order in code, configuration or a Gig table.
 
 ## Canonical files
 
-- `db/migrations/0015_catalog.sql`, `docs/data/DATA_DICTIONARY.md`, `docs/data/NORMALIZATION_LOG.md`
-- `packages/contracts/src/catalog.ts`
-- `packages/catalog/src/service.ts`, `cache.ts`, `scope-validator.ts`, `types.ts`, `errors.ts`
-- `apps/api/src/modules/catalog/{routes,dto,wiring}.ts`, `apps/api/src/plugins/auth.ts` (`CATALOG_PERMISSIONS`), `apps/api/src/index.ts`
-- `packages/testing/src/catalog-model.itest.ts`, `packages/catalog/src/catalog.itest.ts`, `apps/api/src/catalog.itest.ts`
-- `docs/engineering/CATALOG.md`, `docs/architecture/ADR-0040-platform-owned-taxonomy-with-stable-identities-and-status-based-retirement.md`
+- `db/migrations/0015_catalog.sql`, `db/migrations/0016_gig_templates.sql`, `docs/data/DATA_DICTIONARY.md`, `docs/data/NORMALIZATION_LOG.md`
+- `packages/contracts/src/catalog.ts`, `packages/contracts/src/gig-template.ts`
+- `packages/catalog/src/service.ts`, `gig-template-service.ts`, `gig-template-types.ts`, `cache.ts`, `scope-validator.ts`, `types.ts`, `errors.ts`
+- `apps/api/src/modules/catalog/{routes,gig-template-routes,dto,gig-template-dto,common,wiring}.ts`, `apps/api/src/plugins/auth.ts` (`CATALOG_PERMISSIONS`), `apps/api/src/index.ts`
+- `packages/testing/src/catalog-model.itest.ts`, `packages/catalog/src/catalog.itest.ts`, `apps/api/src/catalog.itest.ts`, `packages/testing/src/gig-template-model.itest.ts`, `packages/catalog/src/gig-template.itest.ts`, `apps/api/src/gig-template.itest.ts`
+- `docs/engineering/CATALOG.md`, `docs/engineering/GIG_TEMPLATES.md`, `docs/architecture/ADR-0040-platform-owned-taxonomy-with-stable-identities-and-status-based-retirement.md`, `docs/architecture/ADR-0041-versioned-platform-gig-templates-referenced-immutably-by-provider-gigs.md`
 
 ## Architecture rules
 
@@ -36,6 +37,19 @@ Read and change the PLATFORM-OWNED taxonomy of what can be sold: categories (Aut
 - Requirements (verification, skills, equipment, licence, insurance) are NOT here: SV-09 / TRUST-001 own them and key them by these ids. Prohibited services are a flat list with no workflow.
 - Cache: generation counter `bg:{env}:cat:gen` bumped AFTER commit; the per-market snapshot holds codes and content keys only (no text, no market visibility); management reads bypass it; every cache failure degrades to a database read.
 
+### Gig Templates (CAT-002)
+
+- **Three levels, three owners.** Service type (platform, what is sold: Car Detailing) > Gig Template (platform, the approved structure: Full Detail) > Gig (provider, what one provider sells: price, floor price, chosen duration, radius or area, pitch, photos, capacity, variants, add-ons, booking mode; CAT-003). Never put a provider value in a template row and never read the mutable template to learn what a Gig was built from.
+- **Identity and version are separate.** `gig_templates` = immutable code and service type, derived copy keys, status; `gig_template_versions` = the structure. The future Gig stores `gig_template_version_id` and validates against THAT frozen version. A published version and its field, option and requirement rows are frozen by guards; the fix for a mistake is a new version copied from it (`copyFromVersion`).
+- **Version lifecycle.** `DRAFT` -> `ACTIVE` (publish) | `RETIRED` (discard); `ACTIVE` -> `SUPERSEDED` (automatic, only by publishing a newer version) | `RETIRED` (done by the retirement of the template; the machine allows it, the service offers no direct withdraw). One DRAFT and one ACTIVE per template, contiguous numbers, never deleted. No `IN_REVIEW` (no reviewer exists yet).
+- **Editing is whole-draft and token-guarded.** `PUT .../versions/:n` replaces the WHOLE definition with `expectedRevision`; a different revision is 409 `STALE_DRAFT`; an equal definition writes nothing. Publish takes the same token and is a no-op when repeated on an ACTIVE version with that revision.
+- **Fields are typed rows, not JSON.** 11 types, behaviour `PLATFORM_FIXED` / `PROVIDER_CONFIGURABLE` / `PROVIDER_REQUIRED` ("editable" and "required" are derived), sections, per-type metadata under a CHECK matrix (a column that does not belong to the type is NULL), enum options as rows, MONEY without numeric metadata (limits are configuration). A photo rule is a MEDIA field (`max_items = 0` = no photos, required = `PROVIDER_REQUIRED` with a minimum).
+- **Copy is content with DERIVED keys shared by all versions**: `catalog.gig_template.<code>.name|description|instructions`, `...field.<field_key>.label|help|default`, `...field.<field_key>.option.<option_code>.label`. The entries must EXIST before a draft names them (400 `CONTENT_ENTRY_MISSING` lists the keys) and be published (as the content resolver reads it) in the platform default locale before publication (409 `CONTENT_NOT_PUBLISHED` lists the keys). A field whose meaning changes gets a NEW field key; wording is not frozen per version (DEBT-0084).
+- **Pricing and area models are metadata**, not prices: FIXED, FIXED_WITH_VARIANTS (at least one base model), BUNDLE_ELIGIBLE, DROP_ELIGIBLE; RADIUS, POSTAL_CODES, POLYGON (at least one). Requirement rows (SKILL, EQUIPMENT, LICENSE, INSURANCE, BACKGROUND_CHECK) are hooks with an opaque, unvalidated reference code until TRUST-001 owns the catalogues.
+- **Publication needs** an ACTIVE template and service type (read FOR SHARE), at least one field, options for every enum, and the published copy. **Retiring a template** discards an open draft (audited), closes the ACTIVE version, keeps every version and the code. CAT-001 guards are NOT changed: a paused service type leaves its templates ACTIVE but unreachable (the public read re-checks the chain).
+- **Locks**: the service takes the TEMPLATE row first, then the version, in every version operation; raw statements that lock a version first can deadlock (retryable conflict). Availability per market is a plain row per (market, template) with the same one-retry race policy as the taxonomy.
+- **Public vs management**: the same routes, `Vary: Authorization`; the public view carries the safe structure of the ACTIVE version with resolved copy and never the status, revision, content keys, timestamps or other versions; management responses and every mutation are `Cache-Control: private, no-store`. Events: activated, deactivated, retired, published (with the exact version id), availability changed. The snapshot cache shares the taxonomy's generation counter.
+
 ## Implementation pattern
 
 1. Read for a market with `listCategoriesForMarket(code)`, `listServiceTypesForMarket(code, { categoryCode })`, `getCategoryForMarket`, `getServiceTypeForMarket` (they throw `MARKET_NOT_FOUND` for a market that is not public); resolve the text through the content registry in the API layer (names are keys in the service). Web code calls the API, never the package.
@@ -45,7 +59,7 @@ Read and change the PLATFORM-OWNED taxonomy of what can be sold: categories (Aut
 
 ## Commands
 
-`pnpm --filter @bananagig/catalog test` · `node --env-file-if-exists=.env.host node_modules/vitest/vitest.mjs run -c vitest.integration.config.ts packages/catalog/src/catalog.itest.ts` · `pnpm identity:sync` (after a realm change, DEV ONLY) · `pnpm smoke` (scenario `Catalog`)
+`pnpm --filter @bananagig/catalog test` · `node --env-file-if-exists=.env.host node_modules/vitest/vitest.mjs run -c vitest.integration.config.ts packages/catalog/src/catalog.itest.ts` · `pnpm identity:sync` (after a realm change, DEV ONLY) · `pnpm smoke` (scenarios `Catalog` and `Gig templates`)
 
 ## Testing requirements
 
@@ -56,7 +70,7 @@ Read and change the PLATFORM-OWNED taxonomy of what can be sold: categories (Aut
 
 ## Data-model considerations
 
-Any change to the six tables or their guards needs the Data Model Review Gate and a forward migration (never edit 0015). A new level (a template, an alias, a requirement) is a new table keyed by the stable ids, not a column here.
+Any change to the twelve tables or their guards needs the Data Model Review Gate and a forward migration (never edit 0015 or 0016). A new level (an alias, a requirement catalogue, a provider Gig) is a new table keyed by the stable ids, not a column here; a Gig references `gig_template_versions.gig_template_version_id`.
 
 ## Common failure modes
 
@@ -67,6 +81,11 @@ Any change to the six tables or their guards needs the Data Model Review Gate an
 - Hardcoding a category or service name, list or order in code, configuration or a test of another domain.
 - Storing provider-specific data (a price, a radius) on a service type.
 - Asserting HTTP 404 for a streamed web page instead of the API's 404 (LRN-0053).
+- Editing a published template version (409 `VERSION_NOT_DRAFT`): create a new version from it instead.
+- Replacing a draft with a stale revision (409 `STALE_DRAFT`): read the draft again first.
+- A draft naming content entries that do not exist yet, or publishing with copy that is only a draft in the content registry: create and publish the entries first (the errors name the keys).
+- Publishing under a template that is not ACTIVE or a service type that is not ACTIVE (409 `GIG_TEMPLATE_NOT_ACTIVE`, `SERVICE_TYPE_NOT_ACTIVE`).
+- Giving a template a provider value (a price, a radius) or reading the mutable template to validate a Gig.
 
 ## Known BananaGig-specific lessons
 
@@ -91,8 +110,8 @@ Any change to the six tables or their guards needs the Data Model Review Gate an
 
 ## Related ADRs
 
-ADR-0016, ADR-0021, ADR-0022, ADR-0040
+ADR-0016, ADR-0021, ADR-0022, ADR-0040, ADR-0041
 
 ## Last reviewed
 
-2026-10-16 (CAT-001)
+2026-10-17 (CAT-002)

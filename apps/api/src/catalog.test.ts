@@ -1507,6 +1507,8 @@ describe('error mapping: every CatalogError code becomes the standard envelope w
     CATEGORY_NOT_FOUND: { status: 404, category: 'NOT_FOUND' },
     SERVICE_TYPE_NOT_FOUND: { status: 404, category: 'NOT_FOUND' },
     PROHIBITED_SERVICE_NOT_FOUND: { status: 404, category: 'NOT_FOUND' },
+    GIG_TEMPLATE_NOT_FOUND: { status: 404, category: 'NOT_FOUND' },
+    GIG_TEMPLATE_VERSION_NOT_FOUND: { status: 404, category: 'NOT_FOUND' },
     MARKET_NOT_FOUND: { status: 404, category: 'NOT_FOUND' },
     VALIDATION_FAILED: { status: 400, category: 'VALIDATION' },
     CONFLICT: { status: 409, category: 'CONFLICT' },

@@ -952,3 +952,37 @@ ADR-0040.
 
 ### Known follow-up
 DEBT-0083 (launch taxonomy, admin UI, synonyms and search, requirement policies, moderation, icon pipeline, effective-dated availability, and a few small gaps listed there). Next: CAT-002 Gig Templates.
+
+## CAT-002 — 2026-10-17
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(CAT-002)"`.
+Summary: Gig Templates. The platform-owned, versioned structure a provider will build a Gig from, attached to exactly one service type. Identity (immutable code and service type, derived copy keys, status) is separate from the version (duration guidance, allowed pricing models and service-area modes, typed fields, enum options, requirement hooks). A version is a DRAFT until published, then ACTIVE and frozen with all its rows by database guards, and superseded automatically by the next publication; one DRAFT and one ACTIVE per template, contiguous numbers, never deleted. The future provider Gig (CAT-003) will reference `gig_template_version_id`, so it keeps the exact structure it was built from. No provider data is stored. Copy is content with derived keys shared by all versions. The seed is two DRAFT templates without versions; nothing is public until built, published, activated and enabled; la-oc stays PLANNED.
+
+### Housekeeping at the start (requested)
+`PROJECT_STATE` records CAT-001 (`67d0424`, GitHub Actions run 39004552503 SUCCESS: `verify` PASS 11m 27s, `compose-smoke` PASS 5m 41s, fresh-database smoke 38/38 with the Catalog, Email and Phone scenarios). `checkpoint:start` ran first. A second interactive Claude session exists on this machine and could not be closed from here.
+
+### Delivered
+- Migration `0016_gig_templates.sql`: six tables in the `catalog` schema (`gig_templates`, `gig_template_versions`, `gig_template_fields`, `gig_template_field_options`, `gig_template_requirements`, `market_gig_templates`), nine functions with twelve triggers, the audit table extended (two subject columns, seventeen actions), the seed (6 content entries, 2 DRAFT templates, 2 audit rows). Migration `0017_gig_templates_hardening.sql` (forward fix after the independent review, 0016 was already applied to the development database): a field with options keeps its type and key, the publication re-verifies the option rules, the audit key to a version is composite, stale comments.
+- Contracts `gig-template.ts`; `GigTemplateService` in `@bananagig/catalog`; 12 API operations under `/api/v1/catalog`; five outbox events (activated, deactivated, retired, published with the exact version id, availability changed); the public snapshot cache shares the taxonomy's generation counter; smoke scenario `Gig templates` (39 checks).
+- Docs: `GIG_TEMPLATES.md`, ADR-0041, the data model documents, `skills/catalog` (extended), `skills/database` and `skills/content`, DEBT-0084, LRN-0055.
+- Quality process: independent authors for the contracts and API, the service and the database model, each with mutation checks (118 on the contract and API, 99 on the service, about 50 in-file and whole-file on the database rules, four on 0017); two independent read-only reviews. Defects found and fixed before the commit: an oversized `copyFromVersion` answered 500; echoed content keys were not length-capped; float noise made an unchanged draft look changed and the 4-decimal check rejected valid large values and accepted 5e-11 (now a relative tolerance and a 1e9 cap); the content check ignored SCHEDULED and SUPERSEDED versions the resolver serves and deactivated entries; a poisoned cache entry could add management fields to a public view; management reads could show a version with the rows of a later revision (now one snapshot, joining a caller's transaction when nested); a field with options could be retyped or renamed and then published inconsistently; the audit trail could pair a template with another template's version; unbounded options per version; stale comments and docs that overstated the guarantees. The independent database author ran its mutation campaign for two hours; I stopped it, verified the production files were untouched (migration modification time, the snapshot parity, the suites) and finished the file myself.
+- A nested transaction with another isolation level is refused by the database layer; a read that wants a snapshot must fall back to joining the caller's transaction (documented in the service).
+
+### Schema
+Migrations 0016 and 0017: six new tables, ten functions (nine guards and checks plus one helper), twelve triggers, one unique key and one composite foreign key added, seeds. NORMALIZATION_LOG, DATA_MODEL, DATA_DICTIONARY, ERD, DATA_MODEL_CHANGELOG and SCHEMA_SNAPSHOT updated; Data Model Review Gate passed (1NF to BCNF, flags instead of child tables for the closed pricing and area sets, typed metadata instead of JSON, derived field and option keys stored and verified by the guards).
+
+### Contracts
+`packages/contracts/src/gig-template.ts`; error codes `GIG_TEMPLATE_NOT_FOUND`, `GIG_TEMPLATE_VERSION_NOT_FOUND`; five `bananagig.catalog.gig-template-*.v1` events; OpenAPI and AsyncAPI regenerated and valid.
+
+### Tests
+Unit 9748 and 164 root script tests, integration 6141 in 49 files (Gig Template data model rules 839, service 148, API 22), smoke 39 checks (39/39 locally).
+
+### Skills updated
+`skills/catalog`, `skills/database`, `skills/content`.
+
+### ADRs
+ADR-0041.
+
+### Known follow-up
+DEBT-0084 (the template catalogue, authoring UI, requirement catalogues and policy engine, media-rule editor, pricing suggestions, the provider Gig builder, and the accepted limits listed there). Next: PRO-001 Provider Registration.

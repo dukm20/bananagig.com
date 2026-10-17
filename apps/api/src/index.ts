@@ -17,7 +17,7 @@ import {
 } from '@bananagig/platform';
 import { ConfigurationService, ValkeyConfigCache } from '@bananagig/configuration';
 import { ContentService } from '@bananagig/content';
-import { CatalogService, createCatalogScopeReferenceValidator } from '@bananagig/catalog';
+import { CatalogService, GigTemplateService, createCatalogScopeReferenceValidator } from '@bananagig/catalog';
 import { AccountAreaService, AccountService, ConsentService, EmailVerificationService, PhoneVerificationService, SecurityService } from '@bananagig/accounts';
 import {
   AddressService,
@@ -72,6 +72,15 @@ const catalog = new CatalogService({
   env: cfg.env,
   cacheTtlSeconds: cfg.configuration.cacheTtlSeconds,
   allowTestKeys: cfg.env !== 'production', // devtest_* codes are DEV/TEST only
+});
+// The Gig Templates (CAT-002): the versioned structure a provider later builds a Gig from; same market gate, cache generation and test-key rule as the taxonomy.
+const gigTemplates = new GigTemplateService({
+  database,
+  markets: createMarketGate(geography),
+  cache: new ValkeyConfigCache(valkey),
+  env: cfg.env,
+  cacheTtlSeconds: cfg.configuration.cacheTtlSeconds,
+  allowTestKeys: cfg.env !== 'production',
 });
 // One scope reference validator out of its owners (DEBT-0024): geography owns COUNTRY and MARKET, the catalogue owns CATEGORY.
 const scopeReferences = composeScopeReferenceValidators([createGeographyScopeReferenceValidator(geography), createCatalogScopeReferenceValidator(catalog)]);
@@ -200,6 +209,7 @@ const app = await buildApp({
   consent,
   accountArea,
   catalog,
+  gigTemplates,
   // Critical for serving requests: Postgres only. Valkey/NATS/OpenSearch/flagd outages must not take the API down.
   readiness: async () => ({ postgres: (await database.health()).ok ? 'up' : 'down' }),
   diagnostics: () => runDiagnostics(adapters),

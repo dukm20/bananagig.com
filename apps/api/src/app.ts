@@ -2,7 +2,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import swagger from '@fastify/swagger';
 import type { AppConfig } from '@bananagig/config';
 import { API_PREFIX } from '@bananagig/contracts';
-import type { CatalogService } from '@bananagig/catalog';
+import type { CatalogService, GigTemplateService } from '@bananagig/catalog';
 import type { ConfigurationService } from '@bananagig/configuration';
 import type { ContentService } from '@bananagig/content';
 import type {
@@ -84,6 +84,8 @@ export interface AppDeps {
   accountArea?: AccountAreaOperations;
   /** The catalogue taxonomy (CAT-001): the routes are registered when provided together with `content` (names and descriptions are resolved through it). */
   catalog?: CatalogService;
+  /** The Gig Templates (CAT-002), registered together with the catalogue under the same prefix. */
+  gigTemplates?: GigTemplateService;
 }
 
 /**
@@ -156,6 +158,11 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
             'The PLATFORM-OWNED catalogue taxonomy (CAT-001): categories and service types (a Gig belongs to a provider and is not here), their availability and display order per market and the prohibited-service list. Reads are public with visibility rules (ACTIVE items enabled in an ACTIVE market, resolved names and descriptions); management needs the admin context plus catalog-read or catalog-write, a reason and writes an immutable audit row',
         },
         {
+          name: 'gig-templates',
+          description:
+            'The PLATFORM-OWNED Gig Templates (CAT-002): the versioned structure a provider later builds a Gig from, attached to one service type (typed fields that are fixed, configurable or required for the provider, duration guidance, allowed pricing models and service-area modes, requirement hooks). A published version is frozen; a Gig will reference the exact version it was built from. Nothing provider-specific is stored (no price, radius, area, pitch, photo or capacity). Same visibility model as the catalogue: public reads of ACTIVE templates in an ACTIVE market, management with the admin context plus catalog-read or catalog-write',
+        },
+        {
           name: 'consent',
           description:
             "The caller's own consent to the legal documents (ID-005): what each purpose needs, the version in force, and an append-only history of acceptances and withdrawals bound to the exact version, locale and text hash. The legal text itself is owned and served by the content registry; no account id is ever accepted",
@@ -185,7 +192,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   if (deps.content) await app.register(contentRoutes, { prefix: `${API_PREFIX}/content`, content: deps.content });
   if (deps.geography) await app.register(geographyRoutes, { prefix: `${API_PREFIX}/geography`, geography: deps.geography });
   if (deps.address) await app.register(addressRoutes, { prefix: `${API_PREFIX}/geography`, address: deps.address });
-  if (deps.catalog && deps.content) await app.register(catalogRoutes, { prefix: `${API_PREFIX}/catalog`, catalog: deps.catalog, content: deps.content });
+  if (deps.catalog && deps.content)
+    await app.register(catalogRoutes, { prefix: `${API_PREFIX}/catalog`, catalog: deps.catalog, gigTemplates: deps.gigTemplates, content: deps.content });
   if (deps.accounts) {
     await app.register(accountPlugin, {
       accounts: deps.accounts,

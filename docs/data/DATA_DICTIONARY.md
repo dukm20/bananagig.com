@@ -1086,11 +1086,120 @@ The append-only audit trail of every catalogue management mutation (CAT-001). Re
 | `audit_event_id` | uuid | no | `gen_random_uuid()` | Primary key `pk_audit_events` | yes |
 | `occurred_at` | timestamptz | no | `clock_timestamp()` | When the change was made (database clock) | yes |
 | `actor` | text | no | none | Who acted: the subject of the administrator, or `system:migration` (`ck_audit_events__actor`: 1 to 200 characters) | yes |
-| `action` | text | no | none | One of the nine actions (`ck_audit_events__action`) | yes |
+| `action` | text | no | none | One of the seventeen actions (`ck_audit_events__action`): the nine taxonomy actions (CAT-001) and, since CAT-002, `GIG_TEMPLATE_CREATED`, `GIG_TEMPLATE_UPDATED`, `GIG_TEMPLATE_STATUS_CHANGED`, `GIG_TEMPLATE_VERSION_CREATED`, `GIG_TEMPLATE_VERSION_CHANGED`, `GIG_TEMPLATE_VERSION_PUBLISHED`, `GIG_TEMPLATE_VERSION_RETIRED`, `MARKET_GIG_TEMPLATE_AVAILABILITY_CHANGED` | yes |
 | `category_id`, `service_type_id`, `prohibited_service_id`, `market_id` | uuid | yes | none | The subject, foreign keys (restrict): exactly the columns the action family allows (`ck_audit_events__subject`); `MARKET_CATALOG_AVAILABILITY_CHANGED` names a market and exactly one of category or service type | yes |
+| `gig_template_id` | uuid | yes | none | Added by CAT-002: foreign key `fk_audit_events__gig_template_id` to `catalog.gig_templates` (restrict); set by every `GIG_TEMPLATE_*` and `MARKET_GIG_TEMPLATE_*` action (`ck_audit_events__subject`) | yes |
+| `gig_template_version_id` | uuid | yes | none | Added by CAT-002: part of the composite foreign key `fk_audit_events__gig_template_version (gig_template_version_id, gig_template_id)` to `catalog.gig_template_versions` (restrict; 0017 replaced the simple key, so a row cannot name a version under another template); set by the four `GIG_TEMPLATE_VERSION_*` actions only | yes |
 | `changes` | jsonb | yes | none | A JSON object `{field: [old, new]}` (`ck_audit_events__changes_object`) | yes |
 | `reason` | text | no | none | The mandatory reason (`ck_audit_events__reason`: not blank, at most 1000 characters) | yes |
 | `correlation_id` | text | no | none | The correlation id of the request | yes |
 
 Indexes: the primary key only. The audit trail is not read by any API yet; an index is added through its own review when a query path appears.
 Triggers: `trg_audit_events__immutable` and `trg_audit_events__no_truncate` (`catalog.forbid_mutation`): UPDATE, DELETE and TRUNCATE are refused (`ROW_IMMUTABLE`).
+
+### catalog.gig_templates
+
+The identity of a platform-owned Gig Template (CAT-002, reference data): the reusable structure a provider will build a Gig from, attached to exactly ONE service type. Only what never changes meaning lives here; the structure is in `gig_template_versions`. Never deleted or truncated. No provider-specific field, no display text, no personal data.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `gig_template_id` | uuid | no | `gen_random_uuid()` | Primary key `pk_gig_templates` | yes |
+| `service_type_id` | uuid | no | none | Foreign key `fk_gig_templates__service_type_id` to `catalog.service_types` (restrict): the one service type; moving would change the meaning of every Gig built from the template | yes |
+| `code` | text | no | none | Unique (`uq_gig_templates__code`) lower-case snake_case, 2 to 48 characters (`ck_gig_templates__code`), never reused: the API path and the stem of every content key of the template and its fields | yes |
+| `name_content_key` | text | no | generated | GENERATED ALWAYS AS (`'catalog.gig_template.' || code || '.name'`) STORED and a foreign key `fk_gig_templates__name_content_key` to `content.entries (key)` (restrict). Not writable | yes |
+| `description_content_key` | text | yes | none | NULL = none; otherwise exactly `catalog.gig_template.<code>.description` (`ck_gig_templates__description_content_key`) and a foreign key | no |
+| `instructions_content_key` | text | yes | none | NULL = none; otherwise exactly `catalog.gig_template.<code>.instructions` (`ck_gig_templates__instructions_content_key`) and a foreign key: the platform guidance on how a provider fills the template | no |
+| `status` | text | no | `'DRAFT'` | `DRAFT` (initial only), `ACTIVE` (needs an ACTIVE service type), `INACTIVE` (a pause), `RETIRED` (terminal; closes the ACTIVE version) (`ck_gig_templates__status`); the machine is `catalog.assert_status_transition` | no |
+| `created_at` | timestamptz | no | `now()` | Creation time, kept by the guard | yes |
+| `updated_at` | timestamptz | no | `now()` | Last change, maintained by the guard | no |
+
+Indexes: the primary key, `uq_gig_templates__code (code)` and `idx_gig_templates__service_type (service_type_id)` (the templates of one service type).
+Triggers: `trg_gig_templates__guard` (`catalog.guard_gig_templates`): created only as DRAFT (`MUST_START_AS_DRAFT`) and not under a RETIRED service type (`SERVICE_TYPE_RETIRED`), never deleted (`NOT_DELETABLE`), id / service type / code immutable (`IMMUTABLE_IDENTITY`), the status machine (`DRAFT_IS_INITIAL`, `STATUS_TRANSITION`), ACTIVE only under an ACTIVE service type read FOR SHARE (`SERVICE_TYPE_NOT_ACTIVE`), no retirement while a DRAFT version exists (`GIG_TEMPLATE_HAS_OPEN_DRAFT`), retirement closes the ACTIVE version, `created_at` kept; `trg_gig_templates__no_truncate` refuses TRUNCATE.
+
+### catalog.gig_template_versions
+
+One version of a Gig Template (CAT-002): the STRUCTURE a Gig is built from. A DRAFT is editable; once published (ACTIVE) the version and all its child rows are frozen by guards, a newer publication supersedes it automatically, and it is never deleted. A future Gig references `gig_template_version_id`. No provider value (price, chosen duration, radius, area) is stored.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `gig_template_version_id` | uuid | no | `gen_random_uuid()` | Primary key `pk_gig_template_versions`: THE id a provider Gig will reference | yes |
+| `gig_template_id` | uuid | no | none | Foreign key `fk_gig_template_versions__gig_template_id` to `catalog.gig_templates` (restrict) | yes |
+| `version_number` | integer | no | none | At least 1 (`ck_gig_template_versions__number`); unique per template (`uq_gig_template_versions__number`) and CONTIGUOUS: the guard accepts only the highest plus one (`VERSION_NUMBER_SEQUENCE`) | yes |
+| `status` | text | no | `'DRAFT'` | `DRAFT` (editable, initial only), `ACTIVE` (published, frozen), `SUPERSEDED` (replaced by a newer publication; automatic), `RETIRED` (a discarded draft, or the ACTIVE version closed by the retirement of its template; the machine also allows ACTIVE to RETIRED directly, which the service never does) (`ck_gig_template_versions__status`); the machine is `catalog.assert_version_transition` | no |
+| `revision` | integer | no | `1` | Concurrency token of a DRAFT (`ck_gig_template_versions__revision`: at least 1, never decreases, frozen once the version leaves DRAFT): the service bumps it on every draft change and a replace or publish names the revision read | no (DRAFT only) |
+| `min_duration_minutes`, `max_duration_minutes`, `suggested_duration_minutes` | integer | yes | none | Duration guidance for a Gig built from the version (`ck_gig_template_versions__duration`: each at least 1, min <= suggested <= max; all NULL = no rule). Platform bounds only: the duration a provider chooses is provider data | no (DRAFT only) |
+| `pricing_fixed`, `pricing_fixed_with_variants`, `pricing_bundle_eligible`, `pricing_drop_eligible` | boolean | no | `true` / `false` / `false` / `false` | The allowed pricing models; at least one of the first two (`ck_gig_template_versions__pricing`). Metadata only: no price is stored | no (DRAFT only) |
+| `area_radius`, `area_postal_codes`, `area_polygon` | boolean | no | `true` / `false` / `false` | The allowed service-area modes; at least one (`ck_gig_template_versions__area`). Metadata only | no (DRAFT only) |
+| `created_at` | timestamptz | no | `now()` | Creation time, kept by the guard | yes |
+| `updated_at` | timestamptz | no | `now()` | Last change, maintained by the guard | no |
+| `published_at` | timestamptz | yes | none | When the version became ACTIVE, set by the guard | yes |
+| `closed_at` | timestamptz | yes | none | When the version stopped being current (SUPERSEDED or RETIRED), set by the guard; `ck_gig_template_versions__lifecycle` ties both timestamps to the status | yes |
+
+Indexes: the primary key; `uq_gig_template_versions__id_template (gig_template_version_id, gig_template_id)` (0017: the target of the composite audit foreign key); `uq_gig_template_versions__number (gig_template_id, version_number)` (the versions of a template); `uq_gig_template_versions__active (gig_template_id) WHERE status = 'ACTIVE'` (THE active-version lookup and the rule that there is one); `uq_gig_template_versions__draft (gig_template_id) WHERE status = 'DRAFT'` (one draft at a time).
+Triggers: `trg_gig_template_versions__guard` (`catalog.guard_gig_template_versions`): created only as a fresh DRAFT with the next number and not for a RETIRED template (`MUST_START_AS_DRAFT`, `VERSION_NUMBER_SEQUENCE`, `GIG_TEMPLATE_RETIRED`), never deleted (`NOT_DELETABLE`), id / template / number immutable (`IMMUTABLE_IDENTITY`), every structural column, `revision` and `published_at` frozen once the version left DRAFT (`VERSION_FROZEN`), the version machine (`DRAFT_IS_INITIAL`, `STATUS_TRANSITION`), publication needs an ACTIVE template and service type read FOR SHARE and `catalog.assert_version_publishable` and supersedes the previous ACTIVE version (`GIG_TEMPLATE_NOT_ACTIVE`, `SERVICE_TYPE_NOT_ACTIVE`, `GIG_TEMPLATE_HAS_NO_FIELDS`, `ENUM_FIELD_WITHOUT_OPTIONS`, `FIXED_ENUM_WITHOUT_DEFAULT`, `CONTENT_NOT_PUBLISHED`), SUPERSEDED only inside that publication (`SUPERSEDED_IS_AUTOMATIC`); `trg_gig_template_versions__no_truncate` refuses TRUNCATE.
+
+### catalog.gig_template_fields
+
+A typed field definition of a template version (CAT-002): what a provider fills, or what the platform fixes, when building a Gig. Rows change only while the version is a DRAFT.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `gig_template_field_id` | uuid | no | `gen_random_uuid()` | Primary key `pk_gig_template_fields` | yes |
+| `gig_template_version_id` | uuid | no | none | Foreign key `fk_gig_template_fields__version_id` to `catalog.gig_template_versions` (restrict) | yes |
+| `field_key` | text | no | none | Lower-case snake_case, 2 to 32 characters (`ck_gig_template_fields__key`), unique per version (`uq_gig_template_fields__key`): the same key in two versions is the same concept | no |
+| `field_type` | text | no | none | `TEXT`, `LONG_TEXT`, `INTEGER`, `DECIMAL`, `BOOLEAN`, `ENUM`, `DURATION`, `MONEY`, `MEDIA`, `EQUIPMENT_REFERENCE`, `SKILL_REFERENCE` (`ck_gig_template_fields__type`) | no |
+| `section` | text | no | `'DETAILS'` | `SCOPE`, `INCLUSIONS`, `EXCLUSIONS`, `PREPARATION`, `DETAILS` (`ck_gig_template_fields__section`): where the builder groups the field | no |
+| `behavior` | text | no | none | `PLATFORM_FIXED`, `PROVIDER_CONFIGURABLE`, `PROVIDER_REQUIRED` (`ck_gig_template_fields__behavior`). "Editable" and "required" are derived from this column, never stored | no |
+| `customer_visible` | boolean | no | `true` | Whether the value is shown to customers on the Gig | no |
+| `display_order` | integer | no | none | 1 to 999 (`ck_gig_template_fields__display_order`), unique per version (`uq_gig_template_fields__order`) | no |
+| `label_content_key` | text | no | none | Foreign key to `content.entries (key)`; the guard requires `catalog.gig_template.<code>.field.<field_key>.label` (`CONTENT_KEY_MISMATCH`) | no |
+| `help_content_key`, `default_content_key` | text | yes | none | NULL or exactly `...field.<field_key>.help` / `.default` (foreign keys to `content.entries`); `default_content_key` only for TEXT and LONG_TEXT (`ck_gig_template_fields__text_meta`) | no |
+| `min_length`, `max_length` | integer | yes | none | TEXT and LONG_TEXT only (`ck_gig_template_fields__text_meta`, `__length`: at least 1, ordered) | no |
+| `min_number`, `max_number`, `default_number` | numeric(18,4) | yes | none | INTEGER, DECIMAL and DURATION (minutes) only (`__number_meta`, `__number_order`, `__number_shape`: INTEGER and DURATION whole, `__duration_positive`: DURATION at least 1). MONEY carries none: amount limits are configuration | no |
+| `default_boolean` | boolean | yes | none | BOOLEAN only (`__boolean_meta`) | no |
+| `min_items`, `max_items` | integer | yes | none | MEDIA, EQUIPMENT_REFERENCE and SKILL_REFERENCE only (`__items_meta`, `__items`: ordered, references at least 1); MEDIA `max_items = 0` means no photos are allowed; required MEDIA needs `min_items >= 1` (`__media_required`) | no |
+
+`ck_gig_template_fields__fixed`: a PLATFORM_FIXED field is one of TEXT, LONG_TEXT, INTEGER, DECIMAL, BOOLEAN, ENUM, DURATION and has its default (an ENUM default is an option, checked at publication).
+Indexes: the primary key and the two unique keys (the fields of a version in order). Triggers: `trg_gig_template_fields__guard` (`catalog.guard_gig_template_fields`): ids immutable, rows change only while the version is a DRAFT read FOR SHARE (`VERSION_NOT_DRAFT`), the type and the key of a field that has options cannot change (`FIELD_HAS_OPTIONS`, 0017), content keys equal the derivation (`CONTENT_KEY_MISMATCH`); `trg_gig_template_fields__no_truncate`.
+
+### catalog.gig_template_field_options
+
+The options of an ENUM field (CAT-002). Rows change only while the version is a DRAFT.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `gig_template_field_id` | uuid | no | none | Part of the primary key `pk_gig_template_field_options`; foreign key `fk_gig_template_field_options__field_id` to `catalog.gig_template_fields` (restrict) | yes |
+| `option_code` | text | no | none | Part of the key; lower-case snake_case, 2 to 32 characters (`ck_gig_template_field_options__code`) | yes |
+| `label_content_key` | text | no | none | Foreign key to `content.entries (key)`; the guard requires `catalog.gig_template.<code>.field.<field_key>.option.<option_code>.label` | no |
+| `is_default` | boolean | no | `false` | At most one default per field (`uq_gig_template_field_options__default`, partial) | no |
+| `display_order` | integer | no | none | 1 to 99 (`ck_gig_template_field_options__display_order`), unique per field (`uq_gig_template_field_options__order`) | no |
+
+Triggers: `trg_gig_template_field_options__guard` (`catalog.guard_gig_template_field_options`): only ENUM fields have options (`OPTIONS_ONLY_FOR_ENUM`), rows change only while the version is a DRAFT (`VERSION_NOT_DRAFT`), label key equals the derivation; `trg_gig_template_field_options__no_truncate`.
+
+### catalog.gig_template_requirements
+
+Requirement hooks of a template version (CAT-002) for the trust checkpoints (SV-09, TRUST-001): what a Gig built from the version additionally needs. No verification logic. Rows change only while the version is a DRAFT.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `gig_template_requirement_id` | uuid | no | `gen_random_uuid()` | Primary key `pk_gig_template_requirements` | yes |
+| `gig_template_version_id` | uuid | no | none | Foreign key `fk_gig_template_requirements__version_id` to `catalog.gig_template_versions` (restrict) | yes |
+| `requirement_type` | text | no | none | `SKILL`, `EQUIPMENT`, `LICENSE`, `INSURANCE`, `BACKGROUND_CHECK` (`ck_gig_template_requirements__type`) | no |
+| `reference_code` | text | yes | none | NULL = the type in general; otherwise an opaque lower-case snake_case code (2 to 48) of the catalogue entry TRUST-001 will own (`ck_gig_template_requirements__reference`); not validated yet (DEBT-0084). Unique per (version, type, code) with NULLs equal (`uq_gig_template_requirements__requirement`) | no |
+
+Triggers: `trg_gig_template_requirements__guard` (`catalog.guard_gig_template_requirements`): ids immutable, rows change only while the version is a DRAFT (`VERSION_NOT_DRAFT`); `trg_gig_template_requirements__no_truncate`.
+
+### catalog.market_gig_templates
+
+Whether a Gig Template is offered in a market and its position among the market's templates (CAT-002). Same shape as `market_categories`: a row can be prepared for a market of any status, public exposure is decided at read time. Never deleted or truncated.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `market_id` | uuid | no | none | Part of the primary key `pk_market_gig_templates`; foreign key `fk_market_gig_templates__market_id` to `geography.markets` (restrict) | yes |
+| `gig_template_id` | uuid | no | none | Part of the key; foreign key `fk_market_gig_templates__gig_template_id` to `catalog.gig_templates` (restrict) | yes |
+| `enabled` | boolean | no | `false` | Whether the template is offered; a RETIRED template can never be enabled (`ITEM_RETIRED`) | no |
+| `display_order` | integer | no | none | 1 to 9999 (`ck_market_gig_templates__display_order`), unique per market over all rows (`uq_market_gig_templates__market_order`: also the access path of a market's templates in order) | no |
+| `created_at` | timestamptz | no | `now()` | Kept by the guard | yes |
+| `updated_at` | timestamptz | no | `now()` | Maintained by the guard | no |
+
+Triggers: `trg_market_gig_templates__guard` (`catalog.guard_market_gig_templates`) never deletes (`NOT_DELETABLE`), keeps the key (`IMMUTABLE_IDENTITY`), refuses enabling a RETIRED template (`ITEM_RETIRED`), keeps `created_at`; `trg_market_gig_templates__no_truncate`.

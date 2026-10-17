@@ -734,3 +734,105 @@ erDiagram
 
 **Taxonomy, availability and the hierarchy rule.** A service type belongs to exactly one category (a tree, as the PRD reads), and the two market tables mirror that: a service type can be enabled in a market only while its category is enabled there (a guard trigger, not a column copy). The generated `name_content_key` columns make the foreign key to the content registry impossible to point at the wrong entry: the key is a function of the code. A Gig (a later, provider-owned table) will reference `CAT_SERVICE_TYPES.service_type_id`; the category of a Gig is that of its service type.
 
+
+## Gig Templates (CAT-002)
+
+The `catalog` schema gains the versioned, platform-owned structure a provider will build a Gig from. A template belongs to exactly one service type (CAT-001); its versions freeze the structure; names, labels and help are content keys derived from the template code and the field key; availability per market mirrors the taxonomy. No provider data (price, chosen duration, radius, area, pitch, photos, capacity) exists here: the provider Gig of CAT-003 will reference `gig_template_versions.gig_template_version_id`.
+
+```mermaid
+erDiagram
+  GT_SERVICE_TYPES {
+    uuid service_type_id PK "same table as catalog.service_types"
+  }
+  GT_CONTENT_ENTRIES {
+    text key PK "same table as content.entries"
+  }
+  GT_MARKETS {
+    uuid market_id PK "same table as geography.markets"
+  }
+  GT_AUDIT_EVENTS {
+    uuid audit_event_id PK "same table as catalog.audit_events"
+  }
+  GIG_TEMPLATES {
+    uuid gig_template_id PK
+    uuid service_type_id FK "exactly one service type, immutable"
+    text code UK "immutable snake_case identity"
+    text name_content_key FK "GENERATED from code, FK to content.entries"
+    text description_content_key FK "nullable, exactly the conventional key"
+    text instructions_content_key FK "nullable, exactly the conventional key"
+    text status "DRAFT, ACTIVE, INACTIVE, RETIRED"
+    timestamptz created_at
+    timestamptz updated_at
+  }
+  GIG_TEMPLATE_VERSIONS {
+    uuid gig_template_version_id PK "the id a provider Gig will reference"
+    uuid gig_template_id FK
+    integer version_number UK "contiguous per template"
+    text status "DRAFT, ACTIVE, SUPERSEDED, RETIRED"
+    integer revision "draft concurrency token"
+    integer min_duration_minutes "nullable guidance"
+    integer max_duration_minutes
+    integer suggested_duration_minutes
+    boolean pricing_fixed "allowed pricing models"
+    boolean pricing_fixed_with_variants
+    boolean pricing_bundle_eligible
+    boolean pricing_drop_eligible
+    boolean area_radius "allowed service-area modes"
+    boolean area_postal_codes
+    boolean area_polygon
+    timestamptz published_at
+    timestamptz closed_at
+  }
+  GIG_TEMPLATE_FIELDS {
+    uuid gig_template_field_id PK
+    uuid gig_template_version_id FK
+    text field_key UK "unique per version"
+    text field_type "TEXT .. SKILL_REFERENCE"
+    text behavior "PLATFORM_FIXED, PROVIDER_CONFIGURABLE, PROVIDER_REQUIRED"
+    text section
+    integer display_order UK "unique per version"
+    text label_content_key FK "derived"
+    text help_content_key FK "nullable, derived"
+    text default_content_key FK "nullable, derived"
+    numeric typed_metadata "min/max/default, lengths, item counts"
+  }
+  GIG_TEMPLATE_FIELD_OPTIONS {
+    uuid gig_template_field_id PK "part of the key"
+    text option_code PK "part of the key"
+    text label_content_key FK "derived"
+    boolean is_default "at most one per field"
+    integer display_order UK "unique per field"
+  }
+  GIG_TEMPLATE_REQUIREMENTS {
+    uuid gig_template_requirement_id PK
+    uuid gig_template_version_id FK
+    text requirement_type "SKILL, EQUIPMENT, LICENSE, INSURANCE, BACKGROUND_CHECK"
+    text reference_code "opaque, TRUST-001 owns the catalogue"
+  }
+  MARKET_GIG_TEMPLATES {
+    uuid market_id PK "part of the key, FK to markets"
+    uuid gig_template_id PK "part of the key, FK to templates"
+    boolean enabled
+    integer display_order UK "unique per market"
+  }
+  GT_SERVICE_TYPES ||--o{ GIG_TEMPLATES : "has templates (service_type_id)"
+  GIG_TEMPLATES ||--o{ GIG_TEMPLATE_VERSIONS : "has versions (gig_template_id)"
+  GIG_TEMPLATE_VERSIONS ||--o{ GIG_TEMPLATE_FIELDS : "defines fields (gig_template_version_id)"
+  GIG_TEMPLATE_FIELDS ||--o{ GIG_TEMPLATE_FIELD_OPTIONS : "ENUM options (gig_template_field_id)"
+  GIG_TEMPLATE_VERSIONS ||--o{ GIG_TEMPLATE_REQUIREMENTS : "requirement hooks (gig_template_version_id)"
+  GT_CONTENT_ENTRIES ||--o{ GIG_TEMPLATES : "name, description, instructions"
+  GT_CONTENT_ENTRIES ||--o{ GIG_TEMPLATE_FIELDS : "label, help, default text"
+  GT_CONTENT_ENTRIES ||--o{ GIG_TEMPLATE_FIELD_OPTIONS : "option label"
+  GT_MARKETS ||--o{ MARKET_GIG_TEMPLATES : "offered in (market_id)"
+  GIG_TEMPLATES ||--o{ MARKET_GIG_TEMPLATES : "availability (gig_template_id)"
+  GIG_TEMPLATES |o--o{ GT_AUDIT_EVENTS : "GIG_TEMPLATE_* and availability"
+  GIG_TEMPLATE_VERSIONS |o--o{ GT_AUDIT_EVENTS : "GIG_TEMPLATE_VERSION_*"
+```
+
+**Identity versus version.** The template holds what never changes meaning; a version holds what a Gig is built from. A published version and its fields, options and requirements are frozen by guards, so the structure a Gig references can always be read back. At most one DRAFT and one ACTIVE version exist per template (partial unique indexes), numbers are contiguous.
+
+**The audit trail names a version only with its template** (0017): `catalog.audit_events (gig_template_version_id, gig_template_id)` is a composite foreign key to `gig_template_versions (gig_template_version_id, gig_template_id)`.
+
+**Wording is content.** Every key is derived from the template code (and the field key); the name key is a generated column. The keys are shared by all versions (a version freezes the structure, the wording has its own history in the content registry).
+
+**The hierarchy.** Service type > template > version > field > option. A Gig of CAT-003 will point at the version, not at the template. Down the tree the checks are at write time (activate, publish), up the tree at read time (the public read re-checks the service type, its category and the market rows); CAT-001 guards are unchanged.

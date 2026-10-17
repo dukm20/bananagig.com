@@ -6,7 +6,6 @@
 // need the admin context plus catalog-write, a reason, and write an immutable audit row and (for activation and availability) an outbox event in the same transaction.
 // Public reads answer with `Vary: Authorization` (the body depends on the optional token). Routes are thin; all rules live in @bananagig/catalog.
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import type { ZodType } from 'zod';
 import {
   CatalogCode,
   CatalogCategoryListResponse,
@@ -27,24 +26,24 @@ import {
   UpdateCategoryRequest,
   UpdateServiceTypeRequest,
 } from '@bananagig/contracts';
-import { CatalogError, type CatalogService, type CategoryView, type ProhibitedServiceView, type ServiceTypeView } from '@bananagig/catalog';
+import {
+  CatalogError,
+  type CatalogService,
+  type GigTemplateService,
+  type CategoryView,
+  type ProhibitedServiceView,
+  type ServiceTypeView,
+} from '@bananagig/catalog';
 import { log } from '@bananagig/observability';
 import type { ContentService } from '@bananagig/content';
 import { AppError } from '../../errors';
 import { hasCatalogPermission, optionalAuthenticated, requireCatalogPermission } from '../../plugins/auth';
 import { parseBody as parse, strictBody } from '../../plugins/strict-body';
-import { authErrorResponses, errorResponses, schemaOf } from '../../schema';
+import { schemaOf } from '../../schema';
 import { categoryDto, prohibitedServiceDto, serviceTypeDto, toAppError, type Texts } from './dto';
+import { bearer, dropNull, failures, meta, params, publicFailures, requireMarket, run } from './common';
+import { registerGigTemplateRoutes } from './gig-template-routes';
 
-const bearer = [{ bearerAuth: [] }];
-/** Management routes: 401 missing/invalid token, 403 missing role, 404 unknown, 409 state conflicts. */
-const failures = { ...authErrorResponses, 400: errorResponses[400], 403: errorResponses[400], 404: errorResponses[404], 409: errorResponses[400] };
-/** Public routes: 401 only for a credential that was presented and is invalid. */
-const publicFailures = { ...authErrorResponses, 400: errorResponses[400], 404: errorResponses[404] };
-const meta = (req: FastifyRequest) => ({ correlationId: req.correlationId });
-const run = async <T>(fn: () => Promise<T>): Promise<T> => fn().catch(toAppError);
-
-const params = (name: string, schema: ZodType) => ({ type: 'object', properties: { [name]: schemaOf(schema) }, required: [name], additionalProperties: false });
 const codeParams = params('code', CatalogCode);
 const marketCodeParams = {
   type: 'object',
@@ -55,6 +54,8 @@ const marketCodeParams = {
 
 export interface CatalogRouteDeps {
   catalog: CatalogService;
+  /** The Gig Templates (CAT-002); their routes are registered when provided. */
+  gigTemplates?: GigTemplateService;
   content: ContentService;
 }
 
@@ -104,12 +105,6 @@ export async function catalogRoutes(app: FastifyInstance, deps: CatalogRouteDeps
     v.nameContentKey,
     ...(v.descriptionContentKey ? [v.descriptionContentKey] : []),
   ];
-  const requireMarket = (market: string | undefined): string => {
-    if (market === undefined)
-      throw new AppError('VALIDATION', 'CATALOG_VALIDATION_FAILED', 'The market is required', { reason: 'MARKET_REQUIRED', field: 'market' });
-    return market;
-  };
-  const dropNull = <T>(list: (T | null)[]): T[] => list.filter((x): x is T => x !== null);
 
   // ------------------------------------------------------------------ reads (public view of a public market; management view for catalog-read)
   app.get(
@@ -491,4 +486,12 @@ export async function catalogRoutes(app: FastifyInstance, deps: CatalogRouteDeps
       return { data, meta: meta(req) };
     },
   );
+
+  // ------------------------------------------------------------------ Gig Templates (CAT-002): same context, so the no-store hook above covers them too
+  if (deps.gigTemplates)
+    await registerGigTemplateRoutes(app, {
+      gigTemplates: deps.gigTemplates,
+      catalog: svc,
+      helpers: { privileged, actor, textsFor, localeFor, managementLocale },
+    });
 }

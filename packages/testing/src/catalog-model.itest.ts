@@ -28,7 +28,9 @@ import { createIsolatedDatabase, createTestPool, migrationsDir, rejection, sleep
 // Migration 0015 creates the catalog schema: the PLATFORM-OWNED taxonomy (categories, service types, prohibited services), their availability and order per market, an
 // immutable audit trail, seven functions (one status machine, one immutability guard and five row guards) with twelve triggers (SQLSTATE 23000, DETAIL
 // catalog_rule:<KEY>), and a deliberately minimal DRAFT seed (2 categories, 4 service types, 12 managed copy entries published through the real content lifecycle).
-// Nothing else changes. These tests drive the REAL tables with raw SQL on isolated databases: the exact shape, the seed, every CHECK, every guard rule with the exact
+// Nothing else changes. Migration 0016 (CAT-002, gig templates) later ADDED six tables, nine functions and twelve triggers to the schema and widened audit_events (two columns, two
+// foreign keys, the two replaced CHECKs); every pin of this file about the CAT-001 objects is scoped to the six CAT-001 tables / seven CAT-001 functions (CAT1_TABLES, CAT1_FUNCTIONS) and the
+// audit_events pins are the NEW 0016 text, while gig-template-model.itest.ts asserts the schema in total. These tests drive the REAL tables with raw SQL on isolated databases: the exact shape, the seed, every CHECK, every guard rule with the exact
 // failing statement, the status machine over the full 4 x 4 matrix, the hierarchy and the public-exposure predicate of CatalogService, the interleavings that matter
 // under real concurrency, the access path and the privacy shape, and a mutation check on a scratch database for the locks and triggers the invariants rest on.
 // The service is covered in packages/catalog (and the API in apps/api).
@@ -153,6 +155,20 @@ const MC = 'catalog.market_categories';
 const MST = 'catalog.market_service_types';
 const AUDIT = 'catalog.audit_events';
 const TABLES = [CAT, ST, PS, MC, MST, AUDIT];
+/** The six CAT-001 tables (migration 0016 added more tables to the schema: every shape pin of this file is scoped to these). */
+const CAT1_TABLES = ['audit_events', 'categories', 'market_categories', 'market_service_types', 'prohibited_services', 'service_types'];
+/** The seven CAT-001 functions (0016 added nine more). */
+const CAT1_FUNCTIONS = [
+  'assert_status_transition',
+  'forbid_mutation',
+  'guard_categories',
+  'guard_market_categories',
+  'guard_market_service_types',
+  'guard_prohibited_services',
+  'guard_service_types',
+];
+/** The Gig Template copy seeded by migration 0016 lives under this stem; the CAT-001 seed assertions exclude it. */
+const GIG_TEMPLATE_KEYS = "key LIKE 'catalog.gig\\_template.%'";
 const STATUSES: readonly CatalogStatus[] = CATALOG_STATUSES;
 /** The statuses a row passes through (from DRAFT) to reach a given status by legal steps only. */
 const PATH: Record<CatalogStatus, CatalogStatus[]> = { DRAFT: [], ACTIVE: ['ACTIVE'], INACTIVE: ['ACTIVE', 'INACTIVE'], RETIRED: ['RETIRED'] };
@@ -460,6 +476,8 @@ const AUDIT_COLUMNS: ColumnShape[] = [
   ['changes', 'jsonb', true, null, null],
   ['reason', 'text', false, null, null],
   ['correlation_id', 'text', false, null, null],
+  ['gig_template_id', 'uuid', true, null, null], // added by 0016 (CAT-002)
+  ['gig_template_version_id', 'uuid', true, null, null], // added by 0016 (CAT-002)
 ];
 const COLUMNS_BY_TABLE: Record<string, ColumnShape[]> = {
   audit_events: AUDIT_COLUMNS,
@@ -527,13 +545,20 @@ const CONSTRAINT_DEFS: Record<string, Record<string, string>> = {
     fk_audit_events__service_type_id: FK('service_type_id', 'catalog.service_types(service_type_id)'),
     fk_audit_events__prohibited_service_id: FK('prohibited_service_id', 'catalog.prohibited_services(prohibited_service_id)'),
     fk_audit_events__market_id: FK('market_id', 'geography.markets(market_id)'),
+    fk_audit_events__gig_template_id: FK('gig_template_id', 'catalog.gig_templates(gig_template_id)'),
+    // 0017 replaced the simple foreign key by a composite one (version id, template id) so an audit row cannot name a version under another template
+    fk_audit_events__gig_template_version: FK(
+      'gig_template_version_id, gig_template_id',
+      'catalog.gig_template_versions(gig_template_version_id, gig_template_id)',
+    ),
+    // the two CHECKs below are the text 0016 REPLACED them with (0015 had the nine CAT-001 actions and the four-subject version)
     ck_audit_events__action:
-      "CHECK ((action = ANY (ARRAY['CATEGORY_CREATED'::text, 'CATEGORY_UPDATED'::text, 'CATEGORY_STATUS_CHANGED'::text, 'SERVICE_TYPE_CREATED'::text, 'SERVICE_TYPE_UPDATED'::text, 'SERVICE_TYPE_STATUS_CHANGED'::text, 'PROHIBITED_SERVICE_CREATED'::text, 'PROHIBITED_SERVICE_STATUS_CHANGED'::text, 'MARKET_CATALOG_AVAILABILITY_CHANGED'::text])))",
+      "CHECK ((action = ANY (ARRAY['CATEGORY_CREATED'::text, 'CATEGORY_UPDATED'::text, 'CATEGORY_STATUS_CHANGED'::text, 'SERVICE_TYPE_CREATED'::text, 'SERVICE_TYPE_UPDATED'::text, 'SERVICE_TYPE_STATUS_CHANGED'::text, 'PROHIBITED_SERVICE_CREATED'::text, 'PROHIBITED_SERVICE_STATUS_CHANGED'::text, 'MARKET_CATALOG_AVAILABILITY_CHANGED'::text, 'GIG_TEMPLATE_CREATED'::text, 'GIG_TEMPLATE_UPDATED'::text, 'GIG_TEMPLATE_STATUS_CHANGED'::text, 'GIG_TEMPLATE_VERSION_CREATED'::text, 'GIG_TEMPLATE_VERSION_CHANGED'::text, 'GIG_TEMPLATE_VERSION_PUBLISHED'::text, 'GIG_TEMPLATE_VERSION_RETIRED'::text, 'MARKET_GIG_TEMPLATE_AVAILABILITY_CHANGED'::text])))",
     ck_audit_events__actor: 'CHECK (((length(btrim(actor)) > 0) AND (length(actor) <= 200)))',
     ck_audit_events__changes_object: "CHECK (((changes IS NULL) OR (jsonb_typeof(changes) = 'object'::text)))",
     ck_audit_events__reason: 'CHECK (((length(btrim(reason)) > 0) AND (length(reason) <= 1000)))',
     ck_audit_events__subject:
-      "CHECK ((((action ~~ 'CATEGORY\\_%'::text) AND (category_id IS NOT NULL) AND (service_type_id IS NULL) AND (prohibited_service_id IS NULL) AND (market_id IS NULL)) OR ((action ~~ 'SERVICE\\_TYPE\\_%'::text) AND (service_type_id IS NOT NULL) AND (category_id IS NULL) AND (prohibited_service_id IS NULL) AND (market_id IS NULL)) OR ((action ~~ 'PROHIBITED\\_SERVICE\\_%'::text) AND (prohibited_service_id IS NOT NULL) AND (category_id IS NULL) AND (service_type_id IS NULL) AND (market_id IS NULL)) OR ((action = 'MARKET_CATALOG_AVAILABILITY_CHANGED'::text) AND (market_id IS NOT NULL) AND (prohibited_service_id IS NULL) AND ((category_id IS NULL) <> (service_type_id IS NULL)))))",
+      "CHECK ((((action ~~ 'CATEGORY\\_%'::text) AND (category_id IS NOT NULL) AND (service_type_id IS NULL) AND (prohibited_service_id IS NULL) AND (market_id IS NULL) AND (gig_template_id IS NULL) AND (gig_template_version_id IS NULL)) OR ((action ~~ 'SERVICE\\_TYPE\\_%'::text) AND (service_type_id IS NOT NULL) AND (category_id IS NULL) AND (prohibited_service_id IS NULL) AND (market_id IS NULL) AND (gig_template_id IS NULL) AND (gig_template_version_id IS NULL)) OR ((action ~~ 'PROHIBITED\\_SERVICE\\_%'::text) AND (prohibited_service_id IS NOT NULL) AND (category_id IS NULL) AND (service_type_id IS NULL) AND (market_id IS NULL) AND (gig_template_id IS NULL) AND (gig_template_version_id IS NULL)) OR ((action = 'MARKET_CATALOG_AVAILABILITY_CHANGED'::text) AND (market_id IS NOT NULL) AND (prohibited_service_id IS NULL) AND ((category_id IS NULL) <> (service_type_id IS NULL)) AND (gig_template_id IS NULL) AND (gig_template_version_id IS NULL)) OR ((action = ANY (ARRAY['GIG_TEMPLATE_CREATED'::text, 'GIG_TEMPLATE_UPDATED'::text, 'GIG_TEMPLATE_STATUS_CHANGED'::text])) AND (gig_template_id IS NOT NULL) AND (gig_template_version_id IS NULL) AND (category_id IS NULL) AND (service_type_id IS NULL) AND (prohibited_service_id IS NULL) AND (market_id IS NULL)) OR ((action = ANY (ARRAY['GIG_TEMPLATE_VERSION_CREATED'::text, 'GIG_TEMPLATE_VERSION_CHANGED'::text, 'GIG_TEMPLATE_VERSION_PUBLISHED'::text, 'GIG_TEMPLATE_VERSION_RETIRED'::text])) AND (gig_template_id IS NOT NULL) AND (gig_template_version_id IS NOT NULL) AND (category_id IS NULL) AND (service_type_id IS NULL) AND (prohibited_service_id IS NULL) AND (market_id IS NULL)) OR ((action = 'MARKET_GIG_TEMPLATE_AVAILABILITY_CHANGED'::text) AND (market_id IS NOT NULL) AND (gig_template_id IS NOT NULL) AND (gig_template_version_id IS NULL) AND (category_id IS NULL) AND (service_type_id IS NULL) AND (prohibited_service_id IS NULL))))",
   },
 };
 const FK_TARGETS: Record<string, string> = {
@@ -553,6 +578,8 @@ const FK_TARGETS: Record<string, string> = {
   fk_audit_events__service_type_id: 'catalog.service_types',
   fk_audit_events__prohibited_service_id: 'catalog.prohibited_services',
   fk_audit_events__market_id: 'geography.markets',
+  fk_audit_events__gig_template_id: 'catalog.gig_templates', // added by 0016
+  fk_audit_events__gig_template_version: 'catalog.gig_template_versions', // added by 0016, made composite by 0017
 };
 const INDEX_DEFS: Record<string, Record<string, string>> = {
   audit_events: { pk_audit_events: 'CREATE UNIQUE INDEX pk_audit_events ON catalog.audit_events USING btree (audit_event_id)' },
@@ -668,7 +695,8 @@ describe('A. schema shape: a platform-owned taxonomy with generated content keys
       { nspname: 'catalog', commented: true },
     ]);
     const tables = await q<{ table_name: string }>(
-      "SELECT table_name FROM information_schema.tables WHERE table_schema = 'catalog' AND table_type = 'BASE TABLE' ORDER BY 1",
+      "SELECT table_name FROM information_schema.tables WHERE table_schema = 'catalog' AND table_type = 'BASE TABLE' AND table_name = ANY($1) ORDER BY 1",
+      [CAT1_TABLES],
     );
     expect(tables.map((r) => r.table_name)).toEqual([
       'audit_events',
@@ -678,7 +706,13 @@ describe('A. schema shape: a platform-owned taxonomy with generated content keys
       'prohibited_services',
       'service_types',
     ]);
-    expect(await q("SELECT c.relkind, count(*)::int AS n FROM pg_class c WHERE c.relnamespace = 'catalog'::regnamespace GROUP BY 1 ORDER BY 1")).toEqual([
+    expect(
+      await q(
+        `SELECT c.relkind, count(*)::int AS n FROM pg_class c LEFT JOIN pg_index i ON i.indexrelid = c.oid
+          WHERE c.relnamespace = 'catalog'::regnamespace AND (c.relname = ANY($1) OR i.indrelid::regclass::text = ANY($2)) GROUP BY 1 ORDER BY 1`,
+        [CAT1_TABLES, CAT1_TABLES.map((t) => `catalog.${t}`)],
+      ),
+    ).toEqual([
       { relkind: 'i', n: 12 }, // 6 primary keys + 3 unique codes + 2 unique orders + idx_service_types__category
       { relkind: 'r', n: 6 },
     ]);
@@ -701,7 +735,8 @@ describe('A. schema shape: a platform-owned taxonomy with generated content keys
     expect(
       await q(
         `SELECT c.relname, a.attname, a.attgenerated, a.attidentity FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid
-          WHERE c.relnamespace = 'catalog'::regnamespace AND c.relkind = 'r' AND a.attnum > 0 AND NOT a.attisdropped AND (a.attgenerated <> '' OR a.attidentity <> '') ORDER BY 1, 2`,
+          WHERE c.relnamespace = 'catalog'::regnamespace AND c.relkind = 'r' AND c.relname = ANY($1) AND a.attnum > 0 AND NOT a.attisdropped AND (a.attgenerated <> '' OR a.attidentity <> '') ORDER BY 1, 2`,
+        [CAT1_TABLES],
       ),
     ).toEqual([
       { relname: 'categories', attname: 'name_content_key', attgenerated: 's', attidentity: '' },
@@ -762,18 +797,19 @@ describe('A. schema shape: a platform-owned taxonomy with generated content keys
     },
   );
 
-  it('has 44 primary key, unique, foreign key and check constraints in the catalog schema (8 + 8 + 8 + 5 + 5 + 10) and no exclusion constraint', async () => {
+  it('has 46 primary key, unique, foreign key and check constraints on the six tables (8 + 8 + 8 + 5 + 5 + 12: 0015 made 44, 0016 added the two audit_events foreign keys) and no exclusion constraint', async () => {
     const n = await q<{ contype: string; n: number }>(
-      "SELECT c.contype, count(*)::int AS n FROM pg_constraint c WHERE c.connamespace = 'catalog'::regnamespace GROUP BY 1 ORDER BY 1",
+      "SELECT c.contype, count(*)::int AS n FROM pg_constraint c WHERE c.connamespace = 'catalog'::regnamespace AND c.conrelid::regclass::text = ANY($1) GROUP BY 1 ORDER BY 1",
+      [CAT1_TABLES.map((t) => `catalog.${t}`)],
     );
     expect(n).toEqual([
       { contype: 'c', n: 17 },
-      { contype: 'f', n: 16 },
+      { contype: 'f', n: 18 },
       { contype: 'p', n: 6 },
       { contype: 'u', n: 5 },
     ]);
-    expect(17 + 16 + 6 + 5).toBe(44);
-    expect(Object.values(CONSTRAINT_DEFS).reduce((a, d) => a + Object.keys(d).length, 0)).toBe(44);
+    expect(17 + 18 + 6 + 5).toBe(46);
+    expect(Object.values(CONSTRAINT_DEFS).reduce((a, d) => a + Object.keys(d).length, 0)).toBe(46);
   });
 
   it('declares every foreign key ON DELETE RESTRICT and ON UPDATE NO ACTION with MATCH SIMPLE and the documented target; nothing in the catalog cascades or sets null', async () => {
@@ -781,7 +817,7 @@ describe('A. schema shape: a platform-owned taxonomy with generated content keys
     for (const t of Object.keys(CONSTRAINT_DEFS)) fks.push(...(await constraintsOf(`catalog.${t}`)).filter((r) => r.contype === 'f'));
     expect(Object.fromEntries(fks.map((r) => [r.conname, r.target]))).toEqual(FK_TARGETS);
     expect(fks.map((r) => [r.confdeltype, r.confupdtype, r.confmatchtype])).toEqual(fks.map(() => ['r', 'a', 's']));
-    expect(fks).toHaveLength(16);
+    expect(fks).toHaveLength(18);
   });
 
   it.each(Object.entries(INDEX_DEFS))('has exactly the documented indexes on %s and no other', async (table, defs) => {
@@ -792,16 +828,23 @@ describe('A. schema shape: a platform-owned taxonomy with generated content keys
 
   it('has no partial, expression or covering index anywhere in the schema, and none on status, enabled, a content key or a timestamp (the tables hold tens of rows)', async () => {
     expect(
-      (await q<{ indexname: string }>("SELECT indexname FROM pg_indexes WHERE schemaname = 'catalog' AND indexname !~ '^(pk|uq|idx)_'")).map(
-        (r) => r.indexname,
-      ),
-    ).toEqual([]);
-    expect(
-      await q("SELECT indexname FROM pg_indexes WHERE schemaname = 'catalog' AND (indexdef ~ ' WHERE ' OR indexdef ~ 'INCLUDE' OR indexdef ~ 'lower\\(')"),
+      (
+        await q<{ indexname: string }>(
+          "SELECT indexname FROM pg_indexes WHERE schemaname = 'catalog' AND tablename = ANY($1) AND indexname !~ '^(pk|uq|idx)_'",
+          [CAT1_TABLES],
+        )
+      ).map((r) => r.indexname),
     ).toEqual([]);
     expect(
       await q(
-        "SELECT indexname FROM pg_indexes WHERE schemaname = 'catalog' AND indexdef ~ '(enabled|status|content_key|updated_at|created_at|occurred_at|actor|action)'",
+        "SELECT indexname FROM pg_indexes WHERE schemaname = 'catalog' AND tablename = ANY($1) AND (indexdef ~ ' WHERE ' OR indexdef ~ 'INCLUDE' OR indexdef ~ 'lower\\(')",
+        [CAT1_TABLES],
+      ),
+    ).toEqual([]);
+    expect(
+      await q(
+        "SELECT indexname FROM pg_indexes WHERE schemaname = 'catalog' AND tablename = ANY($1) AND indexdef ~ '(enabled|status|content_key|updated_at|created_at|occurred_at|actor|action)'",
+        [CAT1_TABLES],
       ),
     ).toEqual([]);
     expect(Object.values(INDEX_DEFS).reduce((a, d) => a + Object.keys(d).length, 0)).toBe(12);
@@ -819,7 +862,8 @@ describe('A. schema shape: a platform-owned taxonomy with generated content keys
 
   it('has exactly twelve triggers in the schema (two per table: a row guard and a TRUNCATE refusal), every one BEFORE, and no other trigger on a catalog table', async () => {
     const all = await q<{ tgname: string }>(
-      "SELECT g.tgname FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid WHERE c.relnamespace = 'catalog'::regnamespace AND NOT g.tgisinternal ORDER BY 1",
+      "SELECT g.tgname FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid WHERE c.relnamespace = 'catalog'::regnamespace AND c.relname = ANY($1) AND NOT g.tgisinternal ORDER BY 1",
+      [CAT1_TABLES],
     );
     expect(all).toHaveLength(12);
     expect(Object.values(TRIGGER_DEFS).reduce((a, d) => a + Object.keys(d).length, 0)).toBe(12);
@@ -833,13 +877,15 @@ describe('A. schema shape: a platform-owned taxonomy with generated content keys
 
   it('defines the seven functions as plpgsql, not SECURITY DEFINER, without a custom search_path, with the right volatility (the status machine is IMMUTABLE), and a comment each', async () => {
     const rows = await q<{ proname: string; args: string; volatility: string; result: string }>(
-      `SELECT p.proname, pg_get_function_identity_arguments(p.oid) AS args, p.provolatile AS volatility, pg_get_function_result(p.oid) AS result FROM pg_proc p WHERE p.pronamespace = 'catalog'::regnamespace ORDER BY 1`,
+      `SELECT p.proname, pg_get_function_identity_arguments(p.oid) AS args, p.provolatile AS volatility, pg_get_function_result(p.oid) AS result FROM pg_proc p WHERE p.pronamespace = 'catalog'::regnamespace AND p.proname = ANY($1) ORDER BY 1`,
+      [CAT1_FUNCTIONS],
     );
     expect(rows).toEqual(FUNCTIONS);
     expect(
       await q(
         `SELECT p.proname FROM pg_proc p JOIN pg_language l ON l.oid = p.prolang
-          WHERE p.pronamespace = 'catalog'::regnamespace AND (l.lanname <> 'plpgsql' OR p.prosecdef OR p.proconfig IS NOT NULL OR obj_description(p.oid, 'pg_proc') IS NULL OR p.proleakproof OR p.proisstrict)`,
+          WHERE p.pronamespace = 'catalog'::regnamespace AND p.proname = ANY($1) AND (l.lanname <> 'plpgsql' OR p.prosecdef OR p.proconfig IS NOT NULL OR obj_description(p.oid, 'pg_proc') IS NULL OR p.proleakproof OR p.proisstrict)`,
+        [CAT1_FUNCTIONS],
       ),
     ).toEqual([]);
     // the guard functions name every rule key they can raise in their comment (the documented contract of the SQLSTATE 23000 details)
@@ -929,7 +975,8 @@ describe('A. schema shape: a platform-owned taxonomy with generated content keys
           )
           .then((r) => r.rows[0] as { entries: number; versions: number; audit: number });
       const [x, y] = [await total(beforePool), await total(seedPool)];
-      expect({ entries: y.entries - x.entries, versions: y.versions - x.versions, audit: y.audit - x.audit }).toEqual({ entries: 12, versions: 12, audit: 60 });
+      // 0015 (12 entries x 5 audit rows) plus 0016 (6 gig template entries x 5): 18 entries, 18 versions, 90 audit rows
+      expect({ entries: y.entries - x.entries, versions: y.versions - x.versions, audit: y.audit - x.audit }).toEqual({ entries: 18, versions: 18, audit: 90 });
     } finally {
       await beforePool.end();
       await before.drop();
@@ -1111,7 +1158,10 @@ describe('B. the seed: two DRAFT categories, four DRAFT service types, twelve ma
       changes: unknown;
       reason: string;
       correlation_id: string;
-    }>(`SELECT actor, action, category_id, service_type_id, prohibited_service_id, market_id, changes, reason, correlation_id FROM ${AUDIT}`);
+    }>(
+      `SELECT actor, action, category_id, service_type_id, prohibited_service_id, market_id, changes, reason, correlation_id FROM ${AUDIT} WHERE correlation_id = 'seed-0015'`,
+    );
+    // (migration 0016 wrote two more rows, GIG_TEMPLATE_CREATED under seed-0016: gig-template-model.itest.ts asserts them)
     expect(rows).toHaveLength(6);
     expect(rows.map((r) => r.action).sort()).toEqual([
       'CATEGORY_CREATED',
@@ -1150,7 +1200,9 @@ describe('B. the seed: two DRAFT categories, four DRAFT service types, twelve ma
   });
 
   it('seeds exactly the twelve catalog.* entries (name and description of each of the two categories and four service types) and nothing else under catalog.*', async () => {
-    const keys = (await sq<{ key: string }>(`SELECT key FROM content.entries WHERE key LIKE 'catalog.%' ORDER BY key COLLATE "C"`)).map((r) => r.key);
+    const keys = (
+      await sq<{ key: string }>(`SELECT key FROM content.entries WHERE key LIKE 'catalog.%' AND NOT (${GIG_TEMPLATE_KEYS}) ORDER BY key COLLATE "C"`)
+    ).map((r) => r.key);
     expect(keys).toEqual(SEEDED_KEYS.map((k) => k.key).sort(cmp));
     expect(keys).toHaveLength(12);
     expect(new Set(keys).size).toBe(12);
@@ -1180,7 +1232,7 @@ describe('B. the seed: two DRAFT categories, four DRAFT service types, twelve ma
       `SELECT e.key, count(*) OVER (PARTITION BY e.entry_id)::int AS n, v.locale, v.scope_type, v.scope_ref, v.version, v.status, v.effective_to IS NULL AS open,
               v.effective_from <= now() AS started, identity.consent_version_state(v.version_id, e.entry_id, now()) AS inforce, e.is_active AS active, e.max_scope_type,
               e.content_type, e.sensitivity, e.owner_role, v.body
-         FROM content.entries e JOIN content.versions v ON v.entry_id = e.entry_id WHERE e.key LIKE 'catalog.%'`,
+         FROM content.entries e JOIN content.versions v ON v.entry_id = e.entry_id WHERE e.key LIKE 'catalog.%' AND e.key NOT LIKE 'catalog.gig\\_template.%'`,
     );
     expect(rows).toHaveLength(12);
     const expected = new Map(SEEDED_KEYS.map((k) => [k.key, k]));
@@ -1210,7 +1262,7 @@ describe('B. the seed: two DRAFT categories, four DRAFT service types, twelve ma
 
   it('writes the content audit trail exactly like the real workflow: five rows per entry, in order, by system:migration under the correlation seed-0015', async () => {
     const rows = await sq<{ action: string; actor: string; correlation_id: string; n: number }>(
-      `SELECT a.action, a.actor, a.correlation_id, count(*)::int AS n FROM content.audit_events a JOIN content.entries e ON e.entry_id = a.entry_id WHERE e.key LIKE 'catalog.%' GROUP BY 1, 2, 3 ORDER BY 1`,
+      `SELECT a.action, a.actor, a.correlation_id, count(*)::int AS n FROM content.audit_events a JOIN content.entries e ON e.entry_id = a.entry_id WHERE e.key LIKE 'catalog.%' AND e.key NOT LIKE 'catalog.gig\\_template.%' GROUP BY 1, 2, 3 ORDER BY 1`,
     );
     expect(rows).toEqual(
       ['ENTRY_CREATED', 'VERSION_ACTIVATED', 'VERSION_APPROVED', 'VERSION_DRAFTED', 'VERSION_PUBLISHED'].map((action) => ({
@@ -1221,7 +1273,7 @@ describe('B. the seed: two DRAFT categories, four DRAFT service types, twelve ma
       })),
     );
     const order = await sq<{ key: string; actions: string[] }>(
-      `SELECT e.key, array_agg(a.action ORDER BY a.occurred_at, a.audit_event_id) AS actions FROM content.audit_events a JOIN content.entries e ON e.entry_id = a.entry_id WHERE e.key LIKE 'catalog.%' GROUP BY e.key`,
+      `SELECT e.key, array_agg(a.action ORDER BY a.occurred_at, a.audit_event_id) AS actions FROM content.audit_events a JOIN content.entries e ON e.entry_id = a.entry_id WHERE e.key LIKE 'catalog.%' AND e.key NOT LIKE 'catalog.gig\\_template.%' GROUP BY e.key`,
     );
     expect(order).toHaveLength(12);
     for (const o of order) expect(o.actions, o.key).toEqual(['ENTRY_CREATED', 'VERSION_DRAFTED', 'VERSION_APPROVED', 'VERSION_PUBLISHED', 'VERSION_ACTIVATED']);
@@ -1279,7 +1331,8 @@ describe('B. the seed: two DRAFT categories, four DRAFT service types, twelve ma
     await expect(seedPool.query(`TRUNCATE ${AUDIT}`)).rejects.toMatchObject({ code: '23000', detail: 'catalog_rule:ROW_IMMUTABLE' });
     expect((await sq<{ n: number }>(`SELECT count(*)::int AS n FROM ${CAT}`))[0]!.n).toBe(2);
     expect((await sq<{ n: number }>(`SELECT count(*)::int AS n FROM ${ST} WHERE status = 'DRAFT'`))[0]!.n).toBe(4);
-    expect((await sq<{ n: number }>(`SELECT count(*)::int AS n FROM ${AUDIT}`))[0]!.n).toBe(6);
+    expect((await sq<{ n: number }>(`SELECT count(*)::int AS n FROM ${AUDIT} WHERE correlation_id = 'seed-0015'`))[0]!.n).toBe(6);
+    expect((await sq<{ n: number }>(`SELECT count(*)::int AS n FROM ${AUDIT}`))[0]!.n).toBe(8); // + the two GIG_TEMPLATE_CREATED rows of 0016
   });
 
   it('holds no value that looks like a person in the seeded rows or the copy: no address, number, UUID or URL', async () => {
@@ -2932,7 +2985,9 @@ describe('F. RESTRICT: every foreign key holds when the guards are bypassed, and
     const before = await Promise.all(TRUNCATE_ORDER.map((t) => count(t)));
     for (const t of [CAT, ST, PS]) await expect(pool.query(`TRUNCATE ${t}`)).rejects.toMatchObject({ code: '0A000' });
     for (const t of TRUNCATE_ORDER) await expectRule(run(`TRUNCATE ${t} CASCADE`), 'ROW_IMMUTABLE');
-    await expectRule(run(`TRUNCATE ${TRUNCATE_ORDER.join(', ')}`), 'ROW_IMMUTABLE');
+    // the six tables alone without CASCADE: since 0016 gig_templates (outside the list) references service_types, so PostgreSQL itself refuses the list before any trigger runs
+    // (the full set of 12 tables without CASCADE is asserted by gig-template-model.itest.ts)
+    expect(await fail(run(`TRUNCATE ${TRUNCATE_ORDER.join(', ')}`))).toMatchObject({ code: '0A000' });
     await expectRule(run(`TRUNCATE ${TRUNCATE_ORDER.join(', ')} RESTART IDENTITY CASCADE`), 'ROW_IMMUTABLE');
     expect(await Promise.all(TRUNCATE_ORDER.map((t) => count(t)))).toEqual(before);
   });
@@ -3838,11 +3893,12 @@ describe('J. the catalogue cannot hold, and does not hold, anything about a pers
 
   it('has no column that could hold a person, an address, a token, a price, a fee, a currency, a duration, a radius, a capacity or display text: the names are codes, flags, orders, keys, ids and times', async () => {
     const rows = await q<{ table_name: string; column_name: string; data_type: string }>(
-      "SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = 'catalog' ORDER BY 1, ordinal_position",
+      "SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = 'catalog' AND table_name = ANY($1) ORDER BY 1, ordinal_position",
+      [CAT1_TABLES],
     );
     expect(rows).toHaveLength(Object.values(COLUMNS_BY_TABLE).reduce((a, c) => a + c.length, 0));
     expect(rows.filter((r) => forbidden(r.column_name)).map((r) => `${r.table_name}.${r.column_name}`)).toEqual([]);
-    // only scalar types; jsonb is the audit diff and nothing else
+    // only scalar types; jsonb is the audit diff and nothing else (the CAT-002 tables are scanned by gig-template-model.itest.ts)
     expect([...new Set(rows.map((r) => r.data_type))].sort()).toEqual(['boolean', 'integer', 'jsonb', 'text', 'timestamp with time zone', 'uuid']);
     expect(rows.filter((r) => r.data_type === 'jsonb').map((r) => `${r.table_name}.${r.column_name}`)).toEqual(['audit_events.changes']);
     expect(rows.filter((r) => r.data_type === 'integer').map((r) => `${r.table_name}.${r.column_name}`)).toEqual([
@@ -3859,7 +3915,10 @@ describe('J. the catalogue cannot hold, and does not hold, anything about a pers
   });
 
   it('writes nothing outside its own tables: no guard function inserts, updates or deletes a row, notifies, or touches the outbox or the audit trail (the service writes the audit and the events)', async () => {
-    const src = await q<{ proname: string; prosrc: string }>("SELECT proname, prosrc FROM pg_proc WHERE pronamespace = 'catalog'::regnamespace");
+    const src = await q<{ proname: string; prosrc: string }>(
+      "SELECT proname, prosrc FROM pg_proc WHERE pronamespace = 'catalog'::regnamespace AND proname = ANY($1)",
+      [CAT1_FUNCTIONS],
+    );
     expect(src).toHaveLength(7);
     for (const f of src) {
       expect(f.prosrc, f.proname).not.toMatch(/INSERT\s+INTO|UPDATE\s+[a-z]|DELETE\s+FROM|pg_notify|NOTIFY|outbox|audit_events|TRUNCATE\s+[a-z]/i);

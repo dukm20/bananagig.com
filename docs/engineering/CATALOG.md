@@ -74,9 +74,13 @@ PostgreSQL is the truth. The public snapshot of a market (its enabled ACTIVE cat
 - **Audit text checks.** `reason` and `actor` are checked with `btrim`, which trims spaces only; the API validates the text (`adminText`) before it reaches the database.
 - **Prohibited services** can still be created under a RETIRED category (the list is data only; no workflow reads it yet).
 
+## Gig Templates
+
+The versioned, platform-owned structure a provider builds a Gig from (CAT-002) lives in the same schema and is documented in `docs/engineering/GIG_TEMPLATES.md` (ADR-0041). It shares this document's visibility model, roles, audit table, generation cache and market gate.
+
 ## Not here (see `TECH_DEBT.md`, DEBT-0083)
 
-The admin UI, the complete launch taxonomy (the seed is a deliberately minimal DRAFT set; the launch list depends on PRD question Q5), natural-language synonyms and the search projection, verification/skill/equipment requirement policies, the prohibited-service moderation, the category icon media pipeline, effective-dated availability, Gig templates (CAT-002).
+The admin UI, the complete launch taxonomy (the seed is a deliberately minimal DRAFT set; the launch list depends on PRD question Q5), natural-language synonyms and the search projection, verification/skill/equipment requirement policies, the prohibited-service moderation, the category icon media pipeline, effective-dated availability, Gig templates (built in CAT-002, see GIG_TEMPLATES.md; their own deferrals are DEBT-0084).
 
 ## How to add a category or a service type
 

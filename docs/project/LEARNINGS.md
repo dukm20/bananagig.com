@@ -1360,3 +1360,28 @@ For a data-driven selection: oracle query for the expected set, one reversible f
 ### Evidence
 `apps/smoke/src/index.ts` (Account area, steps (8) to (10) and the precondition), `apps/api/src/account-area.itest.ts`, `packages/accounts/src/account-area.itest.ts`.
 
+
+## LRN-0055 — In PL/pgSQL, `IF <condition> THEN` ends the condition at the FIRST `THEN`, even inside a `CASE`: compute the value into a variable first
+
+Date: 2026-10-17
+Checkpoint: CAT-002
+Domain: database
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0041
+Related skill: skills/database/SKILL.md
+
+### Context
+A guard trigger compared a content key with `CASE WHEN x IS NULL THEN NULL ELSE ... END` inside an `IF ... THEN`. The migration failed with `syntax error at end of input` and a caret under the `CASE`, on a line number relative to the function body, with nothing pointing at the real cause.
+
+### Learning
+PL/pgSQL does not parse the `IF` condition as an SQL expression of its own: it scans for the first `THEN` keyword and sends the text before it to the SQL parser as `SELECT <text>`. A `CASE ... THEN` inside the condition therefore cuts the expression short. Do not put `CASE` (or any construct that uses the word `THEN`) in an `IF`/`ELSIF` condition: assign the value to a variable (or use `COALESCE`/`NULLIF`) and test the variable. The same applies to `WHEN ... THEN` inside a `CASE` statement's condition.
+
+### Why it matters
+The error text names a symptom (end of input) far from the cause, the migration is applied in one transaction so nothing is half done, and the same mistake costs the next author the same hour.
+
+### Reuse rule
+Write guard triggers with intermediate variables (`stem := ...; IF a <> stem || '.label' OR COALESCE(b, stem || '.help') <> stem || '.help' THEN`). When a PL/pgSQL function fails with "syntax error at end of input", look for `THEN` inside a condition first. Run every new migration from zero on a scratch database before anything depends on it.
+
+### Evidence
+`db/migrations/0016_gig_templates.sql` (`catalog.guard_gig_template_fields`, the `stem` variable).

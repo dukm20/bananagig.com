@@ -81,6 +81,7 @@ export function prohibitedServiceDto(v: ProhibitedServiceView, texts: Texts): Pr
  * Anything else a future service change might put in `details` (a constraint, a cause, SQL, a table, a value) is dropped here, not trusted to be absent.
  */
 const SAFE_TOKEN = /^[A-Za-z0-9_.-]{1,64}$/;
+const SAFE_CONTENT_KEY = /^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$/;
 export function safeDetails(details: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const key of ['reason', 'field', 'code'] as const) {
@@ -88,6 +89,11 @@ export function safeDetails(details: Record<string, unknown>): Record<string, un
     if (typeof v === 'string' && SAFE_TOKEN.test(v.slice(0, 64))) out[key] = v.slice(0, 64);
   }
   if (details.retryable === true) out.retryable = true;
+  // the content keys that are missing or unpublished (a few, each a dot-separated lower-case token): the administrator needs to know exactly which copy to write
+  if (Array.isArray(details.contentKeys)) {
+    const keys = details.contentKeys.filter((k): k is string => typeof k === 'string' && k.length <= 160 && SAFE_CONTENT_KEY.test(k)).slice(0, 20);
+    if (keys.length > 0) out.contentKeys = keys;
+  }
   return out;
 }
 
@@ -100,6 +106,8 @@ export function toAppError(err: unknown): never {
     case 'CATEGORY_NOT_FOUND':
     case 'SERVICE_TYPE_NOT_FOUND':
     case 'PROHIBITED_SERVICE_NOT_FOUND':
+    case 'GIG_TEMPLATE_NOT_FOUND':
+    case 'GIG_TEMPLATE_VERSION_NOT_FOUND':
     case 'MARKET_NOT_FOUND':
       throw new AppError('NOT_FOUND', code, err.message, details);
     case 'VALIDATION_FAILED':

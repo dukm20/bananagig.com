@@ -73,6 +73,23 @@ const INVALID_STATE_RULES: Readonly<Record<string, string>> = {
   DRAFT_IS_INITIAL: 'DRAFT is the initial status and cannot be set again',
   STATUS_TRANSITION: 'the status transition is not allowed',
   MUST_START_AS_DRAFT: 'a catalogue item is created as DRAFT',
+  // Gig Templates (CAT-002)
+  SERVICE_TYPE_RETIRED: 'a Gig Template cannot be created under a RETIRED service type',
+  SERVICE_TYPE_NOT_ACTIVE: 'the service type of the Gig Template is not ACTIVE',
+  GIG_TEMPLATE_RETIRED: 'a RETIRED Gig Template accepts no new version',
+  GIG_TEMPLATE_NOT_ACTIVE: 'a version can be published only while its Gig Template is ACTIVE',
+  GIG_TEMPLATE_HAS_OPEN_DRAFT: 'the Gig Template still has a DRAFT version: discard it first',
+  VERSION_NUMBER_SEQUENCE: 'version numbers are contiguous',
+  VERSION_FROZEN: 'a published version is frozen',
+  VERSION_NOT_DRAFT: 'only a DRAFT version can change',
+  SUPERSEDED_IS_AUTOMATIC: 'a version is superseded only by the publication of a newer version',
+  GIG_TEMPLATE_HAS_NO_FIELDS: 'a version without fields cannot be published',
+  ENUM_FIELD_WITHOUT_OPTIONS: 'an ENUM field has no options',
+  FIXED_ENUM_WITHOUT_DEFAULT: 'a PLATFORM_FIXED ENUM field has no default option',
+  CONTENT_NOT_PUBLISHED: 'the copy of the template is not published in the platform default locale',
+  CONTENT_KEY_MISMATCH: 'a content key does not follow the derivation from the template code',
+  OPTIONS_ONLY_FOR_ENUM: 'only an ENUM field has options',
+  FIELD_HAS_OPTIONS: 'a field with options cannot change its type or key: remove the options first',
 };
 function guardError(rule: string | undefined): CatalogError {
   if (rule && INVALID_STATE_RULES[rule]) return new CatalogError('INVALID_STATE', INVALID_STATE_RULES[rule]!, { reason: rule });
@@ -101,6 +118,13 @@ export function mapDbError(err: unknown): never {
       });
     if (constraint?.endsWith('__market_order'))
       throw new CatalogError('CONFLICT', 'another item of the market already has that display order', { reason: 'DISPLAY_ORDER_TAKEN' });
+    if (constraint === 'uq_gig_template_versions__draft')
+      throw new CatalogError('CONFLICT', 'the Gig Template already has a DRAFT version: edit or discard it', { reason: 'DRAFT_EXISTS' });
+    if (constraint === 'uq_gig_template_versions__number' || constraint === 'uq_gig_template_versions__active')
+      throw new CatalogError('CONFLICT', 'the change conflicted with a concurrent update; repeat the request', {
+        reason: 'CONCURRENT_UPDATE',
+        retryable: true,
+      });
     throw new CatalogError('CONFLICT', 'a record with this code already exists', { reason: 'CODE_TAKEN' });
   }
   if (e.code === '23514') throw new CatalogError('VALIDATION_FAILED', 'the operation violates a catalogue constraint', { constraint });
@@ -114,6 +138,14 @@ export function mapDbError(err: unknown): never {
       throw new CatalogError('VALIDATION_FAILED', 'the description content entry of this code does not exist: create it in the content registry first', {
         reason: 'DESCRIPTION_CONTENT_MISSING',
       });
+    if (constraint?.endsWith('__instructions_content_key'))
+      throw new CatalogError('VALIDATION_FAILED', 'the instructions content entry of this code does not exist: create it in the content registry first', {
+        reason: 'INSTRUCTIONS_CONTENT_MISSING',
+      });
+    if (constraint?.endsWith('_content_key'))
+      throw new CatalogError('VALIDATION_FAILED', 'a content entry of the template does not exist: create it in the content registry first', {
+        reason: 'CONTENT_ENTRY_MISSING',
+      });
     throw new CatalogError('VALIDATION_FAILED', 'a referenced record does not exist', { constraint });
   }
   if (e.code === '23000') throw guardError(guardRuleOf(e.detail));
@@ -125,12 +157,12 @@ export function mapDbError(err: unknown): never {
 }
 
 // ---------------------------------------------------------------- pure helpers
-const iso = (d: unknown): string => (d instanceof Date ? d.toISOString() : String(d));
-const status = (v: unknown): CatalogStatus => v as CatalogStatus;
-const invalid = (message: string, details: Record<string, unknown>): CatalogError => new CatalogError('VALIDATION_FAILED', message, details);
+export const iso = (d: unknown): string => (d instanceof Date ? d.toISOString() : String(d));
+export const status = (v: unknown): CatalogStatus => v as CatalogStatus;
+export const invalid = (message: string, details: Record<string, unknown>): CatalogError => new CatalogError('VALIDATION_FAILED', message, details);
 
 /** Validates a management input with the contract schema; the first issue names the field and nothing of the value. */
-function parseInput<T>(schema: z.ZodType<T>, input: unknown): T {
+export function parseInput<T>(schema: z.ZodType<T>, input: unknown): T {
   const r = schema.safeParse(input);
   if (r.success) return r.data;
   const first = r.error.issues[0];

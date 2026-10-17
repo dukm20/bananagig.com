@@ -21,16 +21,20 @@ CREATE TABLE catalog.audit_events (
   changes jsonb,
   reason text NOT NULL,
   correlation_id text NOT NULL,
+  gig_template_id uuid,
+  gig_template_version_id uuid,
   CONSTRAINT pk_audit_events PRIMARY KEY (audit_event_id),
   CONSTRAINT fk_audit_events__category_id FOREIGN KEY (category_id) REFERENCES catalog.categories(category_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_audit_events__gig_template_id FOREIGN KEY (gig_template_id) REFERENCES catalog.gig_templates(gig_template_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_audit_events__gig_template_version FOREIGN KEY (gig_template_version_id, gig_template_id) REFERENCES catalog.gig_template_versions(gig_template_version_id, gig_template_id) ON DELETE RESTRICT,
   CONSTRAINT fk_audit_events__market_id FOREIGN KEY (market_id) REFERENCES geography.markets(market_id) ON DELETE RESTRICT,
   CONSTRAINT fk_audit_events__prohibited_service_id FOREIGN KEY (prohibited_service_id) REFERENCES catalog.prohibited_services(prohibited_service_id) ON DELETE RESTRICT,
   CONSTRAINT fk_audit_events__service_type_id FOREIGN KEY (service_type_id) REFERENCES catalog.service_types(service_type_id) ON DELETE RESTRICT,
-  CONSTRAINT ck_audit_events__action CHECK ((action = ANY (ARRAY['CATEGORY_CREATED'::text, 'CATEGORY_UPDATED'::text, 'CATEGORY_STATUS_CHANGED'::text, 'SERVICE_TYPE_CREATED'::text, 'SERVICE_TYPE_UPDATED'::text, 'SERVICE_TYPE_STATUS_CHANGED'::text, 'PROHIBITED_SERVICE_CREATED'::text, 'PROHIBITED_SERVICE_STATUS_CHANGED'::text, 'MARKET_CATALOG_AVAILABILITY_CHANGED'::text]))),
+  CONSTRAINT ck_audit_events__action CHECK ((action = ANY (ARRAY['CATEGORY_CREATED'::text, 'CATEGORY_UPDATED'::text, 'CATEGORY_STATUS_CHANGED'::text, 'SERVICE_TYPE_CREATED'::text, 'SERVICE_TYPE_UPDATED'::text, 'SERVICE_TYPE_STATUS_CHANGED'::text, 'PROHIBITED_SERVICE_CREATED'::text, 'PROHIBITED_SERVICE_STATUS_CHANGED'::text, 'MARKET_CATALOG_AVAILABILITY_CHANGED'::text, 'GIG_TEMPLATE_CREATED'::text, 'GIG_TEMPLATE_UPDATED'::text, 'GIG_TEMPLATE_STATUS_CHANGED'::text, 'GIG_TEMPLATE_VERSION_CREATED'::text, 'GIG_TEMPLATE_VERSION_CHANGED'::text, 'GIG_TEMPLATE_VERSION_PUBLISHED'::text, 'GIG_TEMPLATE_VERSION_RETIRED'::text, 'MARKET_GIG_TEMPLATE_AVAILABILITY_CHANGED'::text]))),
   CONSTRAINT ck_audit_events__actor CHECK (((length(btrim(actor)) > 0) AND (length(actor) <= 200))),
   CONSTRAINT ck_audit_events__changes_object CHECK (((changes IS NULL) OR (jsonb_typeof(changes) = 'object'::text))),
   CONSTRAINT ck_audit_events__reason CHECK (((length(btrim(reason)) > 0) AND (length(reason) <= 1000))),
-  CONSTRAINT ck_audit_events__subject CHECK ((((action ~~ 'CATEGORY\_%'::text) AND (category_id IS NOT NULL) AND (service_type_id IS NULL) AND (prohibited_service_id IS NULL) AND (market_id IS NULL)) OR ((action ~~ 'SERVICE\_TYPE\_%'::text) AND (service_type_id IS NOT NULL) AND (category_id IS NULL) AND (prohibited_service_id IS NULL) AND (market_id IS NULL)) OR ((action ~~ 'PROHIBITED\_SERVICE\_%'::text) AND (prohibited_service_id IS NOT NULL) AND (category_id IS NULL) AND (service_type_id IS NULL) AND (market_id IS NULL)) OR ((action = 'MARKET_CATALOG_AVAILABILITY_CHANGED'::text) AND (market_id IS NOT NULL) AND (prohibited_service_id IS NULL) AND ((category_id IS NULL) <> (service_type_id IS NULL)))))
+  CONSTRAINT ck_audit_events__subject CHECK ((((action ~~ 'CATEGORY\_%'::text) AND (category_id IS NOT NULL) AND (service_type_id IS NULL) AND (prohibited_service_id IS NULL) AND (market_id IS NULL) AND (gig_template_id IS NULL) AND (gig_template_version_id IS NULL)) OR ((action ~~ 'SERVICE\_TYPE\_%'::text) AND (service_type_id IS NOT NULL) AND (category_id IS NULL) AND (prohibited_service_id IS NULL) AND (market_id IS NULL) AND (gig_template_id IS NULL) AND (gig_template_version_id IS NULL)) OR ((action ~~ 'PROHIBITED\_SERVICE\_%'::text) AND (prohibited_service_id IS NOT NULL) AND (category_id IS NULL) AND (service_type_id IS NULL) AND (market_id IS NULL) AND (gig_template_id IS NULL) AND (gig_template_version_id IS NULL)) OR ((action = 'MARKET_CATALOG_AVAILABILITY_CHANGED'::text) AND (market_id IS NOT NULL) AND (prohibited_service_id IS NULL) AND ((category_id IS NULL) <> (service_type_id IS NULL)) AND (gig_template_id IS NULL) AND (gig_template_version_id IS NULL)) OR ((action = ANY (ARRAY['GIG_TEMPLATE_CREATED'::text, 'GIG_TEMPLATE_UPDATED'::text, 'GIG_TEMPLATE_STATUS_CHANGED'::text])) AND (gig_template_id IS NOT NULL) AND (gig_template_version_id IS NULL) AND (category_id IS NULL) AND (service_type_id IS NULL) AND (prohibited_service_id IS NULL) AND (market_id IS NULL)) OR ((action = ANY (ARRAY['GIG_TEMPLATE_VERSION_CREATED'::text, 'GIG_TEMPLATE_VERSION_CHANGED'::text, 'GIG_TEMPLATE_VERSION_PUBLISHED'::text, 'GIG_TEMPLATE_VERSION_RETIRED'::text])) AND (gig_template_id IS NOT NULL) AND (gig_template_version_id IS NOT NULL) AND (category_id IS NULL) AND (service_type_id IS NULL) AND (prohibited_service_id IS NULL) AND (market_id IS NULL)) OR ((action = 'MARKET_GIG_TEMPLATE_AVAILABILITY_CHANGED'::text) AND (market_id IS NOT NULL) AND (gig_template_id IS NOT NULL) AND (gig_template_version_id IS NULL) AND (category_id IS NULL) AND (service_type_id IS NULL) AND (prohibited_service_id IS NULL))))
 );
 
 CREATE TABLE catalog.categories (
@@ -52,6 +56,142 @@ CREATE TABLE catalog.categories (
   CONSTRAINT ck_categories__status CHECK ((status = ANY (ARRAY['DRAFT'::text, 'ACTIVE'::text, 'INACTIVE'::text, 'RETIRED'::text])))
 );
 
+CREATE TABLE catalog.gig_template_field_options (
+  gig_template_field_id uuid NOT NULL,
+  option_code text NOT NULL,
+  label_content_key text NOT NULL,
+  is_default boolean NOT NULL DEFAULT false,
+  display_order integer NOT NULL,
+  CONSTRAINT pk_gig_template_field_options PRIMARY KEY (gig_template_field_id, option_code),
+  CONSTRAINT uq_gig_template_field_options__order UNIQUE (gig_template_field_id, display_order),
+  CONSTRAINT fk_gig_template_field_options__field_id FOREIGN KEY (gig_template_field_id) REFERENCES catalog.gig_template_fields(gig_template_field_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_gig_template_field_options__label_content_key FOREIGN KEY (label_content_key) REFERENCES content.entries(key) ON DELETE RESTRICT,
+  CONSTRAINT ck_gig_template_field_options__code CHECK (((option_code ~ '^[a-z][a-z0-9]*(_[a-z0-9]+)*$'::text) AND ((length(option_code) >= 2) AND (length(option_code) <= 32)))),
+  CONSTRAINT ck_gig_template_field_options__display_order CHECK (((display_order >= 1) AND (display_order <= 99)))
+);
+CREATE UNIQUE INDEX uq_gig_template_field_options__default ON catalog.gig_template_field_options USING btree (gig_template_field_id) WHERE is_default;
+
+CREATE TABLE catalog.gig_template_fields (
+  gig_template_field_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  gig_template_version_id uuid NOT NULL,
+  field_key text NOT NULL,
+  field_type text NOT NULL,
+  section text NOT NULL DEFAULT 'DETAILS'::text,
+  behavior text NOT NULL,
+  customer_visible boolean NOT NULL DEFAULT true,
+  display_order integer NOT NULL,
+  label_content_key text NOT NULL,
+  help_content_key text,
+  default_content_key text,
+  min_length integer,
+  max_length integer,
+  min_number numeric(18,4),
+  max_number numeric(18,4),
+  default_number numeric(18,4),
+  default_boolean boolean,
+  min_items integer,
+  max_items integer,
+  CONSTRAINT pk_gig_template_fields PRIMARY KEY (gig_template_field_id),
+  CONSTRAINT uq_gig_template_fields__key UNIQUE (gig_template_version_id, field_key),
+  CONSTRAINT uq_gig_template_fields__order UNIQUE (gig_template_version_id, display_order),
+  CONSTRAINT fk_gig_template_fields__default_content_key FOREIGN KEY (default_content_key) REFERENCES content.entries(key) ON DELETE RESTRICT,
+  CONSTRAINT fk_gig_template_fields__help_content_key FOREIGN KEY (help_content_key) REFERENCES content.entries(key) ON DELETE RESTRICT,
+  CONSTRAINT fk_gig_template_fields__label_content_key FOREIGN KEY (label_content_key) REFERENCES content.entries(key) ON DELETE RESTRICT,
+  CONSTRAINT fk_gig_template_fields__version_id FOREIGN KEY (gig_template_version_id) REFERENCES catalog.gig_template_versions(gig_template_version_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_gig_template_fields__behavior CHECK ((behavior = ANY (ARRAY['PLATFORM_FIXED'::text, 'PROVIDER_CONFIGURABLE'::text, 'PROVIDER_REQUIRED'::text]))),
+  CONSTRAINT ck_gig_template_fields__boolean_meta CHECK (((field_type = 'BOOLEAN'::text) OR (default_boolean IS NULL))),
+  CONSTRAINT ck_gig_template_fields__display_order CHECK (((display_order >= 1) AND (display_order <= 999))),
+  CONSTRAINT ck_gig_template_fields__duration_positive CHECK (((field_type <> 'DURATION'::text) OR (((min_number IS NULL) OR (min_number >= (1)::numeric)) AND ((max_number IS NULL) OR (max_number >= (1)::numeric)) AND ((default_number IS NULL) OR (default_number >= (1)::numeric))))),
+  CONSTRAINT ck_gig_template_fields__fixed CHECK (((behavior <> 'PLATFORM_FIXED'::text) OR ((field_type = ANY (ARRAY['TEXT'::text, 'LONG_TEXT'::text, 'INTEGER'::text, 'DECIMAL'::text, 'BOOLEAN'::text, 'ENUM'::text, 'DURATION'::text])) AND
+CASE
+    WHEN (field_type = ANY (ARRAY['TEXT'::text, 'LONG_TEXT'::text])) THEN (default_content_key IS NOT NULL)
+    WHEN (field_type = ANY (ARRAY['INTEGER'::text, 'DECIMAL'::text, 'DURATION'::text])) THEN (default_number IS NOT NULL)
+    WHEN (field_type = 'BOOLEAN'::text) THEN (default_boolean IS NOT NULL)
+    ELSE true
+END))),
+  CONSTRAINT ck_gig_template_fields__items CHECK ((((min_items IS NULL) OR (min_items >= 0)) AND ((max_items IS NULL) OR (max_items >= 0)) AND ((min_items IS NULL) OR (max_items IS NULL) OR (min_items <= max_items)) AND ((field_type <> ALL (ARRAY['EQUIPMENT_REFERENCE'::text, 'SKILL_REFERENCE'::text])) OR (max_items IS NULL) OR (max_items >= 1)))),
+  CONSTRAINT ck_gig_template_fields__items_meta CHECK (((field_type = ANY (ARRAY['MEDIA'::text, 'EQUIPMENT_REFERENCE'::text, 'SKILL_REFERENCE'::text])) OR ((min_items IS NULL) AND (max_items IS NULL)))),
+  CONSTRAINT ck_gig_template_fields__key CHECK (((field_key ~ '^[a-z][a-z0-9]*(_[a-z0-9]+)*$'::text) AND ((length(field_key) >= 2) AND (length(field_key) <= 32)))),
+  CONSTRAINT ck_gig_template_fields__length CHECK ((((min_length IS NULL) OR (min_length >= 1)) AND ((max_length IS NULL) OR (max_length >= 1)) AND ((min_length IS NULL) OR (max_length IS NULL) OR (min_length <= max_length)))),
+  CONSTRAINT ck_gig_template_fields__media_required CHECK (((NOT ((field_type = 'MEDIA'::text) AND (behavior = 'PROVIDER_REQUIRED'::text))) OR ((COALESCE(min_items, 0) >= 1) AND (max_items IS DISTINCT FROM 0)))),
+  CONSTRAINT ck_gig_template_fields__number_meta CHECK (((field_type = ANY (ARRAY['INTEGER'::text, 'DECIMAL'::text, 'DURATION'::text])) OR ((min_number IS NULL) AND (max_number IS NULL) AND (default_number IS NULL)))),
+  CONSTRAINT ck_gig_template_fields__number_order CHECK ((((min_number IS NULL) OR (max_number IS NULL) OR (min_number <= max_number)) AND ((default_number IS NULL) OR (min_number IS NULL) OR (default_number >= min_number)) AND ((default_number IS NULL) OR (max_number IS NULL) OR (default_number <= max_number)))),
+  CONSTRAINT ck_gig_template_fields__number_shape CHECK (((field_type <> ALL (ARRAY['INTEGER'::text, 'DURATION'::text])) OR (((min_number IS NULL) OR (min_number = trunc(min_number))) AND ((max_number IS NULL) OR (max_number = trunc(max_number))) AND ((default_number IS NULL) OR (default_number = trunc(default_number)))))),
+  CONSTRAINT ck_gig_template_fields__section CHECK ((section = ANY (ARRAY['SCOPE'::text, 'INCLUSIONS'::text, 'EXCLUSIONS'::text, 'PREPARATION'::text, 'DETAILS'::text]))),
+  CONSTRAINT ck_gig_template_fields__text_meta CHECK (((field_type = ANY (ARRAY['TEXT'::text, 'LONG_TEXT'::text])) OR ((min_length IS NULL) AND (max_length IS NULL) AND (default_content_key IS NULL)))),
+  CONSTRAINT ck_gig_template_fields__type CHECK ((field_type = ANY (ARRAY['TEXT'::text, 'LONG_TEXT'::text, 'INTEGER'::text, 'DECIMAL'::text, 'BOOLEAN'::text, 'ENUM'::text, 'DURATION'::text, 'MONEY'::text, 'MEDIA'::text, 'EQUIPMENT_REFERENCE'::text, 'SKILL_REFERENCE'::text])))
+);
+
+CREATE TABLE catalog.gig_template_requirements (
+  gig_template_requirement_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  gig_template_version_id uuid NOT NULL,
+  requirement_type text NOT NULL,
+  reference_code text,
+  CONSTRAINT pk_gig_template_requirements PRIMARY KEY (gig_template_requirement_id),
+  CONSTRAINT uq_gig_template_requirements__requirement UNIQUE NULLS NOT DISTINCT (gig_template_version_id, requirement_type, reference_code),
+  CONSTRAINT fk_gig_template_requirements__version_id FOREIGN KEY (gig_template_version_id) REFERENCES catalog.gig_template_versions(gig_template_version_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_gig_template_requirements__reference CHECK (((reference_code IS NULL) OR ((reference_code ~ '^[a-z][a-z0-9]*(_[a-z0-9]+)*$'::text) AND ((length(reference_code) >= 2) AND (length(reference_code) <= 48))))),
+  CONSTRAINT ck_gig_template_requirements__type CHECK ((requirement_type = ANY (ARRAY['SKILL'::text, 'EQUIPMENT'::text, 'LICENSE'::text, 'INSURANCE'::text, 'BACKGROUND_CHECK'::text])))
+);
+
+CREATE TABLE catalog.gig_template_versions (
+  gig_template_version_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  gig_template_id uuid NOT NULL,
+  version_number integer NOT NULL,
+  status text NOT NULL DEFAULT 'DRAFT'::text,
+  revision integer NOT NULL DEFAULT 1,
+  min_duration_minutes integer,
+  max_duration_minutes integer,
+  suggested_duration_minutes integer,
+  pricing_fixed boolean NOT NULL DEFAULT true,
+  pricing_fixed_with_variants boolean NOT NULL DEFAULT false,
+  pricing_bundle_eligible boolean NOT NULL DEFAULT false,
+  pricing_drop_eligible boolean NOT NULL DEFAULT false,
+  area_radius boolean NOT NULL DEFAULT true,
+  area_postal_codes boolean NOT NULL DEFAULT false,
+  area_polygon boolean NOT NULL DEFAULT false,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  published_at timestamp with time zone,
+  closed_at timestamp with time zone,
+  CONSTRAINT pk_gig_template_versions PRIMARY KEY (gig_template_version_id),
+  CONSTRAINT uq_gig_template_versions__id_template UNIQUE (gig_template_version_id, gig_template_id),
+  CONSTRAINT uq_gig_template_versions__number UNIQUE (gig_template_id, version_number),
+  CONSTRAINT fk_gig_template_versions__gig_template_id FOREIGN KEY (gig_template_id) REFERENCES catalog.gig_templates(gig_template_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_gig_template_versions__area CHECK ((area_radius OR area_postal_codes OR area_polygon)),
+  CONSTRAINT ck_gig_template_versions__duration CHECK ((((min_duration_minutes IS NULL) OR (min_duration_minutes >= 1)) AND ((max_duration_minutes IS NULL) OR (max_duration_minutes >= 1)) AND ((min_duration_minutes IS NULL) OR (max_duration_minutes IS NULL) OR (min_duration_minutes <= max_duration_minutes)) AND ((suggested_duration_minutes IS NULL) OR ((suggested_duration_minutes >= 1) AND ((min_duration_minutes IS NULL) OR (suggested_duration_minutes >= min_duration_minutes)) AND ((max_duration_minutes IS NULL) OR (suggested_duration_minutes <= max_duration_minutes)))))),
+  CONSTRAINT ck_gig_template_versions__lifecycle CHECK ((((status = 'DRAFT'::text) AND (published_at IS NULL) AND (closed_at IS NULL)) OR ((status = 'ACTIVE'::text) AND (published_at IS NOT NULL) AND (closed_at IS NULL)) OR ((status = 'SUPERSEDED'::text) AND (published_at IS NOT NULL) AND (closed_at IS NOT NULL)) OR ((status = 'RETIRED'::text) AND (closed_at IS NOT NULL)))),
+  CONSTRAINT ck_gig_template_versions__number CHECK ((version_number >= 1)),
+  CONSTRAINT ck_gig_template_versions__pricing CHECK ((pricing_fixed OR pricing_fixed_with_variants)),
+  CONSTRAINT ck_gig_template_versions__revision CHECK ((revision >= 1)),
+  CONSTRAINT ck_gig_template_versions__status CHECK ((status = ANY (ARRAY['DRAFT'::text, 'ACTIVE'::text, 'SUPERSEDED'::text, 'RETIRED'::text])))
+);
+CREATE UNIQUE INDEX uq_gig_template_versions__active ON catalog.gig_template_versions USING btree (gig_template_id) WHERE (status = 'ACTIVE'::text);
+CREATE UNIQUE INDEX uq_gig_template_versions__draft ON catalog.gig_template_versions USING btree (gig_template_id) WHERE (status = 'DRAFT'::text);
+
+CREATE TABLE catalog.gig_templates (
+  gig_template_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  service_type_id uuid NOT NULL,
+  code text NOT NULL,
+  name_content_key text NOT NULL GENERATED ALWAYS AS ((('catalog.gig_template.'::text || code) || '.name'::text)) STORED,
+  description_content_key text,
+  instructions_content_key text,
+  status text NOT NULL DEFAULT 'DRAFT'::text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_gig_templates PRIMARY KEY (gig_template_id),
+  CONSTRAINT uq_gig_templates__code UNIQUE (code),
+  CONSTRAINT fk_gig_templates__description_content_key FOREIGN KEY (description_content_key) REFERENCES content.entries(key) ON DELETE RESTRICT,
+  CONSTRAINT fk_gig_templates__instructions_content_key FOREIGN KEY (instructions_content_key) REFERENCES content.entries(key) ON DELETE RESTRICT,
+  CONSTRAINT fk_gig_templates__name_content_key FOREIGN KEY (name_content_key) REFERENCES content.entries(key) ON DELETE RESTRICT,
+  CONSTRAINT fk_gig_templates__service_type_id FOREIGN KEY (service_type_id) REFERENCES catalog.service_types(service_type_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_gig_templates__code CHECK (((code ~ '^[a-z][a-z0-9]*(_[a-z0-9]+)*$'::text) AND ((length(code) >= 2) AND (length(code) <= 48)))),
+  CONSTRAINT ck_gig_templates__description_content_key CHECK (((description_content_key IS NULL) OR (description_content_key = (('catalog.gig_template.'::text || code) || '.description'::text)))),
+  CONSTRAINT ck_gig_templates__instructions_content_key CHECK (((instructions_content_key IS NULL) OR (instructions_content_key = (('catalog.gig_template.'::text || code) || '.instructions'::text)))),
+  CONSTRAINT ck_gig_templates__status CHECK ((status = ANY (ARRAY['DRAFT'::text, 'ACTIVE'::text, 'INACTIVE'::text, 'RETIRED'::text])))
+);
+CREATE INDEX idx_gig_templates__service_type ON catalog.gig_templates USING btree (service_type_id);
+
 CREATE TABLE catalog.market_categories (
   market_id uuid NOT NULL,
   category_id uuid NOT NULL,
@@ -64,6 +204,20 @@ CREATE TABLE catalog.market_categories (
   CONSTRAINT fk_market_categories__category_id FOREIGN KEY (category_id) REFERENCES catalog.categories(category_id) ON DELETE RESTRICT,
   CONSTRAINT fk_market_categories__market_id FOREIGN KEY (market_id) REFERENCES geography.markets(market_id) ON DELETE RESTRICT,
   CONSTRAINT ck_market_categories__display_order CHECK (((display_order >= 1) AND (display_order <= 9999)))
+);
+
+CREATE TABLE catalog.market_gig_templates (
+  market_id uuid NOT NULL,
+  gig_template_id uuid NOT NULL,
+  enabled boolean NOT NULL DEFAULT false,
+  display_order integer NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_market_gig_templates PRIMARY KEY (market_id, gig_template_id),
+  CONSTRAINT uq_market_gig_templates__market_order UNIQUE (market_id, display_order),
+  CONSTRAINT fk_market_gig_templates__gig_template_id FOREIGN KEY (gig_template_id) REFERENCES catalog.gig_templates(gig_template_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_market_gig_templates__market_id FOREIGN KEY (market_id) REFERENCES geography.markets(market_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_market_gig_templates__display_order CHECK (((display_order >= 1) AND (display_order <= 9999)))
 );
 
 CREATE TABLE catalog.market_service_types (

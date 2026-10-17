@@ -4411,6 +4411,505 @@ await check('Catalog', async () => {
   );
 });
 
+await check('Gig templates', async () => {
+  // The platform-owned Gig Templates (CAT-002) end to end with a REAL Keycloak admin token (admin.dev holds catalog-write), real HTTP, the content registry and the database
+  // (read-only SELECTs on the audit trail and the outbox). Everything runs on DEV/TEST codes (devtest_*) in a DEV/TEST market (ZZ) with its own category and service type, and is
+  // left RETIRED or INACTIVE (entities are never deleted). The SEEDED templates (full_detail, standard_clean: DRAFT, no versions) are only read. The seeded market la-oc is NEVER
+  // activated here: its status is owner data and the proof adapts (PLANNED: nothing public).
+  const assert = (ok: boolean, what: string): void => {
+    if (!ok) throw new Error(what);
+  };
+  type Reply = { status: number; json: any; headers: Headers }; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const call = async (
+    module: 'catalog' | 'geography' | 'content',
+    token: string | null,
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH',
+    path: string,
+    body?: unknown,
+  ): Promise<Reply> => {
+    const r = await get(`${api}/api/v1/${module}${path}`, {
+      method,
+      headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    const json = (await r.json().catch(() => ({}))) as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    return { status: r.status, json, headers: r.headers };
+  };
+  const expectStatus = (r: Reply, statuses: number[], what: string): Reply => {
+    assert(statuses.includes(r.status), `${what} -> ${r.status} ${r.json?.error?.code ?? ''} ${r.json?.error?.details?.reason ?? ''}`);
+    return r;
+  };
+  const login = await authorizationCodeLogin(kc, { clientId: 'bananagig-admin', redirectUri: ADMIN_REDIRECT_URI, ...DEV_USERS.admin });
+  const admin = (
+    await exchangeAuthorizationCode({
+      tokenEndpoint: ep.token,
+      clientId: 'bananagig-admin',
+      redirectUri: ADMIN_REDIRECT_URI,
+      code: login.code,
+      codeVerifier: login.verifier,
+    })
+  ).accessToken;
+  const runId = Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+  const marketCode = `devtest-gt-${runId}`;
+  const categoryCode = `devtest_gtc_${runId}`;
+  const serviceType = `devtest_gts_${runId}`;
+  const tpl = `devtest_gt_${runId}`;
+  const key = (suffix: string): string => `catalog.gig_template.${tpl}.${suffix}`;
+  const publishCopy = async (k: string, text: string, opts: { publish?: boolean } = {}): Promise<string> => {
+    expectStatus(
+      await call('content', admin, 'POST', '/entries', {
+        key: k,
+        contentType: 'UI_LABEL',
+        ownerRole: 'CONTENT',
+        description: 'DEV/TEST ONLY gig template smoke entry',
+        approvalPolicy: 'NONE',
+      }),
+      [201],
+      `entry ${k}`,
+    );
+    const v = expectStatus(
+      await call('content', admin, 'POST', `/entries/${k}/versions`, { locale: 'en-US', body: text, reason: 'smoke test' }),
+      [201],
+      `version ${k}`,
+    ).json.data;
+    if (opts.publish === false) return v.versionId as string; // the entry exists, its text is only a draft: not published
+    expectStatus(await call('content', admin, 'POST', `/versions/${v.versionId}/submit`, {}), [200, 201], `submit ${k}`);
+    assert(
+      expectStatus(await call('content', admin, 'POST', `/versions/${v.versionId}/publish`, {}), [200, 201], `publish ${k}`).json.data.status === 'PUBLISHED',
+      `${k} must be PUBLISHED`,
+    );
+    return v.versionId as string;
+  };
+
+  // (1) the SEEDED templates are management data: DRAFT without versions, resolved text, never public
+  const seeded = expectStatus(await call('catalog', admin, 'GET', '/gig-templates'), [200], '(1) management template list').json.data as {
+    code: string;
+    status: string;
+    serviceTypeCode: string;
+    name: string;
+    activeVersion: unknown;
+    nameContentKey: string;
+  }[];
+  for (const [code, serviceTypeCode, name] of [
+    ['full_detail', 'car_detailing', 'Full Detail'],
+    ['standard_clean', 'regular_cleaning', 'Standard Clean'],
+  ] as const) {
+    const t = seeded.find((x) => x.code === code);
+    assert(
+      t !== undefined &&
+        t.status === 'DRAFT' &&
+        t.serviceTypeCode === serviceTypeCode &&
+        t.name === name &&
+        t.activeVersion === null &&
+        t.nameContentKey === key('name').replace(tpl, code),
+      `(1) seeded template ${code} missing or wrong (${JSON.stringify(t)})`,
+    );
+  }
+  const noMarket = expectStatus(await call('catalog', null, 'GET', '/gig-templates'), [400], '(1) the public view needs a market');
+  assert(noMarket.json.error?.details?.reason === 'MARKET_REQUIRED', '(1) the missing market must be named MARKET_REQUIRED');
+  assert(
+    (await call('catalog', null, 'POST', '/gig-templates', { code: 'x_y', serviceTypeCode: 'car_detailing', reason: 'nope' })).status === 401,
+    '(1) a mutation without a token is 401',
+  );
+  assert((await call('catalog', null, 'GET', '/gig-templates/full_detail/versions/1')).status === 401, '(1) a version read without a token is 401');
+  const laoc = (await call('geography', admin, 'GET', '/markets/la-oc')).json.data as { status: string };
+  const laocPublic = (await call('geography', null, 'GET', '/markets/la-oc')).status === 200;
+  const laocList = await call('catalog', null, 'GET', '/gig-templates?market=la-oc');
+  if (laocPublic)
+    assert(
+      laocList.status === 200 && !(laocList.json.data as { code: string }[]).some((t) => ['full_detail', 'standard_clean'].includes(t.code)),
+      '(1) a public la-oc must not list DRAFT seeded templates',
+    );
+  else
+    assert(
+      laocList.status === 404 && laocList.json.error?.code === 'CATALOG_MARKET_NOT_FOUND',
+      `(1) la-oc (${laoc.status}) is not public: 404 CATALOG_MARKET_NOT_FOUND (${laocList.status})`,
+    );
+
+  // (2) a DEV/TEST market, category and service type, launched; the template copy
+  await ensureDevtestGeography(admin);
+  expectStatus(
+    await call('geography', admin, 'POST', '/markets', {
+      code: marketCode,
+      name: `DEV/TEST gig template smoke ${runId}`,
+      countryCode: 'ZZ',
+      defaultLocale: 'qaa',
+      currencyCode: 'USD',
+      defaultTimeZone: 'America/Los_Angeles',
+      reason: 'DEV/TEST ONLY smoke market',
+    }),
+    [201],
+    '(2) create the test market',
+  );
+  await publishCopy(`catalog.category.${categoryCode}.name`, `Smoke GT Category ${runId}`);
+  await publishCopy(`catalog.service_type.${serviceType}.name`, `Smoke GT Service ${runId}`);
+  expectStatus(await call('catalog', admin, 'POST', '/categories', { code: categoryCode, reason: 'DEV/TEST ONLY' }), [201], '(2) create the category');
+  expectStatus(
+    await call('catalog', admin, 'POST', '/service-types', { code: serviceType, categoryCode, reason: 'DEV/TEST ONLY' }),
+    [201],
+    '(2) create the service type',
+  );
+  // a template needs an ACTIVE service type: nothing can be activated under a DRAFT one
+  await publishCopy(key('name'), `Smoke Template ${runId}`);
+  const created = expectStatus(
+    await call('catalog', admin, 'POST', '/gig-templates', {
+      code: tpl,
+      serviceTypeCode: serviceType,
+      withDescription: false,
+      withInstructions: false,
+      reason: 'DEV/TEST ONLY smoke template',
+    }),
+    [201],
+    '(2) create the template',
+  ).json.data;
+  assert(
+    created.status === 'DRAFT' && created.code === tpl && created.name === `Smoke Template ${runId}` && created.activeVersion === null,
+    `(2) the new template is DRAFT with its resolved name (${JSON.stringify(created)})`,
+  );
+  const early = expectStatus(
+    await call('catalog', admin, 'PUT', `/gig-templates/${tpl}/status`, { status: 'ACTIVE', reason: 'too early' }),
+    [409],
+    '(2) a template under a DRAFT service type',
+  );
+  assert(early.json.error?.details?.reason === 'SERVICE_TYPE_NOT_ACTIVE', '(2) SERVICE_TYPE_NOT_ACTIVE expected');
+  expectStatus(
+    await call('catalog', admin, 'PUT', `/categories/${categoryCode}/status`, { status: 'ACTIVE', reason: 'launch' }),
+    [200],
+    '(2) activate the category',
+  );
+  expectStatus(
+    await call('catalog', admin, 'PUT', `/service-types/${serviceType}/status`, { status: 'ACTIVE', reason: 'launch' }),
+    [200],
+    '(2) activate the service type',
+  );
+  expectStatus(await call('catalog', admin, 'PUT', `/gig-templates/${tpl}/status`, { status: 'ACTIVE', reason: 'launch' }), [200], '(2) activate the template');
+
+  // (3) the first draft: the copy of every field must exist before the draft can name it; fields: a fixed text, an enum, required media, a duration
+  await publishCopy(key('field.inclusions.label'), 'What is included');
+  await publishCopy(key('field.inclusions.default'), 'Exterior wash, interior vacuum, windows.');
+  await publishCopy(key('field.finish.label'), 'Finish');
+  await publishCopy(key('field.finish.option.wax.label'), 'Wax');
+  await publishCopy(key('field.finish.option.sealant.label'), 'Sealant');
+  await publishCopy(key('field.photos.label'), 'Work photos');
+  await publishCopy(key('field.photos.help'), 'Show the finished work.');
+  const pendingText = await publishCopy(key('field.extra_time.label'), 'Extra time', { publish: false }); // the entry exists but its text is only a draft
+  const draft = expectStatus(
+    await call('catalog', admin, 'POST', `/gig-templates/${tpl}/versions`, { reason: 'DEV/TEST ONLY first draft' }),
+    [201],
+    '(3) create the draft',
+  ).json.data;
+  assert(
+    draft.versionNumber === 1 && draft.status === 'DRAFT' && draft.revision === 1 && draft.fields.length === 0,
+    `(3) the first draft is empty at revision 1 (${JSON.stringify(draft)})`,
+  );
+  const dup = expectStatus(await call('catalog', admin, 'POST', `/gig-templates/${tpl}/versions`, { reason: 'second draft' }), [409], '(3) a second draft');
+  assert(dup.json.error?.details?.reason === 'DRAFT_EXISTS', '(3) DRAFT_EXISTS expected');
+  const definition = {
+    expectedRevision: 1,
+    duration: { minMinutes: 60, maxMinutes: 240, suggestedMinutes: 120 },
+    pricingModels: ['FIXED', 'DROP_ELIGIBLE'],
+    areaModes: ['RADIUS', 'POLYGON'],
+    fields: [
+      { fieldKey: 'inclusions', fieldType: 'LONG_TEXT', section: 'INCLUSIONS', behavior: 'PLATFORM_FIXED', withDefaultText: true },
+      { fieldKey: 'finish', fieldType: 'ENUM', behavior: 'PROVIDER_REQUIRED', options: [{ optionCode: 'wax', isDefault: true }, { optionCode: 'sealant' }] },
+      { fieldKey: 'photos', fieldType: 'MEDIA', behavior: 'PROVIDER_REQUIRED', minItems: 2, maxItems: 10, withHelp: true },
+      { fieldKey: 'extra_time', fieldType: 'DURATION', behavior: 'PROVIDER_CONFIGURABLE', minNumber: 15, maxNumber: 120 },
+    ],
+    requirements: [{ requirementType: 'EQUIPMENT', referenceCode: 'polisher' }, { requirementType: 'INSURANCE' }],
+    reason: 'DEV/TEST ONLY fields',
+  };
+  const filled = expectStatus(await call('catalog', admin, 'PUT', `/gig-templates/${tpl}/versions/1`, definition), [200], '(3) replace the draft').json.data;
+  assert(
+    filled.revision === 2 && filled.fields.length === 4 && filled.requirements.length === 2,
+    `(3) the draft holds the definition at revision 2 (${JSON.stringify({ r: filled.revision, f: filled.fields.length })})`,
+  );
+  assert(
+    filled.fields.map((f: { fieldKey: string }) => f.fieldKey).join() === 'inclusions,finish,photos,extra_time' && filled.fields[2].mediaRule === 'REQUIRED',
+    '(3) the fields keep their order and the media rule is derived',
+  );
+  const stale = expectStatus(await call('catalog', admin, 'PUT', `/gig-templates/${tpl}/versions/1`, definition), [409], '(3) a stale revision');
+  assert(stale.json.error?.details?.reason === 'STALE_DRAFT', '(3) STALE_DRAFT expected');
+  const missingCopy = expectStatus(
+    await call('catalog', admin, 'PUT', `/gig-templates/${tpl}/versions/1`, {
+      ...definition,
+      expectedRevision: 2,
+      fields: [...definition.fields, { fieldKey: 'never_written', fieldType: 'TEXT', behavior: 'PROVIDER_CONFIGURABLE' }],
+    }),
+    [400],
+    '(3) a field whose copy does not exist',
+  );
+  assert(
+    missingCopy.json.error?.details?.reason === 'CONTENT_ENTRY_MISSING' &&
+      missingCopy.json.error?.details?.contentKeys?.[0] === key('field.never_written.label'),
+    `(3) the missing entry is named (${JSON.stringify(missingCopy.json.error?.details)})`,
+  );
+
+  // (4) publication: refused while the copy of a field is only a draft (and the missing key is named), then published and frozen
+  const blocked = expectStatus(
+    await call('catalog', admin, 'POST', `/gig-templates/${tpl}/versions/1/publish`, { expectedRevision: 2, reason: 'too early' }),
+    [409],
+    '(4) publish with unpublished copy',
+  );
+  assert(
+    blocked.json.error?.details?.reason === 'CONTENT_NOT_PUBLISHED' && blocked.json.error?.details?.contentKeys?.join() === key('field.extra_time.label'),
+    `(4) the unpublished key is named (${JSON.stringify(blocked.json.error?.details)})`,
+  );
+  expectStatus(await call('content', admin, 'POST', `/versions/${pendingText}/submit`, {}), [200, 201], '(4) submit the text');
+  expectStatus(await call('content', admin, 'POST', `/versions/${pendingText}/publish`, {}), [200, 201], '(4) publish the text');
+  const v1 = expectStatus(
+    await call('catalog', admin, 'POST', `/gig-templates/${tpl}/versions/1/publish`, { expectedRevision: 2, reason: 'DEV/TEST ONLY publish' }),
+    [200],
+    '(4) publish v1',
+  ).json.data;
+  assert(
+    v1.status === 'ACTIVE' && v1.publishedAt !== null && v1.closedAt === null && v1.revision === 2,
+    `(4) v1 is ACTIVE and frozen (${JSON.stringify({ s: v1.status, r: v1.revision })})`,
+  );
+  const again = expectStatus(
+    await call('catalog', admin, 'POST', `/gig-templates/${tpl}/versions/1/publish`, { expectedRevision: 2, reason: 'repeat' }),
+    [200],
+    '(4) a repeated publication',
+  );
+  assert(again.json.data.publishedAt === v1.publishedAt, '(4) a repeated publication changes nothing');
+  const frozen = expectStatus(
+    await call('catalog', admin, 'PUT', `/gig-templates/${tpl}/versions/1`, { ...definition, expectedRevision: 2 }),
+    [409],
+    '(4) editing a published version',
+  );
+  assert(frozen.json.error?.details?.reason === 'VERSION_NOT_DRAFT', '(4) VERSION_NOT_DRAFT expected');
+  const v1Frozen = JSON.stringify((await call('catalog', admin, 'GET', `/gig-templates/${tpl}/versions/1`)).json.data);
+
+  // (5) not public until the market is launched and the template is offered there
+  expectStatus(
+    await call('catalog', admin, 'PUT', `/markets/${marketCode}/categories/${categoryCode}`, { enabled: true, displayOrder: 10, reason: 'prepare' }),
+    [200],
+    '(5) prepare the category',
+  );
+  expectStatus(
+    await call('catalog', admin, 'PUT', `/markets/${marketCode}/service-types/${serviceType}`, { enabled: true, displayOrder: 10, reason: 'prepare' }),
+    [200],
+    '(5) prepare the service type',
+  );
+  expectStatus(
+    await call('catalog', admin, 'PUT', `/markets/${marketCode}/gig-templates/${tpl}`, { enabled: true, displayOrder: 10, reason: 'prepare' }),
+    [200],
+    '(5) prepare the template',
+  );
+  assert(
+    (await call('catalog', null, 'GET', `/gig-templates?market=${marketCode}`)).status === 404,
+    '(5) a PLANNED market exposes no template, even with prepared rows',
+  );
+  expectStatus(
+    await call('geography', admin, 'POST', `/markets/${marketCode}/activation`, { active: true, reason: 'smoke test' }),
+    [200],
+    '(5) activate the test market',
+  );
+
+  // (6) the public view: exactly the safe structure of v1, resolved text, nothing of the management view
+  const list = expectStatus(await call('catalog', null, 'GET', `/gig-templates?market=${marketCode}&locale=en-US`), [200], '(6) public list').json
+    .data as Record<string, any>[]; // eslint-disable-line @typescript-eslint/no-explicit-any
+  assert(
+    list.length === 1 && list[0]!.code === tpl && list[0]!.name === `Smoke Template ${runId}` && list[0]!.activeVersion.versionNumber === 1,
+    `(6) the public list holds the launched template (${JSON.stringify(list)})`,
+  );
+  assert(
+    Object.keys(list[0]!).sort().join() === 'activeVersion,categoryCode,code,description,displayOrder,gigTemplateId,name,serviceTypeCode',
+    `(6) the public list item has public fields only (${Object.keys(list[0]!).join()})`,
+  );
+  const detail = expectStatus(await call('catalog', null, 'GET', `/gig-templates/${tpl}?market=${marketCode}&locale=en-US`), [200], '(6) public detail').json
+    .data;
+  const fields = detail.activeVersion.fields as Record<string, any>[]; // eslint-disable-line @typescript-eslint/no-explicit-any
+  assert(
+    fields.map((f) => f.label).join('|') === 'What is included|Finish|Work photos|Extra time' &&
+      fields[0]!.defaultText === 'Exterior wash, interior vacuum, windows.' &&
+      fields[1]!.options.map((o: { label: string }) => o.label).join() === 'Wax,Sealant' &&
+      fields[1]!.options[0].isDefault === true &&
+      fields[2]!.help === 'Show the finished work.' &&
+      fields[2]!.mediaRule === 'REQUIRED' &&
+      fields[3]!.minNumber === 15 &&
+      fields[3]!.maxNumber === 120,
+    `(6) the fields resolve their copy and keep their metadata (${JSON.stringify(fields.map((f) => f.label))})`,
+  );
+  assert(
+    detail.activeVersion.pricingModels.join() === 'FIXED,DROP_ELIGIBLE' &&
+      detail.activeVersion.areaModes.join() === 'RADIUS,POLYGON' &&
+      detail.activeVersion.duration.suggestedMinutes === 120 &&
+      detail.activeVersion.requirements.length === 2,
+    '(6) pricing models, area modes, duration guidance and requirement hooks are served',
+  );
+  assert(
+    !('status' in detail) &&
+      !('enabled' in detail) &&
+      !('versions' in detail) &&
+      !('nameContentKey' in detail) &&
+      !('revision' in detail.activeVersion) &&
+      !('labelContentKey' in fields[0]!),
+    '(6) the public detail carries no management field',
+  );
+  const byType = expectStatus(
+    await call('catalog', null, 'GET', `/service-types/${serviceType}/gig-templates?market=${marketCode}&locale=en-US`),
+    [200],
+    '(6) templates of the service type',
+  ).json.data as unknown[];
+  assert(byType.length === 1, '(6) the service type lists its template');
+  assert(
+    (await call('catalog', null, 'GET', `/service-types/car_detailing/gig-templates?market=${marketCode}`)).status === 404,
+    '(6) a service type that is not public in the market is 404',
+  );
+
+  // (7) the next version: a copy of v1 with one more field and a changed duration; v1 is superseded, not changed
+  await publishCopy(key('field.bring_water.label'), 'Bring your own water');
+  const d2 = expectStatus(
+    await call('catalog', admin, 'POST', `/gig-templates/${tpl}/versions`, { copyFromVersion: 1, reason: 'DEV/TEST ONLY second draft' }),
+    [201],
+    '(7) create draft 2',
+  ).json.data;
+  assert(
+    d2.versionNumber === 2 && d2.status === 'DRAFT' && d2.fields.length === 4,
+    `(7) draft 2 starts from the structure of v1 (${JSON.stringify({ n: d2.versionNumber, f: d2.fields.length })})`,
+  );
+  expectStatus(
+    await call('catalog', admin, 'PUT', `/gig-templates/${tpl}/versions/2`, {
+      ...definition,
+      expectedRevision: 1,
+      duration: { minMinutes: 90, maxMinutes: 300, suggestedMinutes: 150 },
+      fields: [...definition.fields, { fieldKey: 'bring_water', fieldType: 'BOOLEAN', behavior: 'PROVIDER_CONFIGURABLE', defaultBoolean: false }],
+      reason: 'DEV/TEST ONLY second definition',
+    }),
+    [200],
+    '(7) edit draft 2',
+  );
+  const v2 = expectStatus(
+    await call('catalog', admin, 'POST', `/gig-templates/${tpl}/versions/2/publish`, { expectedRevision: 2, reason: 'DEV/TEST ONLY publish 2' }),
+    [200],
+    '(7) publish v2',
+  ).json.data;
+  assert(v2.status === 'ACTIVE' && v2.fields.length === 5, '(7) v2 is ACTIVE with its five fields');
+
+  // (8) v1 is preserved byte for byte; the public view serves v2
+  const v1After = (await call('catalog', admin, 'GET', `/gig-templates/${tpl}/versions/1`)).json.data;
+  assert(v1After.status === 'SUPERSEDED' && v1After.closedAt !== null, `(8) v1 is SUPERSEDED with its closing time (${v1After.status})`);
+  const strip = (v: Record<string, unknown>): string => JSON.stringify({ ...v, status: 'x', closedAt: 'x' });
+  assert(strip(JSON.parse(v1Frozen)) === strip(v1After), '(8) v1 keeps its exact structure');
+  const mgmt = expectStatus(await call('catalog', admin, 'GET', `/gig-templates/${tpl}?market=${marketCode}`), [200], '(8) management detail').json.data;
+  assert(
+    mgmt.versions.map((v: { versionNumber: number; status: string }) => `${v.versionNumber}:${v.status}`).join() === '2:ACTIVE,1:SUPERSEDED' &&
+      mgmt.enabled === true,
+    `(8) the management detail lists every version (${JSON.stringify(mgmt.versions?.map((v: { versionNumber: number; status: string }) => `${v.versionNumber}:${v.status}`))})`,
+  );
+  const publicV2 = (await call('catalog', null, 'GET', `/gig-templates/${tpl}?market=${marketCode}&locale=en-US`)).json.data;
+  assert(
+    publicV2.activeVersion.versionNumber === 2 &&
+      publicV2.activeVersion.fields.length === 5 &&
+      publicV2.activeVersion.duration.minMinutes === 90 &&
+      publicV2.activeVersion.fields[4].label === 'Bring your own water',
+    `(8) the public view serves v2 (${publicV2.activeVersion.versionNumber})`,
+  );
+
+  // (9) retirement hides the template and keeps every version; a retired template accepts nothing new
+  const retired = expectStatus(
+    await call('catalog', admin, 'PUT', `/gig-templates/${tpl}/status`, { status: 'RETIRED', reason: 'DEV/TEST ONLY cleanup' }),
+    [200],
+    '(9) retire the template',
+  ).json.data;
+  assert(
+    retired.status === 'RETIRED' && retired.versions.map((v: { status: string }) => v.status).join() === 'RETIRED,SUPERSEDED',
+    `(9) the versions are kept (${JSON.stringify(retired.versions?.map((v: { status: string }) => v.status))})`,
+  );
+  assert((await call('catalog', null, 'GET', `/gig-templates/${tpl}?market=${marketCode}`)).status === 404, '(9) a retired template is not public');
+  assert((await call('catalog', null, 'GET', `/gig-templates?market=${marketCode}`)).json.data.length === 0, '(9) the public list is empty');
+  expectStatus(await call('catalog', admin, 'POST', `/gig-templates/${tpl}/versions`, { reason: 'late' }), [409], '(9) no new version for a retired template');
+  expectStatus(await call('catalog', admin, 'PUT', `/gig-templates/${tpl}/status`, { status: 'ACTIVE', reason: 'back' }), [409], '(9) RETIRED is terminal');
+  expectStatus(
+    await call('catalog', admin, 'POST', '/gig-templates', { code: tpl, serviceTypeCode: serviceType, reason: 'reuse' }),
+    [409],
+    '(9) a retired code is never reused',
+  );
+  // retirement leaves the availability row as it was (hidden by the public read): switching it off works, switching it on again is refused
+  expectStatus(
+    await call('catalog', admin, 'PUT', `/markets/${marketCode}/gig-templates/${tpl}`, { enabled: false, reason: 'withdraw' }),
+    [200],
+    '(9) withdraw the retired template',
+  );
+  expectStatus(
+    await call('catalog', admin, 'PUT', `/markets/${marketCode}/gig-templates/${tpl}`, { enabled: true, reason: 'late' }),
+    [409],
+    '(9) a retired template is never enabled again',
+  );
+  assert((await call('catalog', admin, 'GET', `/gig-templates/${tpl}/versions/1`)).json.data.fields.length === 4, '(9) the history stays readable');
+
+  // (10) the audit trail and the outbox hold every change; the seeded templates were not touched
+  const databaseUrl = env('DATABASE_URL', '');
+  assert(databaseUrl !== '', 'DATABASE_URL is not set in the smoke environment');
+  const database = createDatabase(databaseUrl, { role: 'tests' });
+  try {
+    const audit = await database.query<{ action: string; n: number }>(
+      `SELECT a.action, count(*)::int AS n FROM catalog.audit_events a JOIN catalog.gig_templates t ON t.gig_template_id = a.gig_template_id WHERE t.code = $1 GROUP BY a.action ORDER BY a.action`,
+      [tpl],
+    );
+    const byAction = Object.fromEntries(audit.map((r) => [r.action, r.n]));
+    assert(
+      byAction.GIG_TEMPLATE_CREATED === 1 &&
+        byAction.GIG_TEMPLATE_STATUS_CHANGED === 2 &&
+        byAction.GIG_TEMPLATE_VERSION_CREATED === 2 &&
+        byAction.GIG_TEMPLATE_VERSION_CHANGED === 2 &&
+        byAction.GIG_TEMPLATE_VERSION_PUBLISHED === 2 &&
+        byAction.GIG_TEMPLATE_VERSION_RETIRED === 1 &&
+        byAction.MARKET_GIG_TEMPLATE_AVAILABILITY_CHANGED === 2,
+      `(10) the audit trail must hold every mutation (${JSON.stringify(byAction)})`,
+    );
+    const events = await database.query<{ event_type: string; n: number }>(
+      `SELECT event_type, count(*)::int AS n FROM integration.outbox_events WHERE event_type LIKE 'bananagig.catalog.gig-template-%' AND payload_json::text LIKE '%' || $1 || '%' GROUP BY event_type`,
+      [tpl],
+    );
+    const ev = Object.fromEntries(events.map((r) => [r.event_type, r.n]));
+    assert(
+      ev['bananagig.catalog.gig-template-activated.v1'] === 1 &&
+        ev['bananagig.catalog.gig-template-published.v1'] === 2 &&
+        ev['bananagig.catalog.gig-template-retired.v1'] === 1 &&
+        ev['bananagig.catalog.gig-template-availability-changed.v1'] === 2,
+      `(10) the outbox must hold the activation, publication, retirement and availability events (${JSON.stringify(ev)})`,
+    );
+    const copyLeak = await database.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM catalog.audit_events WHERE changes::text LIKE '%Exterior wash%' OR changes::text LIKE '%Show the finished work%'`,
+    );
+    assert(copyLeak[0]!.n === 0, '(10) no copy in the audit trail');
+    const seededUntouched = await database.query<{ code: string; status: string; versions: number }>(
+      `SELECT t.code, t.status, (SELECT count(*)::int FROM catalog.gig_template_versions v WHERE v.gig_template_id = t.gig_template_id) AS versions
+         FROM catalog.gig_templates t WHERE t.code IN ('full_detail', 'standard_clean') ORDER BY t.code`,
+    );
+    assert(
+      seededUntouched.length === 2 && seededUntouched.every((t) => t.status === 'DRAFT' && t.versions === 0),
+      '(10) the smoke must leave the seeded templates as it found them (DRAFT, no versions)',
+    );
+  } finally {
+    await database.close();
+  }
+
+  // (11) cleanup of the DEV/TEST taxonomy and market (everything stays, retired or inactive)
+  expectStatus(
+    await call('catalog', admin, 'PUT', `/service-types/${serviceType}/status`, { status: 'RETIRED', reason: 'smoke cleanup' }),
+    [200],
+    '(11) retire the service type',
+  );
+  expectStatus(
+    await call('catalog', admin, 'PUT', `/categories/${categoryCode}/status`, { status: 'RETIRED', reason: 'smoke cleanup' }),
+    [200],
+    '(11) retire the category',
+  );
+  expectStatus(
+    await call('geography', admin, 'POST', `/markets/${marketCode}/activation`, { active: false, reason: 'smoke cleanup' }),
+    [200],
+    '(11) deactivate the test market',
+  );
+  assert((await call('catalog', null, 'GET', `/gig-templates?market=${marketCode}`)).status === 404, '(11) a deactivated market exposes no template');
+  return (
+    `seeded templates DRAFT without versions (full_detail, standard_clean); la-oc ${laoc.status} ${laocPublic ? '(public: nothing seeded listed)' : '=> 404 CATALOG_MARKET_NOT_FOUND'}; ${tpl}: SERVICE_TYPE_NOT_ACTIVE refused, draft v1 ` +
+    `(4 typed fields, 2 hooks, revision 2, stale and duplicate drafts refused, unpublished copy named), v1 published and frozen, public view = safe structure with resolved copy, ` +
+    `v2 from a copy published (v1 SUPERSEDED, byte-identical), public serves v2, retirement hides it and keeps both versions, code never reused, audit and outbox complete, no copy in the audit trail`
+  );
+});
+
 await check('Caddy Proxy auth routes', async () => {
   const expectStatus = async (host: string, path: string, ok: (s: number) => boolean, what: string) => {
     const r = await proxy(host, path);

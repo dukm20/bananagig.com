@@ -891,3 +891,71 @@ None beyond the generated key above, which is a derivation by the database and c
 ### Final decision
 Six new tables in a new schema, no change to any existing table, one non-key index, one derivation (the generated content key), no denormalization.
 
+
+## CAT-002
+
+Date: 2026-10-17
+
+Tables reviewed: new, in the existing schema `catalog`: `gig_templates`, `gig_template_versions`, `gig_template_fields`, `gig_template_field_options`, `gig_template_requirements`, `market_gig_templates`. Changed: `audit_events` (two nullable subject columns and two wider CHECKs; the table stays one fact per audit event). Reused WITHOUT change (referenced by foreign key only): `service_types`, `content.entries`, `geography.markets`.
+
+### 1NF
+PASS. Every column is an atomic scalar (`uuid`, `text`, `boolean`, `integer`, `numeric`, `timestamptz`) except `audit_events.changes` (the documented JSON exception of the audit tables). No array, no delimited list, no JSON document of the template: the fields of a version are rows, the options of a field are rows, the requirements of a version are rows. The allowed pricing models (4) and service-area modes (3) are closed sets stored as one boolean column each, not as a repeating group in one column; a new model is a reviewed migration either way, and a child table would add two tables, two guards and two reads for sets that never change at runtime.
+
+### 2NF
+PASS. `gig_templates`, `gig_template_versions`, `gig_template_fields`, `gig_template_requirements` have single-column keys. `gig_template_field_options` has the composite key `(gig_template_field_id, option_code)` and its non-key columns (`label_content_key`, `is_default`, `display_order`) depend on the WHOLE pair (an option of a field). `market_gig_templates` has the composite key `(market_id, gig_template_id)` and `enabled` and `display_order` depend on the whole pair (whether and where a template is offered IN a market).
+
+### 3NF
+PASS with documented derivations. The pairs checked:
+
+| Table | Pair checked | Verdict |
+|---|---|---|
+| `gig_templates` | `code` against `name_content_key` | a REAL functional dependency, kept as in CAT-001: GENERATED ALWAYS ... STORED, so it cannot disagree with the code, and it carries the foreign key that makes the name exist as content |
+| `gig_templates` | `code` against `description_content_key`, `instructions_content_key` | nullable links that record only WHETHER an entry is linked; when set they must equal the conventional key (`ck_*`) |
+| `gig_template_fields` | template `code` and `field_key` against `label_content_key`, `help_content_key`, `default_content_key` | the keys are functions of (template code, `field_key`). The template code is NOT a column of the field (it lives on the template, reached through the version), so a generated column is impossible; the keys are stored (they carry the foreign keys to `content.entries`) and the guard VERIFIES the derivation on every insert and update (`CONTENT_KEY_MISMATCH`). Intentional, documented derived storage; it cannot drift: the guards verify the derivation on every write of the field or option, the field guard refuses a retype or rename while options exist (0017), and the publication re-verifies every option label key and that only ENUM fields have options |
+| `gig_template_field_options` | the same for `label_content_key` | same verdict, verified by its guard |
+| `gig_template_fields` | `behavior` against "editable" and "required" | NOT stored twice: PLATFORM_FIXED / PROVIDER_CONFIGURABLE / PROVIDER_REQUIRED is the one column; "editable" and "required" are derived by the reader |
+| `gig_template_fields` | the metadata columns against `field_type` | the type decides which metadata columns may be set (`ck_gig_template_fields__*_meta`); a column that does not belong to the type is NULL. They are independent facts of one field, not a transitive dependency |
+| `gig_template_fields` | a photo rule against `behavior` and `max_items` | derived at read time (required = PROVIDER_REQUIRED with a minimum, prohibited = `max_items = 0`); not stored |
+| `gig_template_versions` | `status` against `published_at` and `closed_at` | the lifecycle CHECK ties them, the guard sets them; the timestamps are facts about when, the status is the current state; no value is derived from the other without the guard |
+| `gig_template_versions` | the duration columns against the pricing and area flags | independent |
+| `gig_template_versions` | `revision` against the child rows | `revision` is a concurrency token of the DRAFT, not a count or a hash of the rows |
+| `market_gig_templates` | `enabled` against `display_order` | independent: a disabled row keeps its position so an order is never ambiguous |
+| `audit_events` | subject columns against `action` | the action family determines which subject columns are set (`ck_audit_events__subject`, widened); rows are immutable, nothing is derived |
+
+No transitive dependency remains among stored columns other than the generated name key and the verified field and option keys above.
+
+### BCNF
+PASS. Determinants: `gig_template_id` and `code` (two candidate keys) in `gig_templates`; `gig_template_version_id` and `(gig_template_id, version_number)` in `gig_template_versions`; `gig_template_field_id`, `(gig_template_version_id, field_key)` and `(gig_template_version_id, display_order)` in `gig_template_fields`; `(gig_template_field_id, option_code)` and `(gig_template_field_id, display_order)` in `gig_template_field_options`; `gig_template_requirement_id` and `(gig_template_version_id, requirement_type, reference_code)` in `gig_template_requirements`; `(market_id, gig_template_id)` and `(market_id, display_order)` in `market_gig_templates`. Every determinant is a candidate key. The three partial unique indexes (`uq_gig_template_versions__active`, `__draft`, `uq_gig_template_field_options__default`) are constraints on subsets of rows, not functional dependencies on non-keys.
+
+### Duplicate concepts examined
+- Display text in the tables: NOT stored. Names, instructions, labels, help, default texts and option labels exist only in the content registry; the tables hold derived keys.
+- Identity data on the version (name, description, instructions): NOT stored there. A rename is a content change, not a new structure; the keys are derived from the template code and shared by all versions. The alternative (version-specific keys) would freeze wording at the price of one set of entries per version; the content registry already has immutable effective-dated text versions.
+- Service type data on the template: only `service_type_id` is stored (immutable); the code, name, category and status are read through the foreign keys.
+- Provider data (price, floor price, chosen duration, radius, area, pitch, photos, capacity, variants, add-ons, booking mode): none. The duration columns are PLATFORM bounds; the pricing and area columns say which models a Gig may select.
+- Pricing amounts or limits in a MONEY field: NOT stored; amount limits are configuration (CFG-001).
+- Requirement catalogues (skills, equipment, licences): NOT created. `gig_template_requirements.reference_code` is an opaque code of a catalogue TRUST-001 will own; nothing is validated yet.
+- A second audit table: NOT created. `catalog.audit_events` is extended (the audit trail of one schema is one table).
+- JSON validation metadata: NOT used. Typed columns with CHECKs make every bound verifiable in the database; the cost is a wide field table whose unused columns are NULL, accepted because the per-type matrix is declarative.
+- Version tables for the taxonomy (ADR-0040) versus for templates (ADR-0041): consistent. The taxonomy rows never change meaning; a template's structure does.
+- Cascading hierarchy rules into CAT-001 (a service type cannot leave ACTIVE with an ACTIVE template): NOT added; the public read re-checks the chain.
+
+### Derived fields examined
+`name_content_key` (generated) and the field and option content keys (verified by the guard) are the only derived stored columns. Whether a template is PUBLIC is derived at read time from the market (geography), the service type, its category, the market rows, the template status and an ACTIVE version; nothing stores "visible". The photo rule, "editable" and "required" are derived from `behavior` and the item counts. The number of fields of a version is not stored.
+
+### Intentional denormalization
+The derived content keys of fields and options (above): stored because they carry the foreign keys to the content registry, verified by the guard on every write. No other denormalization.
+
+### Index review
+- `uq_gig_templates__code`: the identity lookup of every read and of the API path. `idx_gig_templates__service_type (service_type_id)`: the templates of ONE service type (the by-service-type list and the foreign key); the only non-key index.
+- `uq_gig_template_versions__number (gig_template_id, version_number)`: the versions of a template and the contiguity rule. `uq_gig_template_versions__active` (partial): THE active-version lookup and the rule that there is one. `uq_gig_template_versions__draft` (partial): the one-draft rule.
+- `uq_gig_template_fields__key` and `__order (gig_template_version_id, ...)`: the fields of a version in order and the uniqueness rules; the leading column also serves the foreign key. `pk_gig_template_field_options` and `uq_gig_template_field_options__order` / `__default`: the options of a field in order, one default.
+- `uq_gig_template_requirements__requirement (gig_template_version_id, requirement_type, reference_code)`: the requirements of a version and their uniqueness.
+- `uq_market_gig_templates__market_order (market_id, display_order)`: THE access path of a market's templates in order and the order rule; `pk_market_gig_templates`: one row per pair.
+- `uq_gig_template_versions__id_template (gig_template_version_id, gig_template_id)` (0017): a superkey of the version table (the id is already the primary key), added only as the target of the composite foreign key from `audit_events (gig_template_version_id, gig_template_id)`, which makes it impossible for an audit row to name a version under another template. It is the only index added after the review.
+- No index on `market_gig_templates.gig_template_id`, the content key columns or the new audit subject columns: never-deleted reference targets, no filtered query, tables of tens of rows. The public read of a market is four statements through the unique keys above (the templates with their ACTIVE version, then the fields, the options and the requirements of those versions); its result is cached by market and the catalogue generation counter.
+
+### Review follow-up (0017)
+The independent review found that the option rules were enforced only when an option row was written (a frozen version could carry options under a retyped field), that the audit trail could pair a template with a foreign version, and that three comments were stale. 0017 refuses a type or key change of a field that has options, makes the publication re-verify the option rules, replaces the simple audit foreign key by a composite one and updates the comments. No table, column or normal form changes.
+
+### Final decision
+Six new tables in an existing schema, two nullable columns and two wider CHECKs on one existing table, one non-key index, two documented derivations (the generated name key and the verified field and option keys), no other denormalization. The decisions that shape the model are in ADR-0041.
