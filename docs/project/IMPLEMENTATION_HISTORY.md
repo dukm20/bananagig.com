@@ -986,3 +986,37 @@ ADR-0041.
 
 ### Known follow-up
 DEBT-0084 (the template catalogue, authoring UI, requirement catalogues and policy engine, media-rule editor, pricing suggestions, the provider Gig builder, and the accepted limits listed there). Next: PRO-001 Provider Registration.
+
+## PRO-001 — 2026-10-17
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(PRO-001)"`.
+Summary: Provider Registration. A person becomes a provider with the account they already have: provider-domain state for the existing account (no provider user, login or copied contact), with the application role, the registration and Go-Live kept as three separate things. Attempts (a restart is a new attempt), market, service types chosen from the catalogue, onboarding steps derived by a pure evaluator from their owners, server-controlled submit and cancel, policy as typed configuration that fails closed, copy as content, audit and outbox in the same transaction, an owner-only API and a minimal temporary web flow.
+
+### Housekeeping at the start (requested)
+`PROJECT_STATE` records CAT-002 (`0221af7`, GitHub Actions run 39020045328 SUCCESS: `verify` PASS 14m 27s, `compose-smoke` PASS 5m 0s, fresh-database smoke 39/39). `checkpoint:start` ran first. A second interactive Claude session (`bananagig-com-4c`) exists on this machine and was idle; the user-owned `pnpm dev` shells were not touched. `la-oc` stays PLANNED; DEBT-0030, 0064, 0065, 0070 and 0076 to 0084 stay OPEN.
+
+### Delivered
+- Migration `0018_provider_registration.sql` (one transaction): schema `provider` with `registrations`, `registration_service_types` and `audit_events`; two guard functions plus the immutability function with a TRUNCATE refusal per table (`provider_rule:<KEY>` keys, 12 rules); a partial unique index for at most one non-cancelled attempt per account; 5 configuration parameters (`provider.registration.*`) through the real change-request lifecycle and 56 content entries through the real content lifecycle.
+- Contracts `provider.ts`; package `@bananagig/provider` (`ProviderRegistrationService`, the pure `evaluateRequirements`, the policy parser, the ports); `CatalogService.offeredServiceTypeCodes`; the API module `apps/api/src/modules/provider` (7 operations under `/api/v1/provider`, owner-only, no identifier accepted, `no-store`); three outbox events (started, completed, cancelled); the minimal web flow (`/provider/registration` and `/auth/provider/<action>`); smoke scenario `Provider registration` (40 checks).
+- Docs: `PROVIDER_REGISTRATION.md`, ADR-0042, the data model documents, `skills/provider` (new), DEBT-0085 and DEBT-0086.
+- Quality process: independent authors for the database model, the service, the contracts and API, and the web, each with mutation checks (90 on the SQL, 56 on the service, about 80 on the contracts and API, 39 on the web, 15 on the review fixes); two independent read-only reviews. Defects and gaps found and fixed before the commit: a free-text cancel `reason` would have persisted in the immutable audit table (the field was removed); a body-less cancel answered 400; an INACTIVE role at submit was reported as an incomplete LEGAL step; the contact check for market and services ran only before the transaction; an `AccountError` conflict escaped as a 500; the facts of later checkpoints were read inside the submit transaction. Accepted limits are listed in DEBT-0086.
+- Lessons carried: consent is evaluated before the registration transaction (its repeatable-read snapshot cannot nest); the smoke needs a customer-only identity, so it creates and deletes a throwaway Keycloak user (customer.dev already holds PROVIDER).
+
+### Schema
+Migration 0018: three tables, three functions, six triggers, five indexes, seeds. NORMALIZATION_LOG, DATA_MODEL, DATA_DICTIONARY, ERD, DATA_MODEL_CHANGELOG and SCHEMA_SNAPSHOT updated; Data Model Review Gate passed (derived steps not stored, no copied contact, one market column, selections as a join table, the completion and cancellation timestamps justified by the lifecycle CHECK).
+
+### Contracts
+`packages/contracts/src/provider.ts`; 14 error codes `PROVIDER_*`; three `bananagig.provider.registration-*.v1` events; OpenAPI and AsyncAPI regenerated and valid.
+
+### Tests
+Unit 10609 and 164 root script tests, integration 6597 in 52 files (provider data model rules 215, provider service 157, API provider 70, catalog service 118), smoke 40 checks (40/40 locally).
+
+### Skills updated
+`skills/provider` (new).
+
+### ADRs
+ADR-0042.
+
+### Known follow-up
+DEBT-0085 (PLANNED-market pre-registration, the service type ceiling, one market per registration) and DEBT-0086 (verification, subscription, profile, Gigs, Go-Live, business providers, the polished UI and the accepted limits). Next: TRUST-001 Provider Verification and Documents.

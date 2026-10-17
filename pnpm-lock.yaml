@@ -271,6 +271,9 @@ importers:
       '@bananagig/platform':
         specifier: workspace:*
         version: link:../../packages/platform
+      '@bananagig/provider':
+        specifier: workspace:*
+        version: link:../../packages/provider
       '@fastify/swagger':
         specifier: ^9.9.1
         version: 9.9.1(supports-color@7.2.0)
@@ -608,6 +611,25 @@ importers:
       '@types/nodemailer':
         specifier: ^8.0.2
         version: 8.0.2
+
+  packages/provider:
+    dependencies:
+      '@bananagig/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@bananagig/database':
+        specifier: workspace:*
+        version: link:../database
+      '@bananagig/observability':
+        specifier: workspace:*
+        version: link:../observability
+      '@bananagig/platform':
+        specifier: workspace:*
+        version: link:../platform
+    devDependencies:
+      '@bananagig/testing':
+        specifier: workspace:*
+        version: link:../testing
 
   packages/testing:
     dependencies:

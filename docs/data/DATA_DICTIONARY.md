@@ -1203,3 +1203,55 @@ Whether a Gig Template is offered in a market and its position among the market'
 | `updated_at` | timestamptz | no | `now()` | Maintained by the guard | no |
 
 Triggers: `trg_market_gig_templates__guard` (`catalog.guard_market_gig_templates`) never deletes (`NOT_DELETABLE`), keeps the key (`IMMUTABLE_IDENTITY`), refuses enabling a RETIRED template (`ITEM_RETIRED`), keeps `created_at`; `trg_market_gig_templates__no_truncate`.
+
+### provider.registrations
+
+One ATTEMPT of an account to become a provider (PRO-001). The account is the existing identity account (the provider is not a second account); the application ROLE is `identity.account_roles` and the registration status is a separate fact; Go-Live eligibility is a third (PRO-003, not stored). A registration is IN_PROGRESS, then COMPLETED (submit validated by the server) or CANCELLED; both are terminal and the row is frozen. A restart after a cancellation is a NEW attempt. At most one live (IN_PROGRESS or COMPLETED) attempt per account. Never deleted or truncated. Holds no contact, consent, verification, subscription, profile or Gig state and no personal data.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `provider_registration_id` | uuid | no | `gen_random_uuid()` | Primary key `pk_registrations` | yes |
+| `account_id` | uuid | no | none | Foreign key `fk_registrations__account_id` to `identity.accounts` (restrict): the identity account, referenced by id only. Taken from the authenticated request, never from a client | yes |
+| `attempt_number` | integer | no | none | At least 1 (`ck_registrations__attempt`); unique per account (`uq_registrations__attempt`) and CONTIGUOUS: the guard accepts only the highest plus one (`REGISTRATION_ATTEMPT_SEQUENCE`), so the history of attempts reads without gaps | yes |
+| `status` | text | no | `'IN_PROGRESS'` | `IN_PROGRESS` (editable, initial only), `COMPLETED` (the PRO-001 requirements were met when the account submitted; NOT verified, NOT subscribed, NOT live) or `CANCELLED` (`ck_registrations__status`). Not the role status (`identity.account_roles`) and not Go-Live. There is no SUBMITTED state: submit validates and completes in one step. Only IN_PROGRESS can change, to COMPLETED or CANCELLED | no (IN_PROGRESS only) |
+| `market_id` | uuid | yes | none | Foreign key `fk_registrations__market_id` to `geography.markets` (restrict): the market the provider intends to work in (one per registration), chosen while IN_PROGRESS. NULL until chosen; required by COMPLETED (`ck_registrations__lifecycle`). Whether its status allows registration is configuration (`provider.registration.market_statuses_allowed`), checked by the service at selection and at submit | no (IN_PROGRESS only) |
+| `revision` | integer | no | `1` | Concurrency token of the draft selections (`ck_registrations__revision`: at least 1; the guard refuses a lower value, `REVISION_ONLY_GROWS`): the service bumps it on every change while IN_PROGRESS and a write or submit that names a revision is refused when it is not the current one. Frozen once the registration leaves IN_PROGRESS. Not a count or a hash of the selections | no (IN_PROGRESS only) |
+| `completed_at` | timestamptz | yes | none | When the registration was completed, set by the guard from the database clock at the transition; NULL otherwise. `ck_registrations__lifecycle` makes it non-NULL exactly when `status = 'COMPLETED'` | yes (once set) |
+| `cancelled_at` | timestamptz | yes | none | When the registration was cancelled, set by the guard at the transition; NULL otherwise. `ck_registrations__lifecycle` makes it non-NULL exactly when `status = 'CANCELLED'` | yes (once set) |
+| `created_at` | timestamptz | no | `now()` | Creation time, kept by the guard (`IMMUTABLE_IDENTITY`) | yes |
+| `updated_at` | timestamptz | no | `now()` | Last change, maintained by the guard | no |
+
+Indexes: the primary key; `uq_registrations__attempt (account_id, attempt_number)` (the attempts of ONE account, the contiguity rule, and the support of the foreign key to the account); `uq_registrations__live (account_id) WHERE status <> 'CANCELLED'` (THE lookup of the current registration of an account and the rule that there is at most one live attempt). No index on `market_id` (never-deleted target, no filtered query yet).
+Constraints: `ck_registrations__lifecycle`: IN_PROGRESS has neither timestamp; COMPLETED has `completed_at`, a market and no `cancelled_at`; CANCELLED has `cancelled_at` and no `completed_at`.
+Triggers: `trg_registrations__guard` (`provider.guard_registrations`, BEFORE INSERT OR UPDATE OR DELETE, per row): never deletes (`NOT_DELETABLE`); inserts only IN_PROGRESS at revision 1 without timestamps (`MUST_START_IN_PROGRESS`), for an ACTIVE account read FOR SHARE (`ACCOUNT_NOT_ACTIVE`) and with the next contiguous attempt number (`REGISTRATION_ATTEMPT_SEQUENCE`); id, account, attempt number and `created_at` immutable (`IMMUTABLE_IDENTITY`); a COMPLETED or CANCELLED registration is frozen (`REGISTRATION_FROZEN`); the status machine allows only IN_PROGRESS to COMPLETED or CANCELLED (`STATUS_TRANSITION` for any other target); the statement that completes or cancels changes neither market nor revision (`REGISTRATION_FROZEN`); a completion needs an ACTIVE account read FOR SHARE (`ACCOUNT_NOT_ACTIVE`); the revision only grows (`REVISION_ONLY_GROWS`); sets `completed_at` or `cancelled_at` and maintains `updated_at`. `trg_registrations__no_truncate` (`provider.forbid_mutation`, BEFORE TRUNCATE) refuses TRUNCATE (`ROW_IMMUTABLE`).
+
+### provider.registration_service_types
+
+The service types (CAT-001) a registration intends to offer (PRO-001): a reference by `service_type_id`, nothing of the taxonomy is copied and no Gig is created. A selection changes only while the registration is IN_PROGRESS (a replace is a delete plus inserts in one transaction; an UPDATE is refused); afterwards the rows are history. A selection names an ACTIVE service type at the time it is made; a service type retired later stays explainable through the foreign key. No personal data.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `provider_registration_id` | uuid | no | none | Part of the primary key `pk_registration_service_types`; foreign key `fk_registration_service_types__registration_id` to `provider.registrations` (restrict) | yes |
+| `service_type_id` | uuid | no | none | Part of the key; foreign key `fk_registration_service_types__service_type_id` to `catalog.service_types` (restrict). The pair is unique, so a service type is selected at most once per registration | yes |
+| `created_at` | timestamptz | no | `now()` | When the service type was selected | yes |
+
+Indexes: the primary key only (the selections of ONE registration and the uniqueness of a selection). No index on `service_type_id` (never-deleted target, no filtered query).
+Triggers: `trg_registration_service_types__guard` (`provider.guard_registration_service_types`, BEFORE INSERT OR UPDATE OR DELETE, per row): an UPDATE is always refused (`IMMUTABLE_IDENTITY`); rows are inserted or deleted only while the registration is IN_PROGRESS, read FOR SHARE so a concurrent completion or cancellation serializes (`REGISTRATION_NOT_IN_PROGRESS`); a newly selected service type must be ACTIVE, read FOR SHARE so a concurrent retirement or deactivation serializes (`SERVICE_TYPE_RETIRED` for RETIRED, `SERVICE_TYPE_NOT_ACTIVE` otherwise). `trg_registration_service_types__no_truncate` refuses TRUNCATE (`ROW_IMMUTABLE`).
+
+### provider.audit_events
+
+Append-only audit trail of the registration (PRO-001): who (`account:<id>` or `system:<name>`, never a token), what, when, the field-level diff (a JSON object of identifiers, codes and counts, never a contact, a text or a name), an optional reason and the correlation id. Reads are never audited. Rows are immutable and never truncated. Role changes are audited by the identity domain, contact and consent changes by theirs: they are not duplicated here.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `audit_event_id` | uuid | no | `gen_random_uuid()` | Primary key `pk_audit_events` | yes |
+| `occurred_at` | timestamptz | no | `clock_timestamp()` | When the change was made (database clock) | yes |
+| `actor` | text | no | none | Who acted: `account:<id>` or `system:<name>` (`ck_audit_events__actor`: not blank, at most 200 characters) | yes |
+| `action` | text | no | none | One of the five actions (`ck_audit_events__action`): `PROVIDER_REGISTRATION_STARTED`, `PROVIDER_MARKET_SELECTED`, `PROVIDER_SERVICES_UPDATED`, `PROVIDER_REGISTRATION_COMPLETED`, `PROVIDER_REGISTRATION_CANCELLED` | yes |
+| `provider_registration_id` | uuid | no | none | The subject: foreign key `fk_audit_events__registration_id` to `provider.registrations` (restrict). The account is reached through the registration | yes |
+| `changes` | jsonb | yes | none | A JSON object of identifiers, codes and counts, or NULL (`ck_audit_events__changes_object`). Never a contact, a name or a text | yes |
+| `reason` | text | yes | none | An optional reason (`ck_audit_events__reason`: NULL, or not blank and at most 1000 characters) | yes |
+| `correlation_id` | text | no | none | The correlation id of the request | yes |
+
+Indexes: the primary key only. The audit trail is not read by any API yet; an index (for example on `provider_registration_id`) is added through its own review when a query path appears.
+Triggers: `trg_audit_events__immutable` (BEFORE UPDATE OR DELETE, per row) and `trg_audit_events__no_truncate` (BEFORE TRUNCATE) call `provider.forbid_mutation`: UPDATE, DELETE and TRUNCATE are refused (`ROW_IMMUTABLE`).

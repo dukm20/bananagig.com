@@ -12,7 +12,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { MemoryConfigCache } from '@bananagig/configuration';
 import { CATALOG_EVENTS, CATALOG_STATUSES, CATALOG_STATUS_TRANSITIONS, isCatalogTransitionAllowed, type CatalogStatus } from '@bananagig/contracts';
-import { createDatabase } from '@bananagig/database';
+import { createDatabase, sql } from '@bananagig/database';
 import { runWithCorrelation } from '@bananagig/observability';
 import { createIsolatedDatabase, createTestPool, deferred, rejection, sleep, type Deferred, type IsolatedDatabase } from '@bananagig/testing';
 import { CatalogError, CatalogService, createCatalogScopeReferenceValidator, type MarketGate, type PublicMarket } from './index';
@@ -3050,5 +3050,231 @@ describe('shape and privacy', () => {
     expect(text).not.toMatch(/Home Cleaning|Auto Services|Car Detailing|Deep Cleaning/);
     expect(text).not.toMatch(/devtest_c\d|devtest_s\d/);
     for (const line of logSink.lines) expect(JSON.parse(line).message).toBe('catalog database unavailable');
+  });
+});
+
+// ====================================================================== offeredServiceTypeCodes (PRO-001)
+describe('offeredServiceTypeCodes: what a provider can choose in a market', () => {
+  /** A market (any status) with an ACTIVE category enabled in it. */
+  async function mkOfferEnv(): Promise<{ market: string; category: string }> {
+    const market = await mkMarket(false);
+    const category = await mkCategory();
+    await setCat(category, 'ACTIVE');
+    await catAvail(market, category, true, 'auto');
+    return { market, category };
+  }
+  /** An ACTIVE service type of the category, enabled in the market. */
+  async function mkOffered(market: string, category: string, c?: string): Promise<string> {
+    const st = await mkServiceType(category, c === undefined ? {} : { code: c });
+    await stAvail(market, st, true, 'auto');
+    await setSt(st, 'ACTIVE');
+    return st;
+  }
+  const offered = (market: string) => bare.offeredServiceTypeCodes(market);
+
+  it('an ACTIVE service type, enabled in the market, under an ACTIVE category enabled there, is offered', async () => {
+    const { market, category } = await mkOfferEnv();
+    const st = await mkOffered(market, category);
+    expect(await offered(market)).toEqual([st]);
+  });
+
+  it('the market status does not matter: PLANNED, ACTIVE and INACTIVE markets all offer their service types', async () => {
+    for (const status of ['PLANNED', 'ACTIVE', 'INACTIVE'] as const) {
+      const { market, category } = await mkOfferEnv();
+      const st = await mkOffered(market, category);
+      if (status !== 'PLANNED') await q('UPDATE geography.markets SET status = $2 WHERE code = $1', [market, status]);
+      expect((await one<{ status: string }>('SELECT status FROM geography.markets WHERE code = $1', [market])).status).toBe(status);
+      expect(await offered(market), status).toEqual([st]);
+    }
+  });
+
+  it('DRAFT, INACTIVE and RETIRED service types are not offered; only the ACTIVE one is', async () => {
+    const { market, category } = await mkOfferEnv();
+    const draft = await mkServiceType(category);
+    await stAvail(market, draft, true, 'auto');
+    const inactive = await mkOffered(market, category);
+    await setSt(inactive, 'INACTIVE');
+    const retired = await mkOffered(market, category);
+    await setSt(retired, 'RETIRED');
+    const active = await mkOffered(market, category);
+    expect(await dbStatus('service_types', draft)).toBe('DRAFT');
+    expect(await offered(market)).toEqual([active]);
+    // and it follows the status: deactivating the last one empties the answer, activating the draft adds it
+    await setSt(draft, 'ACTIVE');
+    expect(await offered(market)).toEqual([draft, active].sort());
+    await setSt(active, 'INACTIVE');
+    expect(await offered(market)).toEqual([draft]);
+  });
+
+  it('a service type whose availability row in the market is disabled, or missing, is not offered', async () => {
+    const { market, category } = await mkOfferEnv();
+    const disabled = await mkOffered(market, category);
+    const never = await mkServiceType(category);
+    await setSt(never, 'ACTIVE');
+    const kept = await mkOffered(market, category);
+    await stAvail(market, disabled, false);
+    expect((await mstRow(market, disabled))[0]!.enabled).toBe(false);
+    expect(await mstRow(market, never)).toEqual([]);
+    expect(await offered(market)).toEqual([kept]);
+    await stAvail(market, disabled, true);
+    expect(await offered(market)).toEqual([disabled, kept].sort());
+  });
+
+  it('a disabled category availability row in the market removes its service types, even when their own row is still enabled (crafted: the service cascades)', async () => {
+    const { market, category } = await mkOfferEnv();
+    const st = await mkOffered(market, category);
+    expect(await offered(market)).toEqual([st]);
+    await withoutTriggers(['catalog.market_categories'], () =>
+      q(
+        'UPDATE catalog.market_categories SET enabled = false WHERE market_id = (SELECT market_id FROM geography.markets WHERE code = $1) AND category_id = (SELECT category_id FROM catalog.categories WHERE code = $2)',
+        [market, category],
+      ),
+    );
+    expect((await mstRow(market, st))[0]!.enabled).toBe(true);
+    expect((await mcRow(market, category))[0]!.enabled).toBe(false);
+    expect(await offered(market)).toEqual([]);
+    await withoutTriggers(['catalog.market_categories'], () =>
+      q(
+        'UPDATE catalog.market_categories SET enabled = true WHERE market_id = (SELECT market_id FROM geography.markets WHERE code = $1) AND category_id = (SELECT category_id FROM catalog.categories WHERE code = $2)',
+        [market, category],
+      ),
+    );
+    expect(await offered(market)).toEqual([st]);
+  });
+
+  it('a missing category availability row removes the service type too (crafted)', async () => {
+    const { market, category } = await mkOfferEnv();
+    const st = await mkOffered(market, category);
+    await withoutTriggers(['catalog.market_categories'], () =>
+      q(
+        'DELETE FROM catalog.market_categories WHERE market_id = (SELECT market_id FROM geography.markets WHERE code = $1) AND category_id = (SELECT category_id FROM catalog.categories WHERE code = $2)',
+        [market, category],
+      ),
+    );
+    expect(await mcRow(market, category)).toEqual([]);
+    expect(await mstRow(market, st)).toHaveLength(1);
+    expect(await offered(market)).toEqual([]);
+  });
+
+  it('a category that is not ACTIVE removes its service types (crafted: the guard would refuse the state)', async () => {
+    for (const status of ['INACTIVE', 'RETIRED', 'DRAFT'] as const) {
+      const { market, category } = await mkOfferEnv();
+      const st = await mkOffered(market, category);
+      await withoutTriggers(['catalog.categories'], () => q('UPDATE catalog.categories SET status = $2 WHERE code = $1', [category, status]));
+      expect(await dbStatus('categories', category)).toBe(status);
+      expect(await dbStatus('service_types', st)).toBe('ACTIVE');
+      expect(await offered(market), status).toEqual([]);
+    }
+  });
+
+  it("another market's service types and categories never leak in, and a market without any availability offers nothing", async () => {
+    const a = await mkOfferEnv();
+    const b = await mkOfferEnv();
+    const empty = await mkMarket(false);
+    const sa = await mkOffered(a.market, a.category);
+    const sb = await mkOffered(b.market, b.category);
+    // the same service type enabled in b as well: it is offered in both
+    await stAvail(b.market, sa, true, 'auto').catch(() => undefined);
+    expect(await offered(a.market)).toEqual([sa]);
+    expect((await offered(b.market)).includes(sb)).toBe(true);
+    expect((await offered(b.market)).includes(sa)).toBe(false); // category of sa is not enabled in b
+    expect(await offered(empty)).toEqual([]);
+  });
+
+  it('an unknown market has none; a malformed code has none and sends no statement at all', async () => {
+    expect(await offered('devtest-no-such-market')).toEqual([]);
+    for (const bad of [
+      '',
+      ' ',
+      'LA-OC',
+      'la_oc',
+      'la oc',
+      "la-oc'; DROP TABLE catalog.service_types;--",
+      '-la',
+      'la--oc',
+      'x'.repeat(61),
+      '\u0000',
+      'la-oc\n',
+    ]) {
+      const r = await counting(() => offered(bad));
+      expect(r.result, JSON.stringify(bad)).toEqual([]);
+      expect(r.sql, JSON.stringify(bad)).toEqual([]);
+    }
+    for (const notAString of [undefined, null, 5, {}, ['la-oc']] as unknown[]) expect(await offered(notAString as string)).toEqual([]);
+    expect((await one<{ n: number }>('SELECT count(*)::int AS n FROM catalog.service_types')).n).toBeGreaterThan(0);
+  });
+
+  it('codes come in byte order (COLLATE "C"), whatever the creation order and the database collation', async () => {
+    const { market, category } = await mkOfferEnv();
+    const stem = code('o');
+    // '9' (0x39) < '_' (0x5f) < 'a' (0x61): a locale-aware collation ignores the underscore and would put a_b after ab
+    const wanted = [`${stem}a9`, `${stem}a_b`, `${stem}aa`, `${stem}ab`, `${stem}b`];
+    for (const c of [`${stem}b`, `${stem}ab`, `${stem}a_b`, `${stem}a9`, `${stem}aa`]) await mkOffered(market, category, c);
+    expect(await offered(market)).toEqual(wanted);
+    const bytes = [...wanted].sort((x, y) => (x < y ? -1 : x > y ? 1 : 0));
+    expect(wanted).toEqual(bytes);
+  });
+
+  it('there are no duplicates even when the service type has availability in the market through several routes', async () => {
+    const { market, category } = await mkOfferEnv();
+    const other = await mkCategory();
+    await setCat(other, 'ACTIVE');
+    await catAvail(market, other, true, 'auto');
+    const a = await mkOffered(market, category);
+    const b = await mkOffered(market, other);
+    const list = await offered(market);
+    expect(list).toEqual([a, b].sort());
+    expect(new Set(list).size).toBe(list.length);
+  });
+
+  it('is exactly one plain read statement, writes nothing, calls no market gate and touches no cache', async () => {
+    const { market, category } = await mkOfferEnv();
+    await mkOffered(market, category);
+    const before = await worldHash();
+    const gen = cache.gen();
+    const r = await counting(() => offered(market));
+    expect(r.sql).toHaveLength(1);
+    expect(r.sql[0]).toMatch(/^select /i);
+    expect(r.sql[0]).not.toMatch(/\b(insert|update|delete|for update|for share)\b/i);
+    expect(r.gate).toEqual([]);
+    expect(await worldHash()).toBe(before);
+    expect(cache.gen()).toBe(gen);
+    // the service WITH a cache behaves the same (the answer is never cached)
+    const withCache = await counting(() => svc.offeredServiceTypeCodes(market));
+    expect(withCache.result).toEqual(r.result);
+    expect(withCache.sql).toHaveLength(1);
+  });
+
+  it('joins the transaction of the caller: it sees the uncommitted change of that transaction, and no other session does', async () => {
+    const { market, category } = await mkOfferEnv();
+    const st = await mkOffered(market, category);
+    const stop = new Error('rollback on purpose');
+    const seen = await rejection(
+      iso.database.transaction(async (trx) => {
+        await sql`UPDATE catalog.market_service_types SET enabled = false WHERE market_id = (SELECT market_id FROM geography.markets WHERE code = ${market})
+          AND service_type_id = (SELECT service_type_id FROM catalog.service_types WHERE code = ${st})`.execute(trx);
+        const inside = await bare.offeredServiceTypeCodes(market);
+        const outside = (
+          await q<{ code: string }>(
+            `SELECT st.code FROM catalog.market_service_types mst JOIN catalog.service_types st ON st.service_type_id = mst.service_type_id
+              JOIN geography.markets m ON m.market_id = mst.market_id WHERE m.code = $1 AND mst.enabled`,
+            [market],
+          )
+        ).map((x) => x.code);
+        throw Object.assign(stop, { inside, outside });
+      }),
+    );
+    expect(seen).toBe(stop);
+    expect((seen as unknown as { inside: string[] }).inside).toEqual([]);
+    expect((seen as unknown as { outside: string[] }).outside).toEqual([st]);
+    // rolled back: the committed state is unchanged
+    expect(await offered(market)).toEqual([st]);
+  });
+
+  it('never opens a transaction of its own (no BEGIN, no snapshot isolation statement)', async () => {
+    const { market, category } = await mkOfferEnv();
+    await mkOffered(market, category);
+    const r = await counting(() => offered(market));
+    expect(r.sql.join('\n')).not.toMatch(/begin|isolation|set_config/i);
   });
 });

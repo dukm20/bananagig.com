@@ -4910,6 +4910,807 @@ await check('Gig templates', async () => {
   );
 });
 
+// ---------------------------------------------------------------- Provider registration (PRO-001)
+await check('Provider registration', async () => {
+  // Provider registration (PRO-001) end to end with REAL Keycloak tokens and a THROWAWAY customer-only identity (created through the Keycloak admin API and deleted at the end:
+  // customer.dev already holds PROVIDER, so it cannot show a registration that starts from a customer). One account becomes a provider: no second login, no copied contact.
+  // The catalogue it registers into is an isolated DEV/TEST market (ZZ) with its own category and service types, activated and RETIRED/deactivated by this scenario; the seeded
+  // market la-oc is never activated and its status is checked before and after. Contacts are verified through the REAL email and phone flows (Mailpit, fake SMS sink), consent
+  // through the REAL consent API (the legal versions published by the 'Consent' scenario are in force). Attempt 1 runs through the API (gates, cancel); attempt 2 (restart) runs
+  // through the web forms behind Caddy. Assumptions: DATABASE_URL (read-only SELECTs), LOKI_URL, MAILPIT_URL, VALKEY_URL, KEYCLOAK_ADMIN*, a consent policy of migration 0013
+  // (both legal purposes required for CUSTOMER and PROVIDER) and the provider policy of migration 0018 (verified email and phone, ACTIVE markets, 1 to 10 service types).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  type Json = any; // parsed response bodies are checked field by field below
+  const assert = (ok: boolean, what: string): void => {
+    if (!ok) throw new Error(what);
+  };
+  const runId = Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+  const cid = `smoke-provider-${runId}`;
+  const flowStart = Date.now() * 1e6;
+  const marketCode = `devtest-pro-${runId}`;
+  const categoryCode = `devtest_pro_${runId}`;
+  const stA = `devtest_pro_${runId}_a`;
+  const stB = `devtest_pro_${runId}_b`;
+  const stC = `devtest_pro_${runId}_c`; // ACTIVE but never enabled in the market: not offered
+  const username = `pro001.${runId}`;
+  const password = `Pw-${randomBytes(9).toString('hex')}`; // secret-scan:allow throwaway DEV/TEST identity, deleted at the end
+  const email = `pro001-${runId}@bananagig.localhost`;
+  const webOrigin = new URL(webPublic).origin;
+  const mailpit = env('MAILPIT_URL', 'http://mailpit-email:8025');
+  const loki = env('LOKI_URL', 'http://loki-logs:3100');
+  const seen: string[] = []; // every PROVIDER API response (body and headers): searched for identifiers, contacts and tokens at the end
+  const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  await clearLimiterBuckets('email-verification');
+  await clearLimiterBuckets('phone-verification');
+
+  type Reply = { status: number; text: string; json: Json; headers: Headers };
+  const request = async (
+    module: string,
+    method: string,
+    path: string,
+    token: string | null,
+    body?: unknown,
+    extra: Record<string, string> = {},
+  ): Promise<Reply> => {
+    const r = await get(`${api}/api/v1/${module}${path}`, {
+      method,
+      headers: {
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        [CORRELATION_HEADER]: cid,
+        ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
+        ...extra,
+      },
+      ...(body !== undefined ? { body: typeof body === 'string' ? body : JSON.stringify(body) } : {}),
+    });
+    const text = await r.text();
+    let json: Json;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = undefined;
+    }
+    return { status: r.status, text, json, headers: r.headers };
+  };
+  const mgmt = async (
+    module: 'catalog' | 'geography' | 'content',
+    admin: string,
+    method: string,
+    path: string,
+    body?: unknown,
+    ok = [200, 201],
+  ): Promise<Reply> => {
+    const r = await request(module, method, path, admin, body);
+    assert(ok.includes(r.status), `${method} /${module}${path} -> ${r.status} ${r.json?.error?.code ?? ''} ${r.json?.error?.details?.reason ?? ''}`);
+    return r;
+  };
+  /** The provider API as the throwaway customer (or anonymously). */
+  const provider = async (
+    method: 'GET' | 'POST' | 'PUT',
+    path: string,
+    token: string | null,
+    body?: unknown,
+    extra: Record<string, string> = {},
+  ): Promise<Reply> => {
+    const r = await request('provider', method, `/registration${path}`, token, body, extra);
+    seen.push(r.text, JSON.stringify([...r.headers]));
+    assert(
+      r.headers.get('cache-control') === 'no-store',
+      `${method} /provider/registration${path}: every provider response must be Cache-Control: no-store (${r.status})`,
+    );
+    return r;
+  };
+  const account = (token: string, path: string, method: 'GET' | 'POST' = 'GET', body?: unknown): Promise<Reply> =>
+    request('account', method, path.replace(/^\/account/, ''), token, body);
+  const refusal = (r: Reply, status: number, code: string, what: string): Reply => {
+    assert(
+      r.status === status && r.json?.error?.code === code,
+      `${what}: expected ${status} ${code}, got ${r.status} ${r.json?.error?.code ?? r.text.slice(0, 160)}`,
+    );
+    assert(
+      r.json.error.details?.messageKey === `provider.registration.error.${code.replace(/^PROVIDER_/, '').toLowerCase()}`,
+      `${what}: the error must carry its content message key (got ${r.json.error.details?.messageKey})`,
+    );
+    return r;
+  };
+  const ok = (r: Reply, status: number, what: string): Json => {
+    assert(r.status === status, `${what} -> ${r.status} ${r.json?.error?.code ?? r.text.slice(0, 160)}`);
+    return r.json.data;
+  };
+  const stepOf = (req: Json, step: string): Json => req.steps.find((s: Json) => s.step === step);
+
+  // ---- Keycloak: the throwaway identity (customer realm role only, so the account starts as a customer: ADR-0025 bootstrap)
+  const kcToken = await kcMasterToken();
+  const kcAdmin = async (method: string, path: string, body?: unknown): Promise<{ status: number; json: Json; location: string | null }> => {
+    const res = await get(`${kcUrl}/admin/realms/bananagig${path}`, {
+      method,
+      headers: { authorization: `Bearer ${kcToken}`, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    const text = await res.text();
+    let json: Json;
+    try {
+      json = text ? JSON.parse(text) : undefined;
+    } catch {
+      json = text;
+    }
+    return { status: res.status, json, location: res.headers.get('location') };
+  };
+  let kcUserId = '';
+  const database = createDatabase(env('DATABASE_URL', ''), { role: 'tests' });
+  const valkey = new Redis(env('VALKEY_URL', 'redis://valkey-cache:6379'), { maxRetriesPerRequest: 2 });
+  valkey.on('error', () => undefined);
+  const inbox = new FakeSmsInbox(valkey);
+  let marketCreated = false;
+  let admin = '';
+  try {
+    const created = await kcAdmin('POST', '/users', {
+      username,
+      enabled: true,
+      email: `kc-${email}`,
+      emailVerified: true,
+      firstName: 'Pro',
+      lastName: 'Smoke',
+      attributes: { 'bananagig.devOnly': ['true'] },
+    });
+    assert(created.status === 201 && !!created.location, `(1) creating the throwaway Keycloak user -> ${created.status} ${JSON.stringify(created.json)}`);
+    kcUserId = created.location!.split('/').pop()!;
+    const role = await kcAdmin('GET', '/roles/customer');
+    assert(role.status === 200, `(1) the customer realm role -> ${role.status}`);
+    assert((await kcAdmin('POST', `/users/${kcUserId}/role-mappings/realm`, [role.json])).status === 204, '(1) mapping the customer realm role');
+    assert(
+      (await kcAdmin('PUT', `/users/${kcUserId}/reset-password`, { type: 'password', value: password, temporary: false })).status === 204,
+      '(1) setting the throwaway password',
+    );
+    const login = await authorizationCodeLogin(kc, { clientId: 'bananagig-web', redirectUri: WEB_REDIRECT_URI, username, password });
+    const token = (
+      await exchangeAuthorizationCode({
+        tokenEndpoint: ep.token,
+        clientId: 'bananagig-web',
+        redirectUri: WEB_REDIRECT_URI,
+        code: login.code,
+        codeVerifier: login.verifier,
+      })
+    ).accessToken;
+    const me = AccountResponse.parse((await account(token, '/account/me')).json).data;
+    const accountId = me.accountId;
+    assert(uuidRe.test(accountId) && me.status === 'ACTIVE', '(1) the account is created on the first request and ACTIVE');
+    assert(me.roles.map((r) => r.code).join() === 'CUSTOMER', `(1) the throwaway account starts as a customer only (${me.roles.map((r) => r.code).join()})`);
+    const roleStatus = async (code: string): Promise<string | undefined> =>
+      (
+        await database.query<{ status: string }>(
+          `SELECT ar.status FROM identity.account_roles ar JOIN identity.roles r ON r.role_id = ar.role_id WHERE ar.account_id = $1 AND r.code = $2`,
+          [accountId, code],
+        )
+      )[0]?.status;
+    const counts = async (): Promise<{ audit: Record<string, number>; events: Record<string, number>; attempts: number; accounts: number }> => {
+      const audit = await database.query<{ action: string; n: number }>(
+        `SELECT a.action, count(*)::int AS n FROM provider.audit_events a JOIN provider.registrations r USING (provider_registration_id) WHERE r.account_id = $1 GROUP BY a.action`,
+        [accountId],
+      );
+      const events = await database.query<{ event_type: string; n: number }>(
+        `SELECT event_type, count(*)::int AS n FROM integration.outbox_events WHERE event_type LIKE 'bananagig.provider.%' AND payload_json->>'accountId' = $1 GROUP BY event_type`,
+        [accountId],
+      );
+      const attempts = await database.query<{ n: number }>(`SELECT count(*)::int AS n FROM provider.registrations WHERE account_id = $1`, [accountId]);
+      const accounts = await database.query<{ n: number }>(`SELECT count(*)::int AS n FROM identity.accounts WHERE account_id = $1`, [accountId]);
+      return {
+        audit: Object.fromEntries(audit.map((r) => [r.action, r.n])),
+        events: Object.fromEntries(events.map((r) => [r.event_type, r.n])),
+        attempts: attempts[0]!.n,
+        accounts: accounts[0]!.n,
+      };
+    };
+    assert((await roleStatus('PROVIDER')) === undefined, '(1) no PROVIDER membership exists before the person asks for one');
+
+    // (2) before anything is started: nothing exists, every route needs the caller's own token, and no client can name an account, a role or a status
+    const empty = ok(await provider('GET', '', token), 200, '(2) GET /registration');
+    assert(empty.providerRole === 'NONE' && empty.registration === null, `(2) before starting: role NONE and no registration (${JSON.stringify(empty)})`);
+    const req0 = ok(await provider('GET', '/requirements', token), 200, '(2) GET /requirements');
+    assert(
+      ['ACCOUNT', 'MARKET', 'SERVICES'].every((s) => stepOf(req0, s).status === 'NOT_STARTED') &&
+        stepOf(req0, 'CONTACT').status === 'NOT_STARTED' &&
+        ['VERIFICATION', 'SUBSCRIPTION', 'PROFILE', 'GIGS'].every((s) => stepOf(req0, s).status === 'NOT_AVAILABLE') &&
+        req0.overall.registrationReady === false &&
+        req0.overall.goLive.evaluated === false &&
+        req0.overall.goLive.eligible === false,
+      `(2) the evaluator before starting (${JSON.stringify(req0.steps.map((s: Json) => `${s.step}:${s.status}`))})`,
+    );
+    assert(
+      req0.steps.every(
+        (s: Json) => /^provider\.registration\.step\.[a-z]+\.label$/.test(s.labelKey) && /^provider\.registration\.step_status\./.test(s.statusKey),
+      ),
+      '(2) steps carry content keys, not words',
+    );
+    assert((await provider('GET', '', null)).status === 401, '(2) GET without a token must be 401');
+    assert((await provider('POST', '', null, {})).status === 401, '(2) POST without a token must be 401');
+    for (const [what, body] of [
+      ['an account id', { accountId }],
+      ['a role', { role: 'PROVIDER' }],
+      ['a status', { status: 'COMPLETED' }],
+    ] as const)
+      assert((await provider('POST', '', token, body)).status === 400, `(2) a start request naming ${what} must be 400`);
+    assert((await provider('POST', '', token, '[]')).status === 400, '(2) a start request that is not an object must be 400');
+    assert((await provider('PUT', '/market', token, { marketCode: 'x-y', accountId })).status === 400, '(2) a market request naming an account must be 400');
+    assert((await provider('POST', '/submit', token, {})).status === 400, '(2) submit without expectedRevision must be 400');
+    refusal(
+      await provider('PUT', '/market', token, { marketCode: marketCode }),
+      409,
+      'PROVIDER_PREREQUISITE_NOT_MET',
+      '(2) choosing a market before starting (contacts first)',
+    );
+    assert((await roleStatus('PROVIDER')) === undefined, '(2) refused calls must not create a membership');
+
+    // (3) the isolated DEV/TEST market and catalogue (activated here, retired at the end); la-oc is only observed
+    const adminLogin = await authorizationCodeLogin(kc, { clientId: 'bananagig-admin', redirectUri: ADMIN_REDIRECT_URI, ...DEV_USERS.admin });
+    admin = (
+      await exchangeAuthorizationCode({
+        tokenEndpoint: ep.token,
+        clientId: 'bananagig-admin',
+        redirectUri: ADMIN_REDIRECT_URI,
+        code: adminLogin.code,
+        codeVerifier: adminLogin.verifier,
+      })
+    ).accessToken;
+    const laocBefore = (await mgmt('geography', admin, 'GET', '/markets/la-oc')).json.data.status as string;
+    await ensureDevtestGeography(admin);
+    await mgmt('geography', admin, 'POST', '/markets', {
+      code: marketCode,
+      name: `DEV/TEST provider smoke ${runId}`,
+      countryCode: 'ZZ',
+      defaultLocale: 'qaa',
+      currencyCode: 'USD',
+      defaultTimeZone: 'America/Los_Angeles',
+      reason: 'DEV/TEST ONLY smoke market',
+    });
+    marketCreated = true;
+    const publish = async (key: string, text: string): Promise<void> => {
+      await mgmt('content', admin, 'POST', '/entries', {
+        key,
+        contentType: 'UI_LABEL',
+        ownerRole: 'CONTENT',
+        description: 'DEV/TEST ONLY provider smoke entry',
+        approvalPolicy: 'NONE',
+      });
+      const v = (await mgmt('content', admin, 'POST', `/entries/${key}/versions`, { locale: 'en-US', body: text, reason: 'smoke test' })).json.data;
+      await mgmt('content', admin, 'POST', `/versions/${v.versionId}/submit`, {});
+      await mgmt('content', admin, 'POST', `/versions/${v.versionId}/publish`, {});
+    };
+    const names = { a: `Smoke Provider Service A ${runId}`, b: `Smoke Provider Service B ${runId}`, c: `Smoke Provider Service C ${runId}` };
+    await publish(`catalog.category.${categoryCode}.name`, `Smoke Provider Category ${runId}`);
+    await publish(`catalog.service_type.${stA}.name`, names.a);
+    await publish(`catalog.service_type.${stB}.name`, names.b);
+    await publish(`catalog.service_type.${stC}.name`, names.c);
+    await mgmt('catalog', admin, 'POST', '/categories', { code: categoryCode, iconKey: 'wrench', reason: 'DEV/TEST ONLY smoke category' });
+    for (const st of [stA, stB, stC])
+      await mgmt('catalog', admin, 'POST', '/service-types', { code: st, categoryCode, reason: 'DEV/TEST ONLY smoke service type' });
+    await mgmt('catalog', admin, 'PUT', `/markets/${marketCode}/categories/${categoryCode}`, {
+      enabled: true,
+      displayOrder: 10,
+      reason: 'prepare before launch',
+    });
+    await mgmt('geography', admin, 'POST', `/markets/${marketCode}/activation`, { active: true, reason: 'smoke test' });
+    await mgmt('catalog', admin, 'PUT', `/categories/${categoryCode}/status`, { status: 'ACTIVE', reason: 'launch' });
+    for (const [st, order] of [
+      [stA, 10],
+      [stB, 20],
+    ] as const) {
+      await mgmt('catalog', admin, 'PUT', `/service-types/${st}/status`, { status: 'ACTIVE', reason: 'launch' });
+      await mgmt('catalog', admin, 'PUT', `/markets/${marketCode}/service-types/${st}`, { enabled: true, displayOrder: order, reason: 'launch' });
+    }
+    await mgmt('catalog', admin, 'PUT', `/service-types/${stC}/status`, { status: 'ACTIVE', reason: 'launch (not enabled in the market)' });
+
+    // (4) become a provider: the SAME account asks for the role (PENDING, never ACTIVE at the start); starting twice is one attempt
+    const before4 = await counts();
+    const started = await provider('POST', '', token, {});
+    const s1 = ok(started, 201, '(4) POST /registration (first)');
+    assert(
+      s1.providerRole === 'PENDING' &&
+        s1.registration.status === 'IN_PROGRESS' &&
+        s1.registration.attempt === 1 &&
+        s1.registration.marketCode === null &&
+        s1.registration.serviceTypeCodes.length === 0,
+      `(4) a started registration is IN_PROGRESS attempt 1 with the PROVIDER role PENDING (${JSON.stringify(s1)})`,
+    );
+    assert(
+      Object.keys(s1.registration).sort().join() ===
+        'attempt,cancelledAt,completedAt,createdAt,marketCode,providerRegistrationId,revision,serviceTypeCodes,status',
+      '(4) the registration read model has no other fields',
+    );
+    assert(
+      (await roleStatus('PROVIDER')) === 'PENDING' && (await roleStatus('CUSTOMER')) === 'ACTIVE',
+      '(4) PROVIDER is PENDING and CUSTOMER stays ACTIVE on the one account',
+    );
+    const again = ok(await provider('POST', '', token, {}), 200, '(4) POST /registration (resume)');
+    assert(
+      again.registration.providerRegistrationId === s1.registration.providerRegistrationId && again.registration.revision === s1.registration.revision,
+      '(4) starting twice resumes the same attempt',
+    );
+    const after4 = await counts();
+    assert(
+      after4.attempts === 1 &&
+        after4.accounts === 1 &&
+        after4.audit.PROVIDER_REGISTRATION_STARTED === 1 &&
+        after4.events['bananagig.provider.registration-started.v1'] === 1,
+      `(4) one attempt, one account, one STARTED audit row and one started event (${JSON.stringify(after4)}; before ${JSON.stringify(before4)})`,
+    );
+    assert(
+      (await account(token, '/account/me').then((r) => AccountResponse.parse(r.json).data)).roles.map((r) => r.code).join() === 'CUSTOMER',
+      '(4) the PENDING provider role is not an ACTIVE role yet',
+    );
+
+    // (5) contacts first (PR-01.03/05): market and services wait for a verified email and phone; consent is read from its owner and shows outstanding
+    refusal(
+      await provider('PUT', '/market', token, { marketCode }),
+      409,
+      'PROVIDER_PREREQUISITE_NOT_MET',
+      '(5) choosing a market before the contacts are verified',
+    );
+    const req5 = ok(await provider('GET', '/requirements', token), 200, '(5) requirements');
+    assert(stepOf(req5, 'CONTACT').status === 'NOT_STARTED' && stepOf(req5, 'ACCOUNT').status === 'COMPLETE', '(5) ACCOUNT complete, CONTACT not started');
+    assert(
+      stepOf(req5, 'CONTACT').detail?.email === 'NOT_VERIFIED' && stepOf(req5, 'CONTACT').detail?.phone === 'NOT_VERIFIED',
+      '(5) CONTACT says which contact is missing (statuses only)',
+    );
+
+    // (6) the contacts are verified by their owners through the real flows; nothing is copied into the provider domain
+    const setEmail = await account(token, '/account/email', 'POST', { email });
+    assert(setEmail.status === 200, `(6) POST /account/email -> ${setEmail.status}`);
+    assert((await account(token, '/account/email/verification/send', 'POST', {})).status === 200, '(6) sending the email verification');
+    const message = await retry(
+      async () => {
+        const found = (await (await expectOk(`${mailpit}/api/v1/search?query=${encodeURIComponent(`to:"${email}"`)}`)).json()) as {
+          messages: { ID: string }[] | null;
+        };
+        if (!found.messages?.length) throw new Error('the verification email has not arrived');
+        return (await (await expectOk(`${mailpit}/api/v1/message/${found.messages[0]!.ID}`)).json()) as { Text: string };
+      },
+      10,
+      1000,
+    );
+    const emailCode = /code is\s+([0-9]{6})\b/i.exec(message.Text)?.[1];
+    assert(!!emailCode, '(6) the verification code is missing from the delivered message');
+    assert((await account(token, '/account/email/verification/confirm-code', 'POST', { code: emailCode })).status === 200, '(6) confirming the email code');
+    let tail = '';
+    do tail = String(Math.floor(Math.random() * 10_000)).padStart(4, '0');
+    while (['901', '902', '903', '904', '905'].includes(tail.slice(-3))); // the fake line-type classifier reads the last three digits
+    const national = `(202) 555-${tail}`;
+    const e164 = `+1202555${tail}`;
+    await inbox.clear(e164);
+    assert((await account(token, '/account/phone', 'POST', { phone: national, country: 'US' })).status === 200, '(6) setting the phone number');
+    assert((await account(token, '/account/phone/verification/send', 'POST', {})).status === 200, '(6) sending the SMS');
+    const sms = await inbox.wait(e164, 1, 10_000);
+    const smsCode = extractSmsCode(sms[0]!.body);
+    assert(!!smsCode, '(6) the SMS code is missing');
+    assert((await account(token, '/account/phone/verification/confirm-code', 'POST', { code: smsCode })).status === 200, '(6) confirming the SMS code');
+    const req6 = ok(await provider('GET', '/requirements', token), 200, '(6) requirements');
+    assert(
+      stepOf(req6, 'CONTACT').status === 'COMPLETE' &&
+        stepOf(req6, 'CONTACT').detail?.email === 'VERIFIED' &&
+        stepOf(req6, 'CONTACT').detail?.phone === 'VERIFIED',
+      '(6) CONTACT is complete from the owners',
+    );
+
+    // (7) choosing where: services need a market; an unknown market and a market that is not ACTIVE are refused by the configured policy; la-oc is never made public by this
+    refusal(await provider('PUT', '/services', token, { serviceTypeCodes: [stA] }), 409, 'PROVIDER_MARKET_REQUIRED', '(7) services before a market');
+    refusal(await provider('PUT', '/market', token, { marketCode: 'no-such-market' }), 400, 'PROVIDER_MARKET_NOT_ELIGIBLE', '(7) an unknown market');
+    const laocNow = (await mgmt('geography', admin, 'GET', '/markets/la-oc')).json.data.status as string;
+    if (laocNow !== 'ACTIVE')
+      refusal(
+        await provider('PUT', '/market', token, { marketCode: 'la-oc' }),
+        400,
+        'PROVIDER_MARKET_NOT_ELIGIBLE',
+        `(7) la-oc (${laocNow}) is not open for provider registration`,
+      );
+    const m1 = ok(await provider('PUT', '/market', token, { marketCode, expectedRevision: s1.registration.revision }), 200, '(7) choose the test market');
+    assert(
+      m1.registration.marketCode === marketCode && m1.registration.revision === s1.registration.revision + 1,
+      '(7) the market is chosen and the revision grows by one',
+    );
+    const m1b = ok(await provider('PUT', '/market', token, { marketCode }), 200, '(7) choose the same market again');
+    assert(m1b.registration.revision === m1.registration.revision, '(7) choosing the same market again changes nothing');
+    refusal(
+      await provider('PUT', '/market', token, { marketCode, expectedRevision: s1.registration.revision }),
+      409,
+      'PROVIDER_STALE_REGISTRATION',
+      '(7) a stale revision',
+    );
+
+    // (8) choosing what: only ACTIVE service types offered in the chosen market, within the configured range, replaced as a whole
+    refusal(await provider('PUT', '/services', token, { serviceTypeCodes: [] }), 400, 'PROVIDER_SERVICE_COUNT_OUT_OF_RANGE', '(8) no service type');
+    refusal(
+      await provider('PUT', '/services', token, { serviceTypeCodes: [stC] }),
+      400,
+      'PROVIDER_SERVICE_TYPE_NOT_ELIGIBLE',
+      '(8) a service type that is not offered in the market',
+    );
+    refusal(
+      await provider('PUT', '/services', token, { serviceTypeCodes: ['regular_cleaning'] }),
+      400,
+      'PROVIDER_SERVICE_TYPE_NOT_ELIGIBLE',
+      '(8) a seeded DRAFT service type',
+    );
+    assert((await provider('PUT', '/services', token, { serviceTypeCodes: [stA, stA] })).status === 400, '(8) a duplicated code must be 400');
+    assert((await provider('PUT', '/services', token, { serviceTypeCodes: ['Not A Code'] })).status === 400, '(8) a malformed code must be 400');
+    const sv1 = ok(
+      await provider('PUT', '/services', token, { serviceTypeCodes: [stB, stA], expectedRevision: m1.registration.revision }),
+      200,
+      '(8) choose two service types',
+    );
+    assert(
+      sv1.registration.serviceTypeCodes.join() === [stA, stB].sort().join() && sv1.registration.revision === m1.registration.revision + 1,
+      '(8) the set is stored sorted and the revision grows',
+    );
+    const sv1b = ok(await provider('PUT', '/services', token, { serviceTypeCodes: [stA, stB] }), 200, '(8) the same set again');
+    assert(sv1b.registration.revision === sv1.registration.revision, '(8) an equal set changes nothing');
+    const sv2 = ok(await provider('PUT', '/services', token, { serviceTypeCodes: [stA] }), 200, '(8) replace by one service type');
+    assert(sv2.registration.serviceTypeCodes.join() === stA && sv2.registration.revision === sv1.registration.revision + 1, '(8) the whole set is replaced');
+    const mid = await counts();
+    assert(
+      mid.audit.PROVIDER_MARKET_SELECTED === 1 && mid.audit.PROVIDER_SERVICES_UPDATED === 2,
+      `(8) one audit row per real change and none for no-ops (${JSON.stringify(mid.audit)})`,
+    );
+
+    // (9) the requirements now: everything this checkpoint owns is complete except the legal step, which belongs to the consent owner; submit refuses and names it
+    const req9 = ok(await provider('GET', '/requirements', token), 200, '(9) requirements');
+    assert(
+      stepOf(req9, 'MARKET').status === 'COMPLETE' &&
+        stepOf(req9, 'SERVICES').status === 'COMPLETE' &&
+        stepOf(req9, 'LEGAL').status !== 'COMPLETE' &&
+        req9.overall.blockedBy.join() === 'LEGAL',
+      `(9) only LEGAL stands in the way (${JSON.stringify(req9.steps.map((s: Json) => `${s.step}:${s.status}`))} ${JSON.stringify(req9.overall.blockedBy)})`,
+    );
+    const incomplete = refusal(
+      await provider('POST', '/submit', token, { expectedRevision: sv2.registration.revision }),
+      409,
+      'PROVIDER_REGISTRATION_INCOMPLETE',
+      '(9) submit with consent outstanding',
+    );
+    assert(incomplete.json.error.details.steps?.join() === 'LEGAL', '(9) the refusal names the open step');
+
+    // (10) cancel keeps the account, the customer role, the contacts and the history; a restart is a NEW attempt
+    const mid10 = await counts();
+    const cancelled = ok(await provider('POST', '/cancel', token, {}), 200, '(10) cancel');
+    assert(
+      cancelled.registration.status === 'CANCELLED' && cancelled.registration.attempt === 1 && cancelled.registration.cancelledAt !== null,
+      '(10) attempt 1 is CANCELLED and kept',
+    );
+    assert(
+      cancelled.providerRole === 'PENDING' && (await roleStatus('PROVIDER')) === 'PENDING' && (await roleStatus('CUSTOMER')) === 'ACTIVE',
+      '(10) cancelling leaves the account, the CUSTOMER role and the pending PROVIDER role as they were',
+    );
+    const cancelAgain = ok(await provider('POST', '/cancel', token, {}), 200, '(10) cancel again');
+    assert(
+      cancelAgain.registration.status === 'CANCELLED' && cancelAgain.registration.cancelledAt === cancelled.registration.cancelledAt,
+      '(10) cancelling twice is idempotent',
+    );
+    refusal(await provider('PUT', '/market', token, { marketCode }), 404, 'PROVIDER_REGISTRATION_NOT_FOUND', '(10) a cancelled attempt cannot be changed');
+    const req10 = ok(await provider('GET', '/requirements', token), 200, '(10) requirements after cancelling');
+    assert(
+      stepOf(req10, 'CONTACT').status === 'COMPLETE' && stepOf(req10, 'MARKET').status === 'NOT_STARTED',
+      '(10) the contacts stay verified and the selections are not carried',
+    );
+    const after10 = await counts();
+    assert(
+      after10.audit.PROVIDER_REGISTRATION_CANCELLED === 1 &&
+        after10.events['bananagig.provider.registration-cancelled.v1'] === 1 &&
+        mid10.audit.PROVIDER_REGISTRATION_CANCELLED === undefined,
+      `(10) exactly one CANCELLED audit row and one cancelled event (${JSON.stringify(after10)})`,
+    );
+
+    // (11) consent is accepted by the person through the consent API (explicit, never implied), for exactly the version in force
+    const consentReq = ConsentRequirementsResponse.parse((await account(token, '/account/consents/requirements')).json).data;
+    const outstanding = consentReq.requirements.filter((r) => r.status === 'OUTSTANDING' || r.status === 'REACCEPTANCE_REQUIRED');
+    assert(
+      outstanding.length >= 1 && outstanding.every((r) => r.document),
+      `(11) legal text must be in force (the Consent scenario publishes it): ${JSON.stringify(consentReq.requirements.map((r) => `${r.purposeCode}:${r.status}`))}`,
+    );
+    for (const r of outstanding) {
+      const accepted = await account(token, `/account/consents/${r.purposeCode}/accept`, 'POST', {
+        versionId: r.document!.versionId,
+        locale: r.document!.locale,
+        bodySha256: r.document!.bodySha256,
+      });
+      assert(accepted.status === 200, `(11) accepting ${r.purposeCode} -> ${accepted.status} ${accepted.json?.error?.code ?? ''}`);
+    }
+
+    // (12) attempt 2 through the WEB app behind Caddy: sign in, start, choose the market and services with the forms, submit
+    type Hop = { status: number; location: string | undefined; body: string; cookies: string[]; headers: http.IncomingHttpHeaders };
+    const caddy = (method: 'GET' | 'POST', path: string, o: { cookie?: string; origin?: string; form?: URLSearchParams } = {}): Promise<Hop> =>
+      new Promise((resolve, reject) => {
+        const payload = o.form?.toString();
+        const req = http.request(
+          {
+            host: 'caddy-proxy',
+            port: 80,
+            path,
+            method,
+            headers: {
+              host: 'app.localhost',
+              ...(o.cookie ? { cookie: o.cookie } : {}),
+              ...(o.origin ? { origin: o.origin } : {}),
+              ...(method === 'POST' ? { 'content-length': String(Buffer.byteLength(payload ?? '')) } : {}),
+              ...(payload !== undefined ? { 'content-type': 'application/x-www-form-urlencoded' } : {}),
+            },
+          },
+          (res) => {
+            let body = '';
+            res.setEncoding('utf8');
+            res.on('data', (chunk) => (body += chunk));
+            res.on('end', () =>
+              resolve({ status: res.statusCode ?? 0, location: res.headers.location, body, cookies: res.headers['set-cookie'] ?? [], headers: res.headers }),
+            );
+          },
+        );
+        req.setTimeout(20_000, () => req.destroy(new Error(`${method} ${path} through Caddy timed out`)));
+        req.on('error', reject);
+        req.end(payload);
+      });
+    const jar = new Map<string, string>();
+    const absorb = (h: Hop): void => {
+      for (const line of h.cookies) {
+        const [pair] = line.split(';');
+        const i = pair!.indexOf('=');
+        const name = pair!.slice(0, i);
+        const value = pair!.slice(i + 1);
+        if (!value || /max-age=0/i.test(line)) jar.delete(name);
+        else jar.set(name, value);
+      }
+    };
+    const cookie = (): string => [...jar].map(([k, v]) => `${k}=${v}`).join('; ');
+    const decode = (s: string): string =>
+      s
+        .replace(/&#x27;|&#39;/g, "'")
+        .replace(/&quot;/g, '"')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&amp;/g, '&');
+    const formsOf = (html: string) =>
+      [...html.matchAll(/<form\b([^>]*)>([\s\S]*?)<\/form>/g)].map((m) => ({
+        action: decode(/\baction="([^"]*)"/.exec(m[1]!)?.[1] ?? ''),
+        inputs: [...m[2]!.matchAll(/<input\b([^>]*)>/g)].map((i) => ({
+          type: decode(/\btype="([^"]*)"/.exec(i[1]!)?.[1] ?? ''),
+          name: decode(/\bname="([^"]*)"/.exec(i[1]!)?.[1] ?? ''),
+          value: decode(/\bvalue="([^"]*)"/.exec(i[1]!)?.[1] ?? ''),
+          id: decode(/\bid="([^"]*)"/.exec(i[1]!)?.[1] ?? ''),
+          checked: /\schecked\b/.test(i[1]!),
+        })),
+        html: m[2]!,
+      }));
+    const page = async (query = ''): Promise<Hop> => {
+      const p = await caddy('GET', `/provider/registration${query}`, { cookie: cookie() });
+      assert(p.status === 200, `(12) GET /provider/registration${query} -> ${p.status}`);
+      assert(
+        !/eyJ[A-Za-z0-9_-]{10,}\./.test(p.body) && !p.body.includes(token) && !p.body.includes(accountId),
+        '(12) the page leaked a token or the account id',
+      );
+      for (const v of jar.values()) assert(v.length < 8 || !p.body.includes(v), '(12) the page contains the session cookie value');
+      return p;
+    };
+    const post = (action: string, form: URLSearchParams, o: { origin?: string | null; cookie?: boolean } = {}) =>
+      caddy('POST', `/auth/provider/${action}`, {
+        ...(o.cookie === false ? {} : { cookie: cookie() }),
+        ...(o.origin === null ? {} : { origin: o.origin ?? webOrigin }),
+        form,
+      });
+    const lands = (h: Hop, suffix: string, what: string): void =>
+      assert(h.status === 303 && (h.location ?? '').endsWith(suffix), `${what}: expected 303 ...${suffix}, got ${h.status} ${h.location}`);
+
+    const anon = await caddy('GET', '/provider/registration');
+    assert(
+      anon.status === 200 && anon.body.includes('/auth/login?returnTo=/provider/registration') && formsOf(anon.body).length === 0,
+      '(12) signed out: sign-in is offered and no form exists',
+    );
+    assert((await caddy('GET', '/auth/provider/start')).status === 405, '(12) GET /auth/provider/start must be 405 (no GET changes state)');
+    assert((await post('start', new URLSearchParams(), { origin: null, cookie: false })).status === 403, '(12) POST without an Origin must be 403');
+    assert(
+      (await post('start', new URLSearchParams(), { origin: 'http://evil.example', cookie: false })).status === 403,
+      '(12) POST with a foreign Origin must be 403',
+    );
+    lands(await post('start', new URLSearchParams(), { cookie: false }), '/session', '(12) a same-origin POST without a session');
+    assert((await post('nope', new URLSearchParams(), { cookie: false })).status === 404, '(12) an unknown action must be 404');
+
+    const start = await caddy('GET', '/auth/login?returnTo=/provider/registration');
+    absorb(start);
+    assert(start.status === 302 && (start.location ?? '').includes('code_challenge_method=S256'), `(12) web login did not start a PKCE flow (${start.status})`);
+    const callbackUrl = await completeLogin(kc, start.location!, { redirectUri: `${webPublic}/auth/callback`, username, password });
+    const callback = await caddy('GET', `/auth/callback${new URL(callbackUrl).search}`, { cookie: cookie() });
+    absorb(callback);
+    assert(
+      callback.status === 302 && (callback.location ?? '').endsWith('/provider/registration') && jar.has('bg_session'),
+      `(12) web callback failed (${callback.status} ${callback.location})`,
+    );
+
+    const p0 = await page();
+    const startForms = formsOf(p0.body).filter((f) => f.action === '/auth/provider/start');
+    assert(
+      startForms.length === 1 && formsOf(p0.body).length === 1,
+      `(12) after cancelling only the restart form is offered (${formsOf(p0.body)
+        .map((f) => f.action)
+        .join()})`,
+    );
+    assert((await post('start', new URLSearchParams({ accountId })).then((h) => h.status)) === 400, '(12) a start form naming an account must be 400');
+    const restart = await post('start', new URLSearchParams());
+    lands(restart, '/provider/registration?notice=started', '(12) restart');
+    const p1 = await page();
+    const marketForm = formsOf(p1.body).find((f) => f.action === '/auth/provider/market');
+    assert(!!marketForm, '(12) the market form is offered for the attempt in progress');
+    const radio = marketForm!.inputs.find((i) => i.type === 'radio' && i.value === marketCode);
+    assert(
+      !!radio && !radio.checked && marketForm!.html.includes(`for="${radio.id}"`) && decode(marketForm!.html).includes(`DEV/TEST provider smoke ${runId}`),
+      '(12) the market is a labelled radio, not pre-selected',
+    );
+    assert(!formsOf(p1.body).some((f) => f.action === '/auth/provider/services'), '(12) services are not offered before a market is chosen');
+    assert(!formsOf(p1.body).some((f) => f.action === '/auth/provider/submit'), '(12) submit is not offered before the registration is ready');
+    const revision1 = marketForm!.inputs.find((i) => i.name === 'expectedRevision')!.value;
+    lands(
+      await post('market', new URLSearchParams({ marketCode: 'devtest-pro-nope', expectedRevision: revision1 })),
+      '?error=PROVIDER_MARKET_NOT_ELIGIBLE',
+      '(12) an ineligible market through the form',
+    );
+    lands(
+      await post('market', new URLSearchParams({ marketCode, expectedRevision: revision1 })),
+      '/provider/registration?notice=market_saved',
+      '(12) choose the market',
+    );
+    const p2 = await page();
+    const servicesForm = formsOf(p2.body).find((f) => f.action === '/auth/provider/services');
+    assert(!!servicesForm, '(12) the services form is offered once a market is chosen');
+    const boxes = servicesForm!.inputs.filter((i) => i.type === 'checkbox');
+    assert(
+      boxes
+        .map((b) => b.value)
+        .sort()
+        .join() === [stA, stB].sort().join() && boxes.every((b) => !b.checked && servicesForm!.html.includes(`for="${b.id}"`)),
+      `(12) the offered service types are labelled checkboxes (${boxes.map((b) => b.value).join()}); the one not enabled in the market is absent`,
+    );
+    assert(
+      decode(servicesForm!.html).includes(names.a) && decode(servicesForm!.html).includes(names.b) && !decode(servicesForm!.html).includes(names.c),
+      '(12) resolved names are shown',
+    );
+    const revision2 = servicesForm!.inputs.find((i) => i.name === 'expectedRevision')!.value;
+    lands(
+      await post('services', new URLSearchParams({ expectedRevision: revision2 })),
+      '?error=PROVIDER_SERVICE_COUNT_OUT_OF_RANGE',
+      '(12) no checked service type',
+    );
+    const servicesBody = new URLSearchParams({ expectedRevision: revision2 });
+    servicesBody.append('serviceTypeCode', stA);
+    servicesBody.append('serviceTypeCode', stB);
+    lands(await post('services', servicesBody), '/provider/registration?notice=services_saved', '(12) choose the services');
+    const p3 = await page();
+    const submitForm = formsOf(p3.body).find((f) => f.action === '/auth/provider/submit');
+    assert(!!submitForm, '(12) everything this checkpoint owns is complete: submit is offered');
+    assert(
+      !formsOf(p3.body).some((f) => f.inputs.some((i) => i.type === 'checkbox' && /consent|legal|terms/i.test(i.name + i.id))),
+      '(12) the page has no consent checkbox (consent is accepted on /consents)',
+    );
+    lands(
+      await post('submit', new URLSearchParams({ expectedRevision: String(Number(submitForm!.inputs.find((i) => i.name === 'expectedRevision')!.value) - 1) })),
+      '?error=PROVIDER_STALE_REGISTRATION',
+      '(12) submit with a stale revision',
+    );
+    const doneBefore = await counts();
+    lands(
+      await post('submit', new URLSearchParams({ expectedRevision: submitForm!.inputs.find((i) => i.name === 'expectedRevision')!.value })),
+      '/provider/registration?notice=submitted',
+      '(12) submit',
+    );
+    const p4 = await page('?notice=submitted');
+    assert(
+      formsOf(p4.body).length === 0,
+      `(12) a completed registration offers no form (${formsOf(p4.body)
+        .map((f) => f.action)
+        .join()})`,
+    );
+
+    // (13) the result: ONE account, attempt 2 COMPLETED, PROVIDER now ACTIVE (a role), Go-Live untouched (not this checkpoint's), later steps NOT_AVAILABLE, no further change
+    const done = ok(await provider('GET', '', token), 200, '(13) GET /registration');
+    assert(
+      done.providerRole === 'ACTIVE' && done.registration.status === 'COMPLETED' && done.registration.attempt === 2 && done.registration.completedAt !== null,
+      `(13) attempt 2 is COMPLETED and the role ACTIVE (${JSON.stringify(done)})`,
+    );
+    assert(
+      done.registration.marketCode === marketCode && done.registration.serviceTypeCodes.join() === [stA, stB].sort().join(),
+      '(13) the registration holds the market and service types chosen',
+    );
+    assert(
+      (await roleStatus('PROVIDER')) === 'ACTIVE' && (await roleStatus('CUSTOMER')) === 'ACTIVE',
+      '(13) the one account holds CUSTOMER and PROVIDER, both ACTIVE',
+    );
+    const reqDone = ok(await provider('GET', '/requirements', token), 200, '(13) requirements');
+    assert(
+      reqDone.overall.registrationComplete === true &&
+        reqDone.overall.goLive.evaluated === false &&
+        reqDone.overall.goLive.eligible === false &&
+        ['VERIFICATION', 'SUBSCRIPTION', 'PROFILE', 'GIGS'].every((s) => stepOf(reqDone, s).status === 'NOT_AVAILABLE'),
+      '(13) completing the registration is not Go-Live: later steps are NOT_AVAILABLE and Go-Live is not evaluated',
+    );
+    const submitAgain = ok(await provider('POST', '/submit', token, { expectedRevision: done.registration.revision }), 200, '(13) submit again');
+    assert(submitAgain.registration.status === 'COMPLETED', '(13) submitting a completed registration is idempotent');
+    refusal(await provider('PUT', '/market', token, { marketCode }), 409, 'PROVIDER_REGISTRATION_NOT_IN_PROGRESS', '(13) changing a completed registration');
+    refusal(await provider('POST', '/cancel', token, {}), 409, 'PROVIDER_REGISTRATION_NOT_IN_PROGRESS', '(13) cancelling a completed registration');
+    const final = await counts();
+    assert(
+      final.attempts === 2 &&
+        final.accounts === 1 &&
+        final.audit.PROVIDER_REGISTRATION_STARTED === 2 &&
+        final.audit.PROVIDER_REGISTRATION_COMPLETED === 1 &&
+        final.audit.PROVIDER_REGISTRATION_CANCELLED === 1 &&
+        final.audit.PROVIDER_MARKET_SELECTED === 2 &&
+        final.audit.PROVIDER_SERVICES_UPDATED === 3 &&
+        final.events['bananagig.provider.registration-started.v1'] === 2 &&
+        final.events['bananagig.provider.registration-completed.v1'] === 1 &&
+        final.events['bananagig.provider.registration-cancelled.v1'] === 1,
+      `(13) the audit trail and the outbox hold every change exactly once (${JSON.stringify(final)}; before submit ${JSON.stringify(doneBefore)})`,
+    );
+    const rows = await database.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM information_schema.columns WHERE table_schema = 'provider' AND (column_name ILIKE '%email%' OR column_name ILIKE '%phone%' OR column_name ILIKE '%password%')`,
+    );
+    assert(rows[0]!.n === 0, '(13) the provider schema holds no email, phone or password column');
+    const laocAfter = (await mgmt('geography', admin, 'GET', '/markets/la-oc')).json.data.status as string;
+    assert(laocAfter === laocBefore, `(13) la-oc must stay as it was (${laocBefore} -> ${laocAfter})`);
+
+    // (14) what was shown or logged: no response holds the contacts, the account id, a token or a code; Loki holds none either
+    const everything = seen.join('\n');
+    for (const [what, value] of [
+      ['email', email],
+      ['phone', e164],
+      ['national phone', national],
+      ['account id', accountId],
+      ['access token', token],
+      ['email code', `"${emailCode}"`],
+      ['password', password],
+    ] as const)
+      assert(!everything.includes(value), `(14) a provider API response contains the ${what}`);
+    const query = async (q: string) =>
+      (await (
+        await expectOk(`${loki}/loki/api/v1/query_range?query=${encodeURIComponent(q)}&start=${flowStart}&end=${Date.now() * 1e6 + 60e9}&limit=5`)
+      ).json()) as { data: { result: unknown[] } };
+    await retry(
+      async () => {
+        if ((await query(`{service_name="bananagig-api"} | correlationId = \`${cid}\``)).data.result.length < 1)
+          throw new Error('this flow is not in Loki yet');
+      },
+      12,
+      2000,
+    );
+    await sleep(6000);
+    for (const [what, q] of [
+      ['email', `{service_name=~"bananagig-.+"} |= \`${email}\``],
+      ['phone', `{service_name=~"bananagig-.+"} |= \`${e164}\``],
+      ['email code', `{service_name=~"bananagig-.+"} |~ \`\\b${emailCode}\\b\``],
+      ['password', `{service_name=~"bananagig-.+"} |= \`${password}\``],
+      ['access token', `{service_name=~"bananagig-.+"} |= \`${token}\``],
+    ] as const)
+      assert((await query(q)).data.result.length === 0, `(14) the ${what} appears in the logs`);
+
+    return (
+      `throwaway customer-only account -> PROVIDER requested PENDING on the SAME account (idempotent start); contacts first (409 until the real email and phone flows verify them); ` +
+      `market policy (unknown and non-ACTIVE refused, la-oc ${laocBefore} untouched), service types offered-only within [1,10], stale revisions 409; submit refused naming LEGAL until consent; ` +
+      `cancel kept the account, CUSTOMER and the PENDING role (idempotent), restart = attempt 2 through the web forms, submit -> COMPLETED + PROVIDER ACTIVE, Go-Live not evaluated; ` +
+      `audit and outbox exactly once; no contact, id, token or code in responses or logs`
+    );
+  } finally {
+    // cleanup: the test catalogue is retired and the test market deactivated (entities are never deleted); the throwaway Keycloak user is removed
+    try {
+      if (admin && marketCreated) {
+        for (const st of [stA, stB, stC]) await request('catalog', 'PUT', `/service-types/${st}/status`, admin, { status: 'RETIRED', reason: 'smoke cleanup' });
+        await request('catalog', 'PUT', `/categories/${categoryCode}/status`, admin, { status: 'RETIRED', reason: 'smoke cleanup' });
+        await request('geography', 'POST', `/markets/${marketCode}/activation`, admin, { active: false, reason: 'smoke cleanup' });
+      }
+    } catch {
+      // best effort: the failure that got us here is the one to report
+    }
+    try {
+      if (kcUserId) await kcAdmin('DELETE', `/users/${kcUserId}`);
+    } catch {
+      // best effort
+    }
+    valkey.disconnect();
+    await database.close();
+  }
+});
+
 await check('Caddy Proxy auth routes', async () => {
   const expectStatus = async (host: string, path: string, ok: (s: number) => boolean, what: string) => {
     const r = await proxy(host, path);
@@ -4968,6 +5769,7 @@ const order = [
   'Phone verification',
   'Sessions and security',
   'Consent',
+  'Provider registration',
   'NATS Events',
   'JetStream',
   'SeaweedFS Storage',

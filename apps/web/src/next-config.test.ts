@@ -18,7 +18,17 @@ describe('next.config', () => {
     // Next compiles `/:path*` to "zero or more segments"; check the pattern the same way
     const source = (await config.headers!())[0]!.source;
     const re = new RegExp(`^${source.replace('/:path*', '(?:/.*)?')}$`);
-    for (const p of ['/', '/consents', '/security', '/a/b/c/d', '/auth/consents/accept', '/auth/security/revoke-all']) expect(re.test(p), p).toBe(true);
+    for (const p of [
+      '/',
+      '/consents',
+      '/security',
+      '/a/b/c/d',
+      '/auth/consents/accept',
+      '/auth/security/revoke-all',
+      '/provider/registration',
+      '/auth/provider/start',
+    ])
+      expect(re.test(p), p).toBe(true);
     for (const p of [
       '/account',
       '/account/profile',

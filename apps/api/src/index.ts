@@ -18,6 +18,7 @@ import {
 import { ConfigurationService, ValkeyConfigCache } from '@bananagig/configuration';
 import { ContentService } from '@bananagig/content';
 import { CatalogService, GigTemplateService, createCatalogScopeReferenceValidator } from '@bananagig/catalog';
+import { ProviderRegistrationService, UnavailablePrerequisites } from '@bananagig/provider';
 import { AccountAreaService, AccountService, ConsentService, EmailVerificationService, PhoneVerificationService, SecurityService } from '@bananagig/accounts';
 import {
   AddressService,
@@ -31,6 +32,7 @@ import { KeycloakAdminClient, createTokenVerifier } from '@bananagig/identity';
 import { buildApp } from './app';
 import { createContentSmsRenderer, createPhoneCountryDirectory, createPhonePolicyProvider } from './modules/account/phone-wiring';
 import { composeScopeReferenceValidators, createMarketGate } from './modules/catalog/wiring';
+import { createAccountPort, createCatalogPort, createConsentPort, createMarketPort, createProviderPolicyProvider } from './modules/provider/wiring';
 import { createConsentPolicyProvider, createDefaultLocaleResolver } from './modules/consent/wiring';
 import { createKeycloakSecurityIdentityProvider, createSecurityPolicyProvider, createUnavailableSecurityIdentityProvider } from './modules/security/wiring';
 import { createContentEmailRenderer, createVerificationLinkBuilder, createVerificationPolicyProvider } from './modules/account/email-wiring';
@@ -195,6 +197,19 @@ const consent = new ConsentService({
 // (the section read models compose the profile, contact, security and consent domains) and reads one indexed query per request; nothing is cached.
 const accountArea = new AccountAreaService({ database });
 
+// The provider registration (PRO-001): the registration of an account that wants to become a provider. A provider is the SAME account; the contact, consent, market and catalogue
+// state it composes are read through ports over their owning services (no package imports another), the policy from the configuration registry, and the future prerequisites
+// (verification, subscription, profile, Gigs) report NOT_AVAILABLE until their checkpoints exist. It shares the `database` of the account service, so the role request joins its transaction.
+const providerRegistrations = new ProviderRegistrationService({
+  database,
+  accounts: createAccountPort(accounts),
+  consent: createConsentPort(consent),
+  markets: createMarketPort(geography),
+  catalog: createCatalogPort(catalog),
+  policy: createProviderPolicyProvider(configuration),
+  prerequisites: UnavailablePrerequisites,
+});
+
 const app = await buildApp({
   cfg,
   verifier,
@@ -210,6 +225,7 @@ const app = await buildApp({
   accountArea,
   catalog,
   gigTemplates,
+  providerRegistrations,
   // Critical for serving requests: Postgres only. Valkey/NATS/OpenSearch/flagd outages must not take the API down.
   readiness: async () => ({ postgres: (await database.health()).ok ? 'up' : 'down' }),
   diagnostics: () => runDiagnostics(adapters),

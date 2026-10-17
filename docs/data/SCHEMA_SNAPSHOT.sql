@@ -8,6 +8,7 @@ CREATE SCHEMA content;
 CREATE SCHEMA geography;
 CREATE SCHEMA identity;
 CREATE SCHEMA integration;
+CREATE SCHEMA provider;
 
 CREATE TABLE catalog.audit_events (
   audit_event_id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -1274,6 +1275,54 @@ CREATE TABLE integration.outbox_events (
 );
 CREATE INDEX idx_outbox_events__pending ON integration.outbox_events USING btree (next_attempt_at, created_at) WHERE (published_at IS NULL);
 CREATE INDEX idx_outbox_events__published_at ON integration.outbox_events USING btree (published_at) WHERE (published_at IS NOT NULL);
+
+CREATE TABLE provider.audit_events (
+  audit_event_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  occurred_at timestamp with time zone NOT NULL DEFAULT clock_timestamp(),
+  actor text NOT NULL,
+  action text NOT NULL,
+  provider_registration_id uuid NOT NULL,
+  changes jsonb,
+  reason text,
+  correlation_id text NOT NULL,
+  CONSTRAINT pk_audit_events PRIMARY KEY (audit_event_id),
+  CONSTRAINT fk_audit_events__registration_id FOREIGN KEY (provider_registration_id) REFERENCES provider.registrations(provider_registration_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_audit_events__action CHECK ((action = ANY (ARRAY['PROVIDER_REGISTRATION_STARTED'::text, 'PROVIDER_MARKET_SELECTED'::text, 'PROVIDER_SERVICES_UPDATED'::text, 'PROVIDER_REGISTRATION_COMPLETED'::text, 'PROVIDER_REGISTRATION_CANCELLED'::text]))),
+  CONSTRAINT ck_audit_events__actor CHECK (((length(btrim(actor)) > 0) AND (length(actor) <= 200))),
+  CONSTRAINT ck_audit_events__changes_object CHECK (((changes IS NULL) OR (jsonb_typeof(changes) = 'object'::text))),
+  CONSTRAINT ck_audit_events__reason CHECK (((reason IS NULL) OR ((length(btrim(reason)) > 0) AND (length(reason) <= 1000))))
+);
+
+CREATE TABLE provider.registration_service_types (
+  provider_registration_id uuid NOT NULL,
+  service_type_id uuid NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_registration_service_types PRIMARY KEY (provider_registration_id, service_type_id),
+  CONSTRAINT fk_registration_service_types__registration_id FOREIGN KEY (provider_registration_id) REFERENCES provider.registrations(provider_registration_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_registration_service_types__service_type_id FOREIGN KEY (service_type_id) REFERENCES catalog.service_types(service_type_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE provider.registrations (
+  provider_registration_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  account_id uuid NOT NULL,
+  attempt_number integer NOT NULL,
+  status text NOT NULL DEFAULT 'IN_PROGRESS'::text,
+  market_id uuid,
+  revision integer NOT NULL DEFAULT 1,
+  completed_at timestamp with time zone,
+  cancelled_at timestamp with time zone,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_registrations PRIMARY KEY (provider_registration_id),
+  CONSTRAINT uq_registrations__attempt UNIQUE (account_id, attempt_number),
+  CONSTRAINT fk_registrations__account_id FOREIGN KEY (account_id) REFERENCES identity.accounts(account_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_registrations__market_id FOREIGN KEY (market_id) REFERENCES geography.markets(market_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_registrations__attempt CHECK ((attempt_number >= 1)),
+  CONSTRAINT ck_registrations__lifecycle CHECK ((((status = 'IN_PROGRESS'::text) AND (completed_at IS NULL) AND (cancelled_at IS NULL)) OR ((status = 'COMPLETED'::text) AND (completed_at IS NOT NULL) AND (cancelled_at IS NULL) AND (market_id IS NOT NULL)) OR ((status = 'CANCELLED'::text) AND (cancelled_at IS NOT NULL) AND (completed_at IS NULL)))),
+  CONSTRAINT ck_registrations__revision CHECK ((revision >= 1)),
+  CONSTRAINT ck_registrations__status CHECK ((status = ANY (ARRAY['IN_PROGRESS'::text, 'COMPLETED'::text, 'CANCELLED'::text])))
+);
+CREATE UNIQUE INDEX uq_registrations__live ON provider.registrations USING btree (account_id) WHERE (status <> 'CANCELLED'::text);
 
 CREATE TABLE public.schema_migrations (
   filename text NOT NULL,

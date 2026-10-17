@@ -3,7 +3,7 @@ asyncapi: 3.0.0
 info:
   title: BananaGig Events
   version: 1.0.0
-  description: Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events, the identity account events, the email verification events, the phone verification events, the account security events (sessions, second factor, password reset) the consent events (acceptance and withdrawal of a legal document version) the catalogue events (category and service type activation, market availability) and the Gig Template events (activation, pause, retirement, publication of a version, market availability) exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.
+  description: Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events, the identity account events, the email verification events, the phone verification events, the account security events (sessions, second factor, password reset) the consent events (acceptance and withdrawal of a legal document version) the catalogue events (category and service type activation, market availability) the Gig Template events (activation, pause, retirement, publication of a version, market availability) and the provider registration events (started, completed, cancelled) exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.
 defaultContentType: application/json
 channels:
   infraPing:
@@ -318,6 +318,24 @@ channels:
     messages:
       GigTemplateAvailabilityChanged:
         $ref: "#/components/messages/GigTemplateAvailabilityChanged"
+  provider_registrationStarted:
+    address: bananagig.provider.registration-started.v1
+    description: "An account started (or restarted, as a new attempt) its provider registration. The same account: the PROVIDER role is requested as PENDING in the same transaction. Published through the transactional outbox (aggregate provider_registration); the payload carries identifiers and codes only, never a contact, a name or a text."
+    messages:
+      ProviderRegistrationStarted:
+        $ref: "#/components/messages/ProviderRegistrationStarted"
+  provider_registrationCompleted:
+    address: bananagig.provider.registration-completed.v1
+    description: A provider registration was completed by the server (every step it owns or composes was complete). This is NOT verification, subscription or go-live; the PROVIDER role became ACTIVE in the same transaction. Published through the transactional outbox (aggregate provider_registration); the payload carries identifiers and codes only, never a contact, a name or a text.
+    messages:
+      ProviderRegistrationCompleted:
+        $ref: "#/components/messages/ProviderRegistrationCompleted"
+  provider_registrationCancelled:
+    address: bananagig.provider.registration-cancelled.v1
+    description: An IN_PROGRESS provider registration was cancelled. The account and its roles are untouched. Published through the transactional outbox (aggregate provider_registration); the payload carries identifiers and codes only, never a contact, a name or a text.
+    messages:
+      ProviderRegistrationCancelled:
+        $ref: "#/components/messages/ProviderRegistrationCancelled"
 operations:
   receiveInfraPing:
     action: receive
@@ -579,6 +597,21 @@ operations:
     channel:
       $ref: "#/channels/gigTemplate_availabilityChanged"
     summary: A Gig Template was offered, withdrawn or reordered in a market (a row of the market availability changed).
+  sendProviderRegistrationStarted:
+    action: send
+    channel:
+      $ref: "#/channels/provider_registrationStarted"
+    summary: "An account started (or restarted, as a new attempt) its provider registration. The same account: the PROVIDER role is requested as PENDING in the same transaction."
+  sendProviderRegistrationCompleted:
+    action: send
+    channel:
+      $ref: "#/channels/provider_registrationCompleted"
+    summary: A provider registration was completed by the server (every step it owns or composes was complete). This is NOT verification, subscription or go-live; the PROVIDER role became ACTIVE in the same transaction.
+  sendProviderRegistrationCancelled:
+    action: send
+    channel:
+      $ref: "#/channels/provider_registrationCancelled"
+    summary: An IN_PROGRESS provider registration was cancelled. The account and its roles are untouched.
 components:
   messages:
     EventEnvelope:
@@ -1101,6 +1134,36 @@ components:
             type: string
       payload:
         $ref: "#/components/schemas/GigTemplateAvailabilityChanged"
+    ProviderRegistrationStarted:
+      name: ProviderRegistrationStarted
+      title: "An account started (or restarted, as a new attempt) its provider registration. The same account: the PROVIDER role is requested as PENDING in the same transaction."
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/ProviderRegistrationStarted"
+    ProviderRegistrationCompleted:
+      name: ProviderRegistrationCompleted
+      title: A provider registration was completed by the server (every step it owns or composes was complete). This is NOT verification, subscription or go-live; the PROVIDER role became ACTIVE in the same transaction.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/ProviderRegistrationCompleted"
+    ProviderRegistrationCancelled:
+      name: ProviderRegistrationCancelled
+      title: An IN_PROGRESS provider registration was cancelled. The account and its roles are untouched.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/ProviderRegistrationCancelled"
   schemas:
     EventEnvelope:
       type: object
@@ -5161,6 +5224,233 @@ components:
             - marketCode
             - gigTemplateCode
             - enabled
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    ProviderRegistrationStarted:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.provider.registration-started.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            accountId:
+              type: string
+            providerRegistrationId:
+              type: string
+            attempt:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
+          required:
+            - accountId
+            - providerRegistrationId
+            - attempt
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    ProviderRegistrationCompleted:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.provider.registration-completed.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            accountId:
+              type: string
+            providerRegistrationId:
+              type: string
+            attempt:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
+            marketCode:
+              type: string
+            serviceTypeCodes:
+              type: array
+              items:
+                type: string
+          required:
+            - accountId
+            - providerRegistrationId
+            - attempt
+            - marketCode
+            - serviceTypeCodes
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    ProviderRegistrationCancelled:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.provider.registration-cancelled.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            accountId:
+              type: string
+            providerRegistrationId:
+              type: string
+            attempt:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
+          required:
+            - accountId
+            - providerRegistrationId
+            - attempt
           additionalProperties: false
       required:
         - eventId

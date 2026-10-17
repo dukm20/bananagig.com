@@ -836,3 +836,59 @@ erDiagram
 **Wording is content.** Every key is derived from the template code (and the field key); the name key is a generated column. The keys are shared by all versions (a version freezes the structure, the wording has its own history in the content registry).
 
 **The hierarchy.** Service type > template > version > field > option. A Gig of CAT-003 will point at the version, not at the template. Down the tree the checks are at write time (activate, publish), up the tree at read time (the public read re-checks the service type, its category and the market rows); CAT-001 guards are unchanged.
+
+
+## provider schema (PRO-001)
+
+The `provider` schema is the first provider-domain cluster: the registration of an account that wants to become a provider. A provider is NOT a second account: `provider.registrations` references `identity.accounts` by id only (the foreign key is the whole link; no email, phone, name or address is copied), and the application ROLE stays in `identity.account_roles`. The chosen market is a nullable column of the attempt (one market per registration) and the chosen service types are rows of a join table that reference the CAT-001 taxonomy. Onboarding steps are derived by an evaluator and have no table; Go-Live (PRO-003) is not stored.
+
+```mermaid
+erDiagram
+  PRO_ACCOUNTS {
+    uuid account_id PK "same table as identity.accounts (referenced by id only)"
+  }
+  PRO_MARKETS {
+    uuid market_id PK "same table as geography.markets"
+  }
+  PRO_SERVICE_TYPES {
+    uuid service_type_id PK "same table as catalog.service_types"
+  }
+  PROVIDER_REGISTRATIONS {
+    uuid provider_registration_id PK
+    uuid account_id FK "the existing identity account, restrict"
+    integer attempt_number UK "contiguous per account, unique with account_id"
+    text status "IN_PROGRESS, COMPLETED, CANCELLED"
+    uuid market_id FK "nullable until chosen, required by COMPLETED"
+    integer revision "draft concurrency token"
+    timestamptz completed_at "set exactly when COMPLETED"
+    timestamptz cancelled_at "set exactly when CANCELLED"
+    timestamptz created_at
+    timestamptz updated_at
+  }
+  PROVIDER_REGISTRATION_SERVICE_TYPES {
+    uuid provider_registration_id PK "part of the key, FK to registrations"
+    uuid service_type_id PK "part of the key, FK to service types"
+    timestamptz created_at
+  }
+  PROVIDER_AUDIT_EVENTS {
+    uuid audit_event_id PK
+    timestamptz occurred_at
+    text actor
+    text action "five PROVIDER_* actions"
+    uuid provider_registration_id FK
+    jsonb changes "identifiers, codes and counts only"
+    text reason
+    text correlation_id
+  }
+  PRO_ACCOUNTS ||--o{ PROVIDER_REGISTRATIONS : "attempts of an account (account_id)"
+  PRO_MARKETS |o--o{ PROVIDER_REGISTRATIONS : "chosen market (market_id)"
+  PROVIDER_REGISTRATIONS ||--o{ PROVIDER_REGISTRATION_SERVICE_TYPES : "selections (provider_registration_id)"
+  PRO_SERVICE_TYPES ||--o{ PROVIDER_REGISTRATION_SERVICE_TYPES : "selected service type (service_type_id)"
+  PROVIDER_REGISTRATIONS ||--o{ PROVIDER_AUDIT_EVENTS : "audited subject (provider_registration_id)"
+```
+
+**The account is referenced by id only.** `fk_registrations__account_id` is the entire link to the person: the provider registration holds no copy of the email, the phone, the name or any consent, and the account's contacts and agreements are read from `identity` when the steps are derived. One account has many attempts over time (`attempt_number`, contiguous) but at most one LIVE (IN_PROGRESS or COMPLETED) attempt, enforced by the partial unique index `uq_registrations__live (account_id) WHERE status <> 'CANCELLED'`; a cancelled attempt stays as history and a restart is the next attempt.
+
+**Three concepts, three owners.** The role (`identity.account_roles`, PENDING / ACTIVE / INACTIVE) is not drawn here because the registration does not reference it: the role is requested PENDING when the registration starts and activated by the identity service when it completes, but its status is never a column of the registration. Go-Live (PRO-003) has no table yet.
+
+**The market is a column, the service types are rows.** A registration has at most one market (`market_id`, nullable until chosen, required by a COMPLETED row) and many service types (the join table, primary key `(provider_registration_id, service_type_id)`). Both reference the taxonomy and geography by id; nothing is copied. The selections change only while the registration is IN_PROGRESS and are frozen history afterwards. All foreign keys are `ON DELETE RESTRICT`.

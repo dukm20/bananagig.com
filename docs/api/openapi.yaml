@@ -39727,11 +39727,2795 @@ paths:
                 required:
                   - error
                 additionalProperties: false
+  /api/v1/provider/registration:
+    get:
+      operationId: getProviderRegistration
+      summary: "The caller's provider registration: the provider role as the account holds it (NONE, PENDING, ACTIVE or INACTIVE: the identity domain's membership, not a second status) and the latest attempt (IN_PROGRESS, COMPLETED or CANCELLED) with its market and selected service types, or null when the account never started. Owner only: there is no id in any path"
+      tags: &a20
+        - provider
+      security: &a21
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      providerRole:
+                        type: string
+                        enum:
+                          - NONE
+                          - PENDING
+                          - ACTIVE
+                          - INACTIVE
+                      registration:
+                        anyOf:
+                          - type: object
+                            properties:
+                              providerRegistrationId:
+                                type: string
+                              attempt:
+                                type: integer
+                                minimum: -9007199254740991
+                                maximum: 9007199254740991
+                              status:
+                                type: string
+                                enum:
+                                  - IN_PROGRESS
+                                  - COMPLETED
+                                  - CANCELLED
+                              revision:
+                                type: integer
+                                minimum: -9007199254740991
+                                maximum: 9007199254740991
+                              marketCode:
+                                type:
+                                  - string
+                                  - "null"
+                              serviceTypeCodes:
+                                type: array
+                                items:
+                                  type: string
+                              createdAt:
+                                type: string
+                              completedAt:
+                                type:
+                                  - string
+                                  - "null"
+                              cancelledAt:
+                                type:
+                                  - string
+                                  - "null"
+                            required:
+                              - providerRegistrationId
+                              - attempt
+                              - status
+                              - revision
+                              - marketCode
+                              - serviceTypeCodes
+                              - createdAt
+                              - completedAt
+                              - cancelledAt
+                            additionalProperties: false
+                          - type: "null"
+                    required:
+                      - providerRole
+                      - registration
+                    additionalProperties: false
+                  meta:
+                    type: object
+                    properties:
+                      correlationId:
+                        type: string
+                    required:
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - data
+                  - meta
+                additionalProperties: false
+        "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "401":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "403":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "409":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "503":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+    post:
+      operationId: startProviderRegistration
+      summary: "Start (or resume) the provider registration of the caller. The same account, its CUSTOMER role, contacts, sessions and consent history are kept; the PROVIDER role is requested as PENDING (never activated here). Idempotent: a live registration (IN_PROGRESS or COMPLETED) is returned unchanged (200); a first start, or a restart after a cancellation (a NEW attempt), is 201. A deactivated provider role is refused (409 PROVIDER_ROLE_INACTIVE)"
+      tags: *a20
+      security: *a21
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      providerRole:
+                        type: string
+                        enum:
+                          - NONE
+                          - PENDING
+                          - ACTIVE
+                          - INACTIVE
+                      registration:
+                        anyOf:
+                          - type: object
+                            properties:
+                              providerRegistrationId:
+                                type: string
+                              attempt:
+                                type: integer
+                                minimum: -9007199254740991
+                                maximum: 9007199254740991
+                              status:
+                                type: string
+                                enum:
+                                  - IN_PROGRESS
+                                  - COMPLETED
+                                  - CANCELLED
+                              revision:
+                                type: integer
+                                minimum: -9007199254740991
+                                maximum: 9007199254740991
+                              marketCode:
+                                type:
+                                  - string
+                                  - "null"
+                              serviceTypeCodes:
+                                type: array
+                                items:
+                                  type: string
+                              createdAt:
+                                type: string
+                              completedAt:
+                                type:
+                                  - string
+                                  - "null"
+                              cancelledAt:
+                                type:
+                                  - string
+                                  - "null"
+                            required:
+                              - providerRegistrationId
+                              - attempt
+                              - status
+                              - revision
+                              - marketCode
+                              - serviceTypeCodes
+                              - createdAt
+                              - completedAt
+                              - cancelledAt
+                            additionalProperties: false
+                          - type: "null"
+                    required:
+                      - providerRole
+                      - registration
+                    additionalProperties: false
+                  meta:
+                    type: object
+                    properties:
+                      correlationId:
+                        type: string
+                    required:
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - data
+                  - meta
+                additionalProperties: false
+        "201":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      providerRole:
+                        type: string
+                        enum:
+                          - NONE
+                          - PENDING
+                          - ACTIVE
+                          - INACTIVE
+                      registration:
+                        anyOf:
+                          - type: object
+                            properties:
+                              providerRegistrationId:
+                                type: string
+                              attempt:
+                                type: integer
+                                minimum: -9007199254740991
+                                maximum: 9007199254740991
+                              status:
+                                type: string
+                                enum:
+                                  - IN_PROGRESS
+                                  - COMPLETED
+                                  - CANCELLED
+                              revision:
+                                type: integer
+                                minimum: -9007199254740991
+                                maximum: 9007199254740991
+                              marketCode:
+                                type:
+                                  - string
+                                  - "null"
+                              serviceTypeCodes:
+                                type: array
+                                items:
+                                  type: string
+                              createdAt:
+                                type: string
+                              completedAt:
+                                type:
+                                  - string
+                                  - "null"
+                              cancelledAt:
+                                type:
+                                  - string
+                                  - "null"
+                            required:
+                              - providerRegistrationId
+                              - attempt
+                              - status
+                              - revision
+                              - marketCode
+                              - serviceTypeCodes
+                              - createdAt
+                              - completedAt
+                              - cancelledAt
+                            additionalProperties: false
+                          - type: "null"
+                    required:
+                      - providerRole
+                      - registration
+                    additionalProperties: false
+                  meta:
+                    type: object
+                    properties:
+                      correlationId:
+                        type: string
+                    required:
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - data
+                  - meta
+                additionalProperties: false
+        "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "401":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "403":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "409":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "503":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+  /api/v1/provider/registration/market:
+    put:
+      operationId: selectProviderMarket
+      summary: Choose the market where the provider plans to work. Needs the email and phone verified (as configured) and a market whose status the registration policy allows (ACTIVE and in effect by default; a PLANNED market such as one not yet launched is closed unless the policy says otherwise). `expectedRevision`, when present, must be the revision last read (409 PROVIDER_STALE_REGISTRATION). Idempotent for the same market. Already selected service types are kept; the requirements report the ones the new market does not offer
+      tags: *a20
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                marketCode:
+                  type: string
+                  maxLength: 60
+                  pattern: ^[a-z][a-z0-9]*(-[a-z0-9]+)*$
+                expectedRevision:
+                  type: integer
+                  minimum: 1
+                  maximum: 2147483647
+              required:
+                - marketCode
+              additionalProperties: false
+      security: *a21
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      providerRole:
+                        type: string
+                        enum:
+                          - NONE
+                          - PENDING
+                          - ACTIVE
+                          - INACTIVE
+                      registration:
+                        anyOf:
+                          - type: object
+                            properties:
+                              providerRegistrationId:
+                                type: string
+                              attempt:
+                                type: integer
+                                minimum: -9007199254740991
+                                maximum: 9007199254740991
+                              status:
+                                type: string
+                                enum:
+                                  - IN_PROGRESS
+                                  - COMPLETED
+                                  - CANCELLED
+                              revision:
+                                type: integer
+                                minimum: -9007199254740991
+                                maximum: 9007199254740991
+                              marketCode:
+                                type:
+                                  - string
+                                  - "null"
+                              serviceTypeCodes:
+                                type: array
+                                items:
+                                  type: string
+                              createdAt:
+                                type: string
+                              completedAt:
+                                type:
+                                  - string
+                                  - "null"
+                              cancelledAt:
+                                type:
+                                  - string
+                                  - "null"
+                            required:
+                              - providerRegistrationId
+                              - attempt
+                              - status
+                              - revision
+                              - marketCode
+                              - serviceTypeCodes
+                              - createdAt
+                              - completedAt
+                              - cancelledAt
+                            additionalProperties: false
+                          - type: "null"
+                    required:
+                      - providerRole
+                      - registration
+                    additionalProperties: false
+                  meta:
+                    type: object
+                    properties:
+                      correlationId:
+                        type: string
+                    required:
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - data
+                  - meta
+                additionalProperties: false
+        "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "401":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "403":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "409":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "503":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+  /api/v1/provider/registration/services:
+    put:
+      operationId: replaceProviderServices
+      summary: "Replace the WHOLE set of service types the provider plans to offer (codes of the catalogue). Needs a chosen market that still accepts providers, codes the market offers (ACTIVE service types enabled under an enabled ACTIVE category) and a count within the configured range. Atomic and idempotent: an equal set writes nothing. No Gig is created"
+      tags: *a20
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                serviceTypeCodes:
+                  maxItems: 50
+                  type: array
+                  items:
+                    type: string
+                    minLength: 2
+                    maxLength: 48
+                    pattern: ^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$
+                expectedRevision:
+                  type: integer
+                  minimum: 1
+                  maximum: 2147483647
+              required:
+                - serviceTypeCodes
+              additionalProperties: false
+      security: *a21
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      providerRole:
+                        type: string
+                        enum:
+                          - NONE
+                          - PENDING
+                          - ACTIVE
+                          - INACTIVE
+                      registration:
+                        anyOf:
+                          - type: object
+                            properties:
+                              providerRegistrationId:
+                                type: string
+                              attempt:
+                                type: integer
+                                minimum: -9007199254740991
+                                maximum: 9007199254740991
+                              status:
+                                type: string
+                                enum:
+                                  - IN_PROGRESS
+                                  - COMPLETED
+                                  - CANCELLED
+                              revision:
+                                type: integer
+                                minimum: -9007199254740991
+                                maximum: 9007199254740991
+                              marketCode:
+                                type:
+                                  - string
+                                  - "null"
+                              serviceTypeCodes:
+                                type: array
+                                items:
+                                  type: string
+                              createdAt:
+                                type: string
+                              completedAt:
+                                type:
+                                  - string
+                                  - "null"
+                              cancelledAt:
+                                type:
+                                  - string
+                                  - "null"
+                            required:
+                              - providerRegistrationId
+                              - attempt
+                              - status
+                              - revision
+                              - marketCode
+                              - serviceTypeCodes
+                              - createdAt
+                              - completedAt
+                              - cancelledAt
+                            additionalProperties: false
+                          - type: "null"
+                    required:
+                      - providerRole
+                      - registration
+                    additionalProperties: false
+                  meta:
+                    type: object
+                    properties:
+                      correlationId:
+                        type: string
+                    required:
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - data
+                  - meta
+                additionalProperties: false
+        "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "401":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "403":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "409":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "503":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+  /api/v1/provider/registration/requirements:
+    get:
+      operationId: getProviderRegistrationRequirements
+      summary: "The derived onboarding state: the status of every step (account, contact, legal, market, services, verification, subscription, profile, Gigs) composed from the domains that own them, whether the registration can be submitted and what blocks it. Contact and agreement state is READ from its owners, never stored here. Verification, subscription, profile and Gigs are not available yet and never block the registration. Go-Live eligibility is never evaluated here (goLive.eligible is false)"
+      tags: *a20
+      parameters:
+        - schema:
+            type: string
+            minLength: 2
+            maxLength: 35
+            pattern: ^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$
+          in: query
+          name: locale
+          required: false
+          description: "The locale the agreements are evaluated in (default: the account locale)."
+      security: *a21
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      providerRole:
+                        type: string
+                        enum:
+                          - NONE
+                          - PENDING
+                          - ACTIVE
+                          - INACTIVE
+                      registration:
+                        anyOf:
+                          - type: object
+                            properties:
+                              providerRegistrationId:
+                                type: string
+                              attempt:
+                                type: integer
+                                minimum: -9007199254740991
+                                maximum: 9007199254740991
+                              status:
+                                type: string
+                                enum:
+                                  - IN_PROGRESS
+                                  - COMPLETED
+                                  - CANCELLED
+                              revision:
+                                type: integer
+                                minimum: -9007199254740991
+                                maximum: 9007199254740991
+                              marketCode:
+                                type:
+                                  - string
+                                  - "null"
+                              serviceTypeCodes:
+                                type: array
+                                items:
+                                  type: string
+                              createdAt:
+                                type: string
+                              completedAt:
+                                type:
+                                  - string
+                                  - "null"
+                              cancelledAt:
+                                type:
+                                  - string
+                                  - "null"
+                            required:
+                              - providerRegistrationId
+                              - attempt
+                              - status
+                              - revision
+                              - marketCode
+                              - serviceTypeCodes
+                              - createdAt
+                              - completedAt
+                              - cancelledAt
+                            additionalProperties: false
+                          - type: "null"
+                      steps:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            step:
+                              type: string
+                              enum:
+                                - ACCOUNT
+                                - CONTACT
+                                - LEGAL
+                                - MARKET
+                                - SERVICES
+                                - VERIFICATION
+                                - SUBSCRIPTION
+                                - PROFILE
+                                - GIGS
+                            status:
+                              type: string
+                              enum:
+                                - NOT_STARTED
+                                - IN_PROGRESS
+                                - COMPLETE
+                                - BLOCKED
+                                - NOT_AVAILABLE
+                                - NOT_REQUIRED
+                            owner:
+                              type: string
+                            labelKey:
+                              type: string
+                            statusKey:
+                              type: string
+                            detail:
+                              type: object
+                              properties:
+                                email:
+                                  type: string
+                                  enum:
+                                    - VERIFIED
+                                    - NOT_VERIFIED
+                                    - NOT_REQUIRED
+                                phone:
+                                  type: string
+                                  enum:
+                                    - VERIFIED
+                                    - NOT_VERIFIED
+                                    - NOT_REQUIRED
+                                outstandingPurposes:
+                                  type: array
+                                  items:
+                                    type: string
+                                marketCode:
+                                  type: string
+                                selected:
+                                  type: integer
+                                  minimum: -9007199254740991
+                                  maximum: 9007199254740991
+                                min:
+                                  type: integer
+                                  minimum: -9007199254740991
+                                  maximum: 9007199254740991
+                                max:
+                                  type: integer
+                                  minimum: -9007199254740991
+                                  maximum: 9007199254740991
+                                notOffered:
+                                  type: array
+                                  items:
+                                    type: string
+                              additionalProperties: false
+                          required:
+                            - step
+                            - status
+                            - owner
+                            - labelKey
+                            - statusKey
+                          additionalProperties: false
+                      overall:
+                        type: object
+                        properties:
+                          registrationComplete:
+                            type: boolean
+                          registrationReady:
+                            type: boolean
+                          blockedBy:
+                            type: array
+                            items:
+                              type: string
+                              enum:
+                                - ACCOUNT
+                                - CONTACT
+                                - LEGAL
+                                - MARKET
+                                - SERVICES
+                                - VERIFICATION
+                                - SUBSCRIPTION
+                                - PROFILE
+                                - GIGS
+                          goLive:
+                            type: object
+                            properties:
+                              evaluated:
+                                type: boolean
+                                enum:
+                                  - false
+                              eligible:
+                                type: boolean
+                                enum:
+                                  - false
+                            required:
+                              - evaluated
+                              - eligible
+                            additionalProperties: false
+                        required:
+                          - registrationComplete
+                          - registrationReady
+                          - blockedBy
+                          - goLive
+                        additionalProperties: false
+                    required:
+                      - providerRole
+                      - registration
+                      - steps
+                      - overall
+                    additionalProperties: false
+                  meta:
+                    type: object
+                    properties:
+                      correlationId:
+                        type: string
+                    required:
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - data
+                  - meta
+                additionalProperties: false
+        "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "401":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "403":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "409":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "503":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+  /api/v1/provider/registration/submit:
+    post:
+      operationId: submitProviderRegistration
+      summary: Submit the registration. The SERVER validates every step this registration owns or composes (account, contact, agreements, market, services) and completes it in one transaction, activating a PENDING provider role so the account may act as a provider. It does NOT verify, subscribe, publish or make the provider live. 409 PROVIDER_REGISTRATION_INCOMPLETE names the open steps. `expectedRevision` must be the revision last read. A repeat on a COMPLETED registration changes nothing
+      tags: *a20
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                expectedRevision:
+                  type: integer
+                  minimum: 1
+                  maximum: 2147483647
+              required:
+                - expectedRevision
+              additionalProperties: false
+      security: *a21
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      providerRole:
+                        type: string
+                        enum:
+                          - NONE
+                          - PENDING
+                          - ACTIVE
+                          - INACTIVE
+                      registration:
+                        anyOf:
+                          - type: object
+                            properties:
+                              providerRegistrationId:
+                                type: string
+                              attempt:
+                                type: integer
+                                minimum: -9007199254740991
+                                maximum: 9007199254740991
+                              status:
+                                type: string
+                                enum:
+                                  - IN_PROGRESS
+                                  - COMPLETED
+                                  - CANCELLED
+                              revision:
+                                type: integer
+                                minimum: -9007199254740991
+                                maximum: 9007199254740991
+                              marketCode:
+                                type:
+                                  - string
+                                  - "null"
+                              serviceTypeCodes:
+                                type: array
+                                items:
+                                  type: string
+                              createdAt:
+                                type: string
+                              completedAt:
+                                type:
+                                  - string
+                                  - "null"
+                              cancelledAt:
+                                type:
+                                  - string
+                                  - "null"
+                            required:
+                              - providerRegistrationId
+                              - attempt
+                              - status
+                              - revision
+                              - marketCode
+                              - serviceTypeCodes
+                              - createdAt
+                              - completedAt
+                              - cancelledAt
+                            additionalProperties: false
+                          - type: "null"
+                      steps:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            step:
+                              type: string
+                              enum:
+                                - ACCOUNT
+                                - CONTACT
+                                - LEGAL
+                                - MARKET
+                                - SERVICES
+                                - VERIFICATION
+                                - SUBSCRIPTION
+                                - PROFILE
+                                - GIGS
+                            status:
+                              type: string
+                              enum:
+                                - NOT_STARTED
+                                - IN_PROGRESS
+                                - COMPLETE
+                                - BLOCKED
+                                - NOT_AVAILABLE
+                                - NOT_REQUIRED
+                            owner:
+                              type: string
+                            labelKey:
+                              type: string
+                            statusKey:
+                              type: string
+                            detail:
+                              type: object
+                              properties:
+                                email:
+                                  type: string
+                                  enum:
+                                    - VERIFIED
+                                    - NOT_VERIFIED
+                                    - NOT_REQUIRED
+                                phone:
+                                  type: string
+                                  enum:
+                                    - VERIFIED
+                                    - NOT_VERIFIED
+                                    - NOT_REQUIRED
+                                outstandingPurposes:
+                                  type: array
+                                  items:
+                                    type: string
+                                marketCode:
+                                  type: string
+                                selected:
+                                  type: integer
+                                  minimum: -9007199254740991
+                                  maximum: 9007199254740991
+                                min:
+                                  type: integer
+                                  minimum: -9007199254740991
+                                  maximum: 9007199254740991
+                                max:
+                                  type: integer
+                                  minimum: -9007199254740991
+                                  maximum: 9007199254740991
+                                notOffered:
+                                  type: array
+                                  items:
+                                    type: string
+                              additionalProperties: false
+                          required:
+                            - step
+                            - status
+                            - owner
+                            - labelKey
+                            - statusKey
+                          additionalProperties: false
+                      overall:
+                        type: object
+                        properties:
+                          registrationComplete:
+                            type: boolean
+                          registrationReady:
+                            type: boolean
+                          blockedBy:
+                            type: array
+                            items:
+                              type: string
+                              enum:
+                                - ACCOUNT
+                                - CONTACT
+                                - LEGAL
+                                - MARKET
+                                - SERVICES
+                                - VERIFICATION
+                                - SUBSCRIPTION
+                                - PROFILE
+                                - GIGS
+                          goLive:
+                            type: object
+                            properties:
+                              evaluated:
+                                type: boolean
+                                enum:
+                                  - false
+                              eligible:
+                                type: boolean
+                                enum:
+                                  - false
+                            required:
+                              - evaluated
+                              - eligible
+                            additionalProperties: false
+                        required:
+                          - registrationComplete
+                          - registrationReady
+                          - blockedBy
+                          - goLive
+                        additionalProperties: false
+                    required:
+                      - providerRole
+                      - registration
+                      - steps
+                      - overall
+                    additionalProperties: false
+                  meta:
+                    type: object
+                    properties:
+                      correlationId:
+                        type: string
+                    required:
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - data
+                  - meta
+                additionalProperties: false
+        "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "401":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "403":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "409":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "503":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+  /api/v1/provider/registration/cancel:
+    post:
+      operationId: cancelProviderRegistration
+      summary: Cancel an IN_PROGRESS registration. The account, the CUSTOMER role, the contacts and the consent history are untouched; a PENDING provider role stays PENDING. A restart is a new attempt. Idempotent on a cancelled registration; a COMPLETED registration is not cancelled here (409)
+      tags: *a20
+      security: *a21
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      providerRole:
+                        type: string
+                        enum:
+                          - NONE
+                          - PENDING
+                          - ACTIVE
+                          - INACTIVE
+                      registration:
+                        anyOf:
+                          - type: object
+                            properties:
+                              providerRegistrationId:
+                                type: string
+                              attempt:
+                                type: integer
+                                minimum: -9007199254740991
+                                maximum: 9007199254740991
+                              status:
+                                type: string
+                                enum:
+                                  - IN_PROGRESS
+                                  - COMPLETED
+                                  - CANCELLED
+                              revision:
+                                type: integer
+                                minimum: -9007199254740991
+                                maximum: 9007199254740991
+                              marketCode:
+                                type:
+                                  - string
+                                  - "null"
+                              serviceTypeCodes:
+                                type: array
+                                items:
+                                  type: string
+                              createdAt:
+                                type: string
+                              completedAt:
+                                type:
+                                  - string
+                                  - "null"
+                              cancelledAt:
+                                type:
+                                  - string
+                                  - "null"
+                            required:
+                              - providerRegistrationId
+                              - attempt
+                              - status
+                              - revision
+                              - marketCode
+                              - serviceTypeCodes
+                              - createdAt
+                              - completedAt
+                              - cancelledAt
+                            additionalProperties: false
+                          - type: "null"
+                    required:
+                      - providerRole
+                      - registration
+                    additionalProperties: false
+                  meta:
+                    type: object
+                    properties:
+                      correlationId:
+                        type: string
+                    required:
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - data
+                  - meta
+                additionalProperties: false
+        "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "401":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "403":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "409":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
+        "503":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: Stable machine-readable code, e.g. VALIDATION_FAILED
+                      category:
+                        type: string
+                        enum:
+                          - VALIDATION
+                          - AUTHENTICATION
+                          - AUTHORIZATION
+                          - CONFLICT
+                          - NOT_FOUND
+                          - RATE_LIMIT
+                          - DEPENDENCY
+                          - INTERNAL
+                      message:
+                        type: string
+                      correlationId:
+                        type: string
+                      details:
+                        type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                    required:
+                      - code
+                      - category
+                      - message
+                      - correlationId
+                    additionalProperties: false
+                required:
+                  - error
+                additionalProperties: false
   /api/v1/account/security/sessions/current:
     post:
       operationId: registerAccountSecuritySession
       summary: "Register the browser of this login. The web server sends the device secret it issued in an HttpOnly cookie (43 base64url characters) and the browser user agent; only a keyed hash of the secret is stored, and the user agent is reduced to a browser, operating system and device class and discarded. Idempotent: the first device of a session wins. Returns the application session id and whether the browser is currently trusted"
-      tags: &a20
+      tags: &a22
         - security
       requestBody:
         required: true
@@ -39749,7 +42533,7 @@ paths:
               required:
                 - device
               additionalProperties: false
-      security: &a21
+      security: &a23
         - bearerAuth: []
       responses:
         "200":
@@ -40090,8 +42874,8 @@ paths:
     get:
       operationId: getAccountSecurity
       summary: "The caller's own security overview: whether a second factor (authenticator app, recovery codes) is set up (asked of the identity provider; `mfa.available` is false when it cannot be asked), when the caller last authenticated and whether that included a second factor, until when that counts as recent for a sensitive action, the current session and browser, and the configured policy windows"
-      tags: *a20
-      security: *a21
+      tags: *a22
+      security: *a23
       responses:
         "200":
           description: Default Response
@@ -40492,8 +43276,8 @@ paths:
     get:
       operationId: listAccountSecuritySessions
       summary: The caller's own active sessions, the current one first and the rest by last activity, each with its coarse browser (browser family, operating system, device class) and whether that browser is trusted. Compared with the identity provider's own sessions when it can be reached (`reconciled`); sessions it no longer has are marked ended
-      tags: *a20
-      security: *a21
+      tags: *a22
+      security: *a23
       responses:
         "200":
           description: Default Response
@@ -40896,7 +43680,7 @@ paths:
     delete:
       operationId: revokeAccountSecuritySession
       summary: "Sign out one of the caller's own sessions: it stops working on its next API request (a revoked session is refused with 401 SESSION_REVOKED even though its access token is still valid) and the identity provider's session is ended best effort (`keycloak`: ENDED, UNAVAILABLE or NOT_NEEDED). Idempotent (`changed` false when it was already revoked). A session of another account is a 404"
-      tags: *a20
+      tags: *a22
       parameters:
         - schema:
             type: string
@@ -40904,7 +43688,7 @@ paths:
           in: path
           name: sessionId
           required: true
-      security: *a21
+      security: *a23
       responses:
         "200":
           description: Default Response
@@ -41244,7 +44028,7 @@ paths:
     post:
       operationId: revokeAllAccountSecuritySessions
       summary: "Sign out everywhere: revoke all of the caller's sessions except this one (`includeCurrent` false, the default) or including it. Also raises the account's revocation watermark so a session the API had not seen yet, authenticated before this moment, is refused when it first appears. The identity provider's sessions are ended best effort (`keycloak`)"
-      tags: *a20
+      tags: *a22
       requestBody:
         required: true
         content:
@@ -41255,7 +44039,7 @@ paths:
                 includeCurrent:
                   type: boolean
               additionalProperties: false
-      security: *a21
+      security: *a23
       responses:
         "200":
           description: Default Response
@@ -41591,8 +44375,8 @@ paths:
     post:
       operationId: signOutCurrentAccountSecuritySession
       summary: "Record that the caller signed out of THIS session (the web server calls it before it deletes its own session): the session is revoked with reason SIGN_OUT and the identity provider session is ended best effort. The request takes no body. Repeating it after the session was revoked is a 401 SESSION_REVOKED like any other request of a revoked session"
-      tags: *a20
-      security: *a21
+      tags: *a22
+      security: *a23
       responses:
         "200":
           description: Default Response
@@ -41926,8 +44710,8 @@ paths:
     get:
       operationId: listAccountSecurityDevices
       summary: "The caller's own browsers (devices): coarse browser, operating system and device class, when first and last seen, and whether each is trusted and until when. Removed browsers are not listed. A trusted browser is a record kept by BananaGig: it does NOT change when the sign-in service asks for a code and never satisfies a step-up check"
-      tags: *a20
-      security: *a21
+      tags: *a22
+      security: *a23
       responses:
         "200":
           description: Default Response
@@ -42313,8 +45097,8 @@ paths:
     post:
       operationId: trustCurrentAccountSecurityDevice
       summary: "Trust the current browser for the configured number of days (`session.trusted_browser_days`); trusting an already trusted browser extends the window. Needs a recent authentication (401 STEP_UP_REQUIRED otherwise) and a registered browser (409 ACCOUNT_DEVICE_REQUIRED). This is a record kept by BananaGig: it does NOT make the sign-in service skip its code prompt and never satisfies a step-up check. The request takes no body"
-      tags: *a20
-      security: *a21
+      tags: *a22
+      security: *a23
       responses:
         "200":
           description: Default Response
@@ -42648,8 +45432,8 @@ paths:
     delete:
       operationId: untrustCurrentAccountSecurityDevice
       summary: "Stop trusting the current browser. Idempotent: an untrusted browser stays untrusted and nothing is recorded. 409 ACCOUNT_DEVICE_REQUIRED when the session has no registered browser"
-      tags: *a20
-      security: *a21
+      tags: *a22
+      security: *a23
       responses:
         "200":
           description: Default Response
@@ -42984,7 +45768,7 @@ paths:
     delete:
       operationId: removeAccountSecurityDevice
       summary: "Forget one of the caller's own browsers: it stops being trusted, is marked removed and its sessions are revoked (the identity provider sessions are ended best effort). Idempotent (`changed` false when already removed). A device of another account is a 404"
-      tags: *a20
+      tags: *a22
       parameters:
         - schema:
             type: string
@@ -42992,7 +45776,7 @@ paths:
           in: path
           name: deviceId
           required: true
-      security: *a21
+      security: *a23
       responses:
         "200":
           description: Default Response
@@ -43334,7 +46118,7 @@ paths:
     get:
       operationId: listAccountSecurityActivity
       summary: "The caller's own security timeline, newest first, for the configured period (`security.activity_log_days`): sign-ins, sign-outs, revocations, browser trust changes, second-factor and password changes, password reset requests and contact changes. Page backwards with `before` (the `nextBefore` of the previous page). Entries carry the coarse browser only, never an IP address or a user agent"
-      tags: *a20
+      tags: *a22
       parameters:
         - schema:
             type: integer
@@ -43351,7 +46135,7 @@ paths:
           name: before
           required: false
           description: "The `nextBefore` of the previous page: an ISO 8601 timestamp with a UTC offset (up to 6 fractional digits), optionally followed by `_` and an event UUID; only events strictly older are returned. Pass it back unchanged."
-      security: *a21
+      security: *a23
       responses:
         "200":
           description: Default Response
@@ -43768,7 +46552,7 @@ paths:
     post:
       operationId: startAccountSecurityMfaEnrollment
       summary: Start setting up a second factor (`TOTP` authenticator app or `RECOVERY_CODES`). Needs a recent authentication (401 STEP_UP_REQUIRED otherwise). Records the request and returns the identity provider action the web server must send the browser to (`kc_action`); the secret and the codes are created and shown by the identity provider and BananaGig never sees or stores them
-      tags: *a20
+      tags: *a22
       requestBody:
         required: true
         content:
@@ -43784,7 +46568,7 @@ paths:
               required:
                 - method
               additionalProperties: false
-      security: *a21
+      security: *a23
       responses:
         "200":
           description: Default Response
@@ -44293,9 +47077,9 @@ paths:
     get:
       operationId: getAccountConsents
       summary: "The caller's own consents: the derived current state of every purpose that is active or has events (NONE, ACCEPTED or WITHDRAWN, from the latest event, with whether it can be withdrawn) and the whole append-only history of acceptances and withdrawals, newest first. Each event is bound to the exact document version (id, number, locale) and the SHA-256 of its text; the text itself is never returned here (read it from the content registry)"
-      tags: &a22
+      tags: &a24
         - consent
-      security: &a23
+      security: &a25
         - bearerAuth: []
       responses:
         "200":
@@ -44708,7 +47492,7 @@ paths:
     get:
       operationId: getAccountConsentRequirements
       summary: "What the caller must accept now, evaluated for the roles of the account (pending and active) against the configured policy: per active purpose whether it is required, its status (NOT_REQUIRED, SATISFIED, OUTSTANDING, REACCEPTANCE_REQUIRED, DOCUMENT_UNAVAILABLE), the account's acceptance state, the version in force in the evaluated locale (id, number, locale, SHA-256, effective from) and the account's latest acceptance. `locale` selects the language (default: the preferred locale of the account, else the platform default); legal documents never fall back to another locale. `satisfied` is true when every required purpose is satisfied"
-      tags: *a22
+      tags: *a24
       parameters:
         - schema:
             type: string
@@ -44719,7 +47503,7 @@ paths:
           name: locale
           required: false
           description: A locale tag registered in the content registry (for example en-US). Given at most once.
-      security: *a23
+      security: *a25
       responses:
         "200":
           description: Default Response
@@ -45136,7 +47920,7 @@ paths:
     post:
       operationId: acceptAccountConsent
       summary: "Record that the caller accepted the exact document version it was shown: `versionId`, `locale` and `bodySha256` (the SHA-256 of the text, lower-case hex). The account comes from the token and the time from the server. The version must belong to the purpose's document, be in force now in the platform scope, and carry that locale and hash (400 ACCOUNT_CONSENT_LOCALE_MISMATCH or ACCOUNT_CONSENT_HASH_MISMATCH otherwise; 404 ACCOUNT_CONSENT_VERSION_NOT_FOUND for an unknown or unpublished version, whatever the reason; 409 ACCOUNT_CONSENT_VERSION_NOT_CURRENT for a published version that is superseded or not yet effective; 409 ACCOUNT_CONSENT_PURPOSE_INACTIVE). Repeating the same acceptance is idempotent (`changed` false, nothing written). Nothing is ever accepted by default: only this explicit call records consent"
-      tags: *a22
+      tags: *a24
       requestBody:
         required: true
         content:
@@ -45170,7 +47954,7 @@ paths:
           name: purpose
           required: true
           description: The purpose code (upper snake case), for example TERMS_OF_SERVICE.
-      security: *a23
+      security: *a25
       responses:
         "200":
           description: Default Response
@@ -45506,7 +48290,7 @@ paths:
     post:
       operationId: withdrawAccountConsent
       summary: Withdraw the accepted consent of a withdrawable purpose. Refused (409) when the purpose cannot be withdrawn (ACCOUNT_CONSENT_NOT_WITHDRAWABLE), when nothing is accepted (ACCOUNT_CONSENT_NOT_ACCEPTED) and while a role of the account requires it (ACCOUNT_CONSENT_REQUIRED_FOR_ROLE). Repeating a withdrawal is idempotent (`changed` false). The request takes no body (none, or exactly {})
-      tags: *a22
+      tags: *a24
       parameters:
         - schema:
             type: string
@@ -45517,7 +48301,7 @@ paths:
           name: purpose
           required: true
           description: The purpose code (upper snake case), for example TERMS_OF_SERVICE.
-      security: *a23
+      security: *a25
       responses:
         "200":
           description: Default Response
@@ -45869,6 +48653,8 @@ tags:
     description: "The shared account area (ACC-001): one framework for every persona. The navigation is data (a registry of sections per application role) selected by the ACTIVE role of the request; the section read models compose the profile, contact, security and consent domains and store nothing of their own. A section the active role does not have is a 404 on its endpoints, whatever the front end shows"
   - name: catalog
     description: "The PLATFORM-OWNED catalogue taxonomy (CAT-001): categories and service types (a Gig belongs to a provider and is not here), their availability and display order per market and the prohibited-service list. Reads are public with visibility rules (ACTIVE items enabled in an ACTIVE market, resolved names and descriptions); management needs the admin context plus catalog-read or catalog-write, a reason and writes an immutable audit row"
+  - name: provider
+    description: "The provider registration of the caller (PRO-001): the same account, not a second one. The application role (identity), the registration (market, service types, status) and Go-Live eligibility (PRO-003) are separate. Contact and agreement state are composed from their owners, never stored here; verification, subscription, profile and Gigs are future prerequisites reported as not available. Owner only: every route acts on the account of the verified token."
   - name: gig-templates
     description: "The PLATFORM-OWNED Gig Templates (CAT-002): the versioned structure a provider later builds a Gig from, attached to one service type (typed fields that are fixed, configurable or required for the provider, duration guidance, allowed pricing models and service-area modes, requirement hooks). A published version is frozen; a Gig will reference the exact version it was built from. Nothing provider-specific is stored (no price, radius, area, pitch, photo or capacity). Same visibility model as the catalogue: public reads of ACTIVE templates in an ACTIVE market, management with the admin context plus catalog-read or catalog-write"
   - name: consent

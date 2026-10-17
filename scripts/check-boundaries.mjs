@@ -14,6 +14,7 @@ const ALLOWED = {
   '@bananagig/geography': ['contracts', 'database', 'observability', 'platform', 'configuration', 'testing'],
   '@bananagig/catalog': ['contracts', 'database', 'observability', 'platform', 'configuration', 'testing'],
   '@bananagig/accounts': ['contracts', 'database', 'observability', 'platform', 'testing'],
+  '@bananagig/provider': ['contracts', 'database', 'observability', 'platform', 'testing'],
   '@bananagig/testing': ['config', 'database'],
   '@bananagig/web': ['config', 'contracts', 'identity', 'observability', 'testing'],
   '@bananagig/api': [
@@ -28,6 +29,7 @@ const ALLOWED = {
     'identity',
     'observability',
     'platform',
+    'provider',
     'testing',
   ],
   '@bananagig/worker': ['config', 'contracts', 'configuration', 'content', 'database', 'observability', 'platform', 'testing'],

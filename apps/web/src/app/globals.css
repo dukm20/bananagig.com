@@ -200,3 +200,22 @@ main:has(.account-shell) {
     display: none;
   }
 }
+
+/* Provider registration (PRO-001, temporary minimal flow): same 44px targets and visible focus as the account area; nothing depends on hover or script. */
+.provider-registration :is(a, button, select, input:not([type='hidden'])) {
+  min-height: 44px;
+  min-width: 44px;
+}
+.provider-registration :is(a, button, select, input):focus-visible {
+  outline: 3px solid var(--fg);
+  outline-offset: 2px;
+}
+.provider-registration fieldset {
+  margin: 0 0 1rem;
+}
+.provider-registration .provider-choice {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 44px;
+}

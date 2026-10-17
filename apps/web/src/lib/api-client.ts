@@ -5,6 +5,10 @@ import {
   CORRELATION_HEADER,
   ErrorResponse,
   AcceptConsentResponse,
+  CatalogServiceTypeListResponse,
+  MarketListResponse,
+  ProviderRegistrationStateResponse,
+  ProviderRequirementsResponse,
   AccountConsentsResponse,
   AccountEmailResponse,
   AccountNavigationResponse,
@@ -43,6 +47,14 @@ import {
   WhoAmIResponse,
   WithdrawConsentResponse,
   type AcceptConsentRequest,
+  type CatalogServiceTypeDto,
+  type MarketDto,
+  type ProviderRegistrationStateDto,
+  type ProviderRequirementsDto,
+  type ReplaceProviderServicesRequest,
+  type SelectProviderMarketRequest,
+  type SubmitProviderRegistrationRequest,
+  type CancelProviderRegistrationRequest,
   type AcceptConsentResultDto,
   type AccountConsentsDto,
   type AccountDto,
@@ -155,7 +167,7 @@ export function createApiClient(opts: ApiClientOptions) {
     parse: (json: unknown) => T,
     body?: unknown,
     extra: { method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'; headers?: Record<string, string> } = {},
-  ): Promise<{ data: T; correlationId: string | undefined }> {
+  ): Promise<{ data: T; correlationId: string | undefined; status: number }> {
     const headers: Record<string, string> = { accept: 'application/json', ...extra.headers };
     const cid = opts.correlationId?.();
     if (cid) headers[CORRELATION_HEADER] = cid;
@@ -194,7 +206,7 @@ export function createApiClient(opts: ApiClientOptions) {
         correlationId,
       );
     }
-    return { data, correlationId };
+    return { data, correlationId, status: res.status };
   }
   const roleHeader = (o: AccountCallOptions): Record<string, string> => (o.activeRole ? { [ACTIVE_ROLE_HEADER]: o.activeRole } : {});
   const emailHeaders = (o: AccountCallOptions): Record<string, string> => ({ ...roleHeader(o), ...(o.clientIp ? { 'x-forwarded-for': o.clientIp } : {}) });
@@ -383,6 +395,62 @@ export function createApiClient(opts: ApiClientOptions) {
           },
         )
       ).data;
+    },
+    // ---------------------------------------------------------------- provider registration (PRO-001): the caller's own registration; no call carries an account id
+    /** GET /api/v1/provider/registration: the provider role of the caller and the latest registration attempt (or null). */
+    async getProviderRegistration(o: AccountCallOptions = {}): Promise<ProviderRegistrationStateDto> {
+      return (await request('/provider/registration', (j) => ProviderRegistrationStateResponse.parse(j).data, undefined, { headers: roleHeader(o) })).data;
+    },
+    /** POST /api/v1/provider/registration: starts the registration or resumes the live one (idempotent). `created` tells which. */
+    async startProviderRegistration(o: AccountCallOptions = {}): Promise<{ created: boolean; state: ProviderRegistrationStateDto }> {
+      const r = await request('/provider/registration', (j) => ProviderRegistrationStateResponse.parse(j).data, {}, { method: 'POST', headers: roleHeader(o) });
+      return { created: r.status === 201, state: r.data };
+    },
+    /** PUT /api/v1/provider/registration/market: chooses the market of the registration (the server checks the configured policy). */
+    async selectProviderMarket(input: SelectProviderMarketRequest, o: AccountCallOptions = {}): Promise<ProviderRegistrationStateDto> {
+      return (
+        await request('/provider/registration/market', (j) => ProviderRegistrationStateResponse.parse(j).data, input, { method: 'PUT', headers: roleHeader(o) })
+      ).data;
+    },
+    /** PUT /api/v1/provider/registration/services: replaces the whole set of service types of the registration. */
+    async replaceProviderServices(input: ReplaceProviderServicesRequest, o: AccountCallOptions = {}): Promise<ProviderRegistrationStateDto> {
+      return (
+        await request('/provider/registration/services', (j) => ProviderRegistrationStateResponse.parse(j).data, input, {
+          method: 'PUT',
+          headers: roleHeader(o),
+        })
+      ).data;
+    },
+    /** GET /api/v1/provider/registration/requirements: the derived status of every onboarding step. */
+    async getProviderRequirements(q: { locale?: string } = {}, o: AccountCallOptions = {}): Promise<ProviderRequirementsDto> {
+      const qs = q.locale !== undefined ? `?${new URLSearchParams({ locale: q.locale }).toString()}` : '';
+      return (
+        await request(`/provider/registration/requirements${qs}`, (j) => ProviderRequirementsResponse.parse(j).data, undefined, { headers: roleHeader(o) })
+      ).data;
+    },
+    /** POST /api/v1/provider/registration/submit: the server decides whether every step is met; a stale revision is an ApiError (409). */
+    async submitProviderRegistration(input: SubmitProviderRegistrationRequest, o: AccountCallOptions = {}): Promise<ProviderRequirementsDto> {
+      return (
+        await request('/provider/registration/submit', (j) => ProviderRequirementsResponse.parse(j).data, input, { method: 'POST', headers: roleHeader(o) })
+      ).data;
+    },
+    /** POST /api/v1/provider/registration/cancel: cancels the attempt in progress; the account, the customer role and the history stay. */
+    async cancelProviderRegistration(input: CancelProviderRegistrationRequest = {}, o: AccountCallOptions = {}): Promise<ProviderRegistrationStateDto> {
+      return (
+        await request('/provider/registration/cancel', (j) => ProviderRegistrationStateResponse.parse(j).data, input, {
+          method: 'POST',
+          headers: roleHeader(o),
+        })
+      ).data;
+    },
+    /** GET /api/v1/geography/markets (public: the ACTIVE markets in effect). */
+    async listGeographyMarkets(): Promise<MarketDto[]> {
+      return (await request('/geography/markets', (j) => MarketListResponse.parse(j).data)).data;
+    },
+    /** GET /api/v1/catalog/service-types?market= (public: the ACTIVE service types offered in a public market, with resolved names). */
+    async listMarketServiceTypes(market: string, locale?: string): Promise<CatalogServiceTypeDto[]> {
+      const qs = new URLSearchParams({ market, ...(locale ? { locale } : {}) }).toString();
+      return (await request(`/catalog/service-types?${qs}`, (j) => CatalogServiceTypeListResponse.parse(j).data)).data;
     },
     // ---------------------------------------------------------------- the shared account area (ACC-001): every call acts as the session's active role (x-active-role)
     /** GET /api/v1/account/navigation: the enabled sections of the active role (registry data, in menu order), the switchable roles and the contact summary. */

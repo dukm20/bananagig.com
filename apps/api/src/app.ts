@@ -3,6 +3,7 @@ import swagger from '@fastify/swagger';
 import type { AppConfig } from '@bananagig/config';
 import { API_PREFIX } from '@bananagig/contracts';
 import type { CatalogService, GigTemplateService } from '@bananagig/catalog';
+import type { ProviderRegistrationService } from '@bananagig/provider';
 import type { ConfigurationService } from '@bananagig/configuration';
 import type { ContentService } from '@bananagig/content';
 import type {
@@ -25,6 +26,7 @@ import { configurationRoutes } from './modules/configuration/routes';
 import { contentRoutes } from './modules/content/routes';
 import { accountRoutes } from './modules/account/routes';
 import { catalogRoutes } from './modules/catalog/routes';
+import { providerRoutes } from './modules/provider/routes';
 import { consentRoutes } from './modules/consent/routes';
 import { passwordResetRoutes, securityRoutes } from './modules/security/routes';
 import { drainWithTimeout } from './modules/security/wiring';
@@ -86,6 +88,8 @@ export interface AppDeps {
   catalog?: CatalogService;
   /** The Gig Templates (CAT-002), registered together with the catalogue under the same prefix. */
   gigTemplates?: GigTemplateService;
+  /** The provider registration (PRO-001): registered with the account routes (it acts on the account of the verified token), so it needs `accounts`. */
+  providerRegistrations?: ProviderRegistrationService;
 }
 
 /**
@@ -158,6 +162,11 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
             'The PLATFORM-OWNED catalogue taxonomy (CAT-001): categories and service types (a Gig belongs to a provider and is not here), their availability and display order per market and the prohibited-service list. Reads are public with visibility rules (ACTIVE items enabled in an ACTIVE market, resolved names and descriptions); management needs the admin context plus catalog-read or catalog-write, a reason and writes an immutable audit row',
         },
         {
+          name: 'provider',
+          description:
+            'The provider registration of the caller (PRO-001): the same account, not a second one. The application role (identity), the registration (market, service types, status) and Go-Live eligibility (PRO-003) are separate. Contact and agreement state are composed from their owners, never stored here; verification, subscription, profile and Gigs are future prerequisites reported as not available. Owner only: every route acts on the account of the verified token.',
+        },
+        {
           name: 'gig-templates',
           description:
             'The PLATFORM-OWNED Gig Templates (CAT-002): the versioned structure a provider later builds a Gig from, attached to one service type (typed fields that are fixed, configurable or required for the provider, duration guidance, allowed pricing models and service-area modes, requirement hooks). A published version is frozen; a Gig will reference the exact version it was built from. Nothing provider-specific is stored (no price, radius, area, pitch, photo or capacity). Same visibility model as the catalogue: public reads of ACTIVE templates in an ACTIVE market, management with the admin context plus catalog-read or catalog-write',
@@ -209,6 +218,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       phoneRoutes: deps.phoneVerification !== undefined,
       areaRoutes: deps.accountArea ? { securitySummary: deps.security !== undefined, privacySummary: deps.consent !== undefined } : undefined,
     });
+    if (deps.providerRegistrations) await app.register(providerRoutes, { prefix: `${API_PREFIX}/provider`, registrations: deps.providerRegistrations });
     if (deps.security) {
       const security = deps.security;
       // graceful stop (index.ts closes the database only after app.close()): wait, bounded, for the detached password-reset work

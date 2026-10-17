@@ -11,6 +11,9 @@ import {
   AccountStatusChangedPayload,
   CATALOG_EVENTS,
   GIG_TEMPLATE_EVENTS,
+  PROVIDER_EVENTS,
+  ProviderRegistrationCompletedPayload,
+  ProviderRegistrationEventPayload,
   GigTemplateAvailabilityEventPayload,
   GigTemplateEventPayload,
   GigTemplatePublishedPayload,
@@ -83,6 +86,7 @@ const app = await buildApp({
   accountArea: {},
   catalog: {},
   gigTemplates: {},
+  providerRegistrations: {},
   readiness: async () => ({}),
 });
 await app.ready();
@@ -359,6 +363,26 @@ const GIG_TEMPLATE_MESSAGES = {
     'catalog_market_availability',
   ],
 };
+const PROVIDER_MESSAGES = {
+  registrationStarted: [
+    'ProviderRegistrationStarted',
+    'An account started (or restarted, as a new attempt) its provider registration. The same account: the PROVIDER role is requested as PENDING in the same transaction.',
+    ProviderRegistrationEventPayload,
+    'provider_registration',
+  ],
+  registrationCompleted: [
+    'ProviderRegistrationCompleted',
+    'A provider registration was completed by the server (every step it owns or composes was complete). This is NOT verification, subscription or go-live; the PROVIDER role became ACTIVE in the same transaction.',
+    ProviderRegistrationCompletedPayload,
+    'provider_registration',
+  ],
+  registrationCancelled: [
+    'ProviderRegistrationCancelled',
+    'An IN_PROGRESS provider registration was cancelled. The account and its roles are untouched.',
+    ProviderRegistrationEventPayload,
+    'provider_registration',
+  ],
+};
 const channels = {
   infraPing: {
     address: INFRA_PING_EVENT_TYPE,
@@ -536,13 +560,29 @@ for (const [k, [name, summary, payload, aggregate]] of Object.entries(GIG_TEMPLA
   };
   schemas[name] = typedEnvelope(type, payload);
 }
+for (const [k, [name, summary, payload, aggregate]] of Object.entries(PROVIDER_MESSAGES)) {
+  const type = PROVIDER_EVENTS[k];
+  channels[`provider_${k}`] = {
+    address: type,
+    description: `${summary} Published through the transactional outbox (aggregate ${aggregate}); the payload carries identifiers and codes only, never a contact, a name or a text.`,
+    messages: { [name]: { $ref: `#/components/messages/${name}` } },
+  };
+  operations[`send${name}`] = { action: 'send', channel: { $ref: `#/channels/provider_${k}` }, summary };
+  messages[name] = {
+    name,
+    title: summary,
+    headers: { type: 'object', properties: { 'x-correlation-id': { type: 'string' } } },
+    payload: { $ref: `#/components/schemas/${name}` },
+  };
+  schemas[name] = typedEnvelope(type, payload);
+}
 const asyncapi = {
   asyncapi: '3.0.0',
   info: {
     title: 'BananaGig Events',
     version: '1.0.0',
     description:
-      'Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events, the identity account events, the email verification events, the phone verification events, the account security events (sessions, second factor, password reset) the consent events (acceptance and withdrawal of a legal document version) the catalogue events (category and service type activation, market availability) and the Gig Template events (activation, pause, retirement, publication of a version, market availability) exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.',
+      'Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events, the identity account events, the email verification events, the phone verification events, the account security events (sessions, second factor, password reset) the consent events (acceptance and withdrawal of a legal document version) the catalogue events (category and service type activation, market availability) the Gig Template events (activation, pause, retirement, publication of a version, market availability) and the provider registration events (started, completed, cancelled) exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.',
   },
   defaultContentType: 'application/json',
   channels,

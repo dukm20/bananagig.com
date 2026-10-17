@@ -246,8 +246,8 @@ describe('migration 0006 seeded shell copy', () => {
     expect(rows.some((r) => /price|fee|legal|terms|privacy|commission|marketplace/i.test(r.key))).toBe(false);
     // migration 0006 seeds no product configuration (migrations 0010 and 0011 seed the verification.email.* and verification.phone.* parameters, tested in
     // email-model.itest.ts and phone-model.itest.ts; migration 0012 seeds the six session, MFA and recovery parameters, tested in security-model.itest.ts;
-    // migration 0013 seeds the four consent.* policy parameters, tested in consent-model.itest.ts): the parameters that exist besides those are EXACTLY the
-    // ten named here
+    // migration 0013 seeds the four consent.* policy parameters, tested in consent-model.itest.ts; migration 0018 seeds the five provider.registration.* policy
+    // parameters, tested in provider-model.itest.ts): the parameters that exist besides those are EXACTLY the fifteen named here
     const others = await iso.database.query<{ key: string }>(
       "SELECT key FROM configuration.parameters WHERE key NOT LIKE 'verification.email.%' AND key NOT LIKE 'verification.phone.%' ORDER BY key COLLATE \"C\"",
     );
@@ -256,6 +256,11 @@ describe('migration 0006 seeded shell copy', () => {
       'consent.privacy_policy.required_for',
       'consent.terms_of_service.reacceptance',
       'consent.terms_of_service.required_for',
+      'provider.registration.market_statuses_allowed',
+      'provider.registration.max_service_types',
+      'provider.registration.min_service_types',
+      'provider.registration.require_verified_email',
+      'provider.registration.require_verified_phone',
       'reset_link.max_requests_per_hour',
       'reset_link.validity_minutes',
       'security.activity_log_days',

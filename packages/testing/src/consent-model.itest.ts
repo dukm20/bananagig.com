@@ -2339,7 +2339,8 @@ describe('I. real concurrency: one winner per history position, the share locks 
       expect(r.blocked).toBe(true);
       const row = (await q<{ status: string; effective_to: Date }>('SELECT status, effective_to FROM content.versions WHERE version_id = $1', [r.v.id]))[0]!;
       expect(row.status).toBe('SUPERSEDED');
-      expect(r.eventAt.getTime()).toBeLessThan(row.effective_to.getTime());
+      // JavaScript dates hold milliseconds and the two instants (microseconds in PostgreSQL) can fall in the same one
+      expect(r.eventAt.getTime()).toBeLessThanOrEqual(row.effective_to.getTime());
       expect((await eventRows(r.a, r.p.code)).map((e) => e.event_seq)).toEqual([1]);
       // after the closure the same version is refused
       await expectRule(accept(await makeAccount(), r.p.code, r.v), 'CONSENT_VERSION_NOT_CURRENT');
@@ -2579,7 +2580,9 @@ describe('J2. seeded configuration: the four consent policy parameters', () => {
       'consent.terms_of_service.reacceptance',
       'consent.terms_of_service.required_for',
     ]);
-    expect(await sq('SELECT count(*)::int AS n FROM configuration.parameters')).toEqual([{ n: 28 }]);
+    // 28 of 0010 to 0013 plus the five provider.registration.* parameters of 0018 (asserted in provider-model.itest.ts)
+    expect(await sq('SELECT count(*)::int AS n FROM configuration.parameters')).toEqual([{ n: 33 }]);
+    expect(await sq("SELECT count(*)::int AS n FROM configuration.parameters WHERE key NOT LIKE 'provider.registration.%'")).toEqual([{ n: 28 }]);
   });
 
   it.each(CONSENT_PARAMS)(

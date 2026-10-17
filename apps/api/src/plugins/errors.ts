@@ -9,11 +9,11 @@ const body = (req: { correlationId: string }, category: ErrorCategory, code: str
 });
 
 /**
- * Everything under /api/v1/account and /api/v1/auth concerns one person's sessions, contacts or credentials (or is a reset request): every response there, errors
+ * Everything under /api/v1/account, /api/v1/auth and /api/v1/provider (the provider registration of the caller) concerns one person's sessions, contacts or credentials (or is a reset request): every response there, errors
  * included, is `Cache-Control: no-store`. The routes set it in an onRequest hook, but router-level failures and unknown paths never reach a route hook, so the error
  * paths set it here from the URL.
  */
-const NO_STORE_PREFIXES = ['/api/v1/account', '/api/v1/auth'];
+const NO_STORE_PREFIXES = ['/api/v1/account', '/api/v1/auth', '/api/v1/provider'];
 export const isNoStorePath = (url: string): boolean => {
   const path = (url.split(/[?#]/)[0] ?? '').toLowerCase();
   return NO_STORE_PREFIXES.some((p) => path === p || path.startsWith(`${p}/`));

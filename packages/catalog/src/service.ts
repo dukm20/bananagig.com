@@ -385,6 +385,27 @@ export class CatalogService {
     return r.default_locale as string;
   }
 
+  /**
+   * The codes of the service types a PROVIDER can choose in a market (PRO-001): ACTIVE, enabled in the market and under an ACTIVE category enabled there, in code order. The
+   * market may be of ANY status (the provider registration policy decides which statuses accept providers) and an unknown or malformed market has none. A plain read: it joins
+   * the caller's transaction and never opens a snapshot of its own.
+   */
+  async offeredServiceTypeCodes(marketCode: string): Promise<string[]> {
+    if (!MarketCode.safeParse(marketCode).success) return [];
+    return this.read(async () =>
+      (
+        await sql<Row>`SELECT st.code
+          FROM catalog.market_service_types mst
+          JOIN geography.markets m ON m.market_id = mst.market_id
+          JOIN catalog.service_types st ON st.service_type_id = mst.service_type_id
+          JOIN catalog.categories c ON c.category_id = st.category_id
+          JOIN catalog.market_categories mc ON mc.market_id = mst.market_id AND mc.category_id = st.category_id
+         WHERE m.code = ${marketCode} AND mst.enabled AND st.status = 'ACTIVE' AND c.status = 'ACTIVE' AND mc.enabled
+         ORDER BY st.code COLLATE "C"`.execute(this.db)
+      ).rows.map((r) => r.code as string),
+    );
+  }
+
   async listCategories(opts: ManagementReadOptions = {}): Promise<CategoryView[]> {
     return this.read(async () => {
       if (opts.marketCode === undefined)

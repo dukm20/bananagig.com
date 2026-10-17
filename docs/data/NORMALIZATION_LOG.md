@@ -959,3 +959,65 @@ The independent review found that the option rules were enforced only when an op
 
 ### Final decision
 Six new tables in an existing schema, two nullable columns and two wider CHECKs on one existing table, one non-key index, two documented derivations (the generated name key and the verified field and option keys), no other denormalization. The decisions that shape the model are in ADR-0041.
+
+
+## PRO-001
+
+Date: 2026-10-17
+
+Tables reviewed: new, in the new schema `provider`: `registrations`, `registration_service_types`, `audit_events`. Reused WITHOUT change (referenced by foreign key only): `identity.accounts` (the account, by id only), `geography.markets` (the chosen market), `catalog.service_types` (the chosen service types). Configuration (`configuration.*`) and content (`content.*`) receive seed rows through their real lifecycles; no structure changes.
+
+### 1NF
+PASS. Every column is an atomic scalar (`uuid`, `text`, `integer`, `timestamptz`) except `audit_events.changes`, a JSON object whose shape depends on the action (the same documented exception as the other audit tables; it holds identifiers, codes and counts only). No array, no delimited list: the service types a provider selects are rows of `registration_service_types`, not a list column on the registration, and the attempts of an account are rows of `registrations`, not a counter. The onboarding steps are not stored in any form (see Derived fields).
+
+### 2NF
+PASS. `registrations` and `audit_events` have single-column keys. `registration_service_types` has the composite key `(provider_registration_id, service_type_id)` and no non-key column except `created_at`, which depends on the WHOLE pair (when this service type was selected for this registration). `uq_registrations__attempt (account_id, attempt_number)` is a second candidate key of `registrations`; every non-key column depends on the whole of either key.
+
+### 3NF
+PASS with documented lifecycle redundancy. The pairs checked:
+
+| Table | Pair checked | Verdict |
+|---|---|---|
+| `registrations` | `status` against `completed_at` and `cancelled_at` | the timestamps are facts (WHEN the registration was completed or cancelled) that the status alone does not carry, and the status is what the guards, the partial unique index and every query read. `ck_registrations__lifecycle` states the equivalence (IN_PROGRESS has neither timestamp; COMPLETED has `completed_at`, a market and no `cancelled_at`; CANCELLED has `cancelled_at` and no `completed_at`) and the guard sets the timestamps from the database clock at the transition and freezes the row afterwards, so the two cannot drift. Recorded under Intentional denormalization |
+| `registrations` | `account_id` against any attribute of the account (email, phone, name, status, roles) | only the key is stored; everything else is read through the foreign key from its owner (`identity`). Not a transitive dependency because nothing of the account is copied |
+| `registrations` | `market_id` against the market's attributes (code, status, country, window) | only the key is stored; the market's status and window are read from geography at evaluation time and policy decides whether it is open |
+| `registrations` | `market_id` against the selected service types | independent facts. Whether a selected service type is offered in the chosen market is derived from the catalogue at read time (and checked again at submit); it is not stored, so retiring or disabling a service type cannot leave a stale flag |
+| `registrations` | `revision` against the selection rows | `revision` is a concurrency token of the draft, not a count, a hash or a function of the rows; nothing is derived from it |
+| `registrations` | `status` against the application role status (`identity.account_roles`) and against Go-Live | not stored twice and not derived from each other: the role is an authorisation fact owned by identity, Go-Live is PRO-003, the registration status is this table's own fact. No role or Go-Live column exists here |
+| `registration_service_types` | `service_type_id` against the service type's attributes (code, category, name, status) | only the key is stored; nothing of the taxonomy is copied |
+| `audit_events` | `provider_registration_id` against the account | the account is reached through the registration; the audit row repeats nothing of it |
+
+No transitive dependency remains among stored columns. The lifecycle redundancy above is guarded in both directions by the CHECK and the trigger.
+
+### BCNF
+PASS. Determinants: `provider_registration_id` and `(account_id, attempt_number)` (two candidate keys) in `registrations`; `(provider_registration_id, service_type_id)` in `registration_service_types`; `audit_event_id` in `audit_events`. Every determinant is a candidate key. The partial unique index `uq_registrations__live (account_id) WHERE status <> 'CANCELLED'` is a constraint on a subset of rows (at most one live attempt per account), not a functional dependency on a non-key column.
+
+### Duplicate concepts examined
+- A copy of the account's email, phone, display name or address on the registration: NOT stored. A provider is not a second account; the contacts are read from `identity` when the steps are derived. No personal data exists in any `provider` table.
+- A separate provider account or login table: NOT created (ADR-0042); the account is the existing `identity.accounts` row, referenced by id only.
+- The registration status as a copy of the role status, or the role status as the registration status: rejected. The role (`PENDING`, `ACTIVE`, `INACTIVE`) is an authorisation fact owned by identity and also reflects administrative decisions; the registration needs attempts, a market, a selection and the history of a cancellation; Go-Live (PRO-003) is a third fact. Three concepts, three owners.
+- A stored Go-Live flag: NOT created. PRO-003 owns it; the evaluator reports `goLive.evaluated = false`.
+- Onboarding steps (contact, legal, verification, subscription, profile, Gigs) as rows or columns: NOT stored. Contacts and consent change in other domains without telling the provider schema, so a stored `COMPLETE` would be a stale copy; the evaluator derives each step from its owner on read, and the steps of later checkpoints answer `NOT_AVAILABLE` through a port without a fake row.
+- A single mutable registration row per account: rejected in favour of one row per ATTEMPT, so a cancelled registration keeps its history and a restart is the next attempt (`attempt_number`, contiguous), with at most one live attempt (`uq_registrations__live`).
+- A SUBMITTED status awaiting review: NOT created. Nothing reviews a submission yet (verification and Go-Live are later checkpoints), so submit validates and completes in one transaction; a review state would widen the CHECK in a forward migration.
+- A `registration_markets` join table: NOT created; a single nullable `market_id` on the registration. The PRD registers a provider into one launch market first (service areas and further markets belong to PRO-003 and the Gig); a column keeps the lifecycle CHECK (a COMPLETED row needs a market) and the guard simple. If a provider may later register in several markets, that is a new join table with a data migration and a reviewed model change. The selected service types are the opposite case: a registration selects many and a service type is selected by many registrations, so they are a join table (`registration_service_types`), not a list column.
+- Copies of the taxonomy (service type code or name) on the selection: NOT stored; the foreign key to `catalog.service_types` is the reference, and a service type retired later stays explainable through it.
+- Policy values (verified email and phone required, allowed market statuses, minimum and maximum number of service types) as columns or constants: NOT stored on the table or in code. They are five configuration parameters (CFG-001) read fresh by the service, which fails closed when one is unreadable.
+- Display text (step labels, status words, error messages, page copy): NOT stored; 56 content entries (CFG-002).
+- A second audit table for role, contact or consent changes: NOT created. The identity domain audits role changes, contact changes and consent changes in its own trail; `provider.audit_events` records only the five registration actions and does not duplicate them.
+- Provider profile, verification documents, subscription, Gig, price, area, radius or availability: none stored (TRUST-001, PRO-002, CAT-003, PRO-003 and later).
+
+### Derived fields examined
+No derived value is stored. The onboarding steps and their statuses (ACCOUNT, CONTACT, LEGAL, MARKET, SERVICES, VERIFICATION, SUBSCRIPTION, PROFILE, GIGS), whether the registration is ready to submit, the provider role state shown to the user (`NONE`, `PENDING`, `ACTIVE`, `INACTIVE`), whether a selected service type is offered in the chosen market, and the latest attempt of an account are all derived at read time from their owners. The number of selected service types is not stored (it is counted from the rows). `revision` is a deliberate technical column, a concurrency token of the draft selections (it stops a stale page from overwriting a newer draft or submitting a selection it did not see): it is not derived from any other column and is not a business fact; it only grows (`REVISION_ONLY_GROWS`) and is frozen with the row.
+
+### Intentional denormalization
+One place: `registrations.completed_at` and `cancelled_at` next to `status`. The timestamps are facts about when; the status is the explicit current state that the guards, the partial unique index and the queries read without testing two nullable timestamps. Drift is prevented in the database: `ck_registrations__lifecycle` states the equivalence, the guard sets the timestamp at the transition from the database clock and the row is frozen afterwards (`REGISTRATION_FROZEN`). Nothing else is repeated: the account, market and service types are references, not copies.
+
+### Index review
+- `pk_registrations`, `pk_registration_service_types (provider_registration_id, service_type_id)`, `pk_audit_events`: one row per key; the composite key of the selection table is also THE access path of the selections of one registration and the rule that a service type is selected at most once per registration.
+- `uq_registrations__attempt (account_id, attempt_number)`: the registrations of ONE account (the attempts in order, the latest attempt is the highest number), the contiguity rule of the guard and the support of the foreign key to the account (`account_id` is its leading column), so there is no second index on `account_id`.
+- `uq_registrations__live (account_id) WHERE status <> 'CANCELLED'` (partial unique): THE lookup of the current registration of an account and the database rule that there is at most one live attempt. Cancelled attempts are not in the index, so it stays one row per account that ever started.
+- Deliberately NOT indexed: `registrations.market_id` (a management list of registrations by market does not exist yet; an index is added through its own review when it does), `registration_service_types.service_type_id` (never-deleted target, no filtered query on the referencing column), `audit_events.provider_registration_id` (the audit trail is not read by any API yet), `registrations.status` (the only status filter is the partial index above) and the timestamps (no range query). The tables are small and every read is by account or registration key.
+
+### Final decision
+Three new tables in a new schema, no change to any existing table, no non-key index beyond the one partial unique index that carries the one-live-attempt rule, one documented lifecycle redundancy (`completed_at` and `cancelled_at` next to `status`), one deliberate technical column (`revision`), no derived value stored, no copy of personal data. Seeds: 5 configuration parameters and 56 content entries through the real lifecycles. The decisions that shape the model are in ADR-0042.
