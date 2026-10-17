@@ -451,7 +451,7 @@ const CHALLENGE_CONSTRAINTS = [
 ];
 
 describe('A. schema shape: only a hash, no plaintext secret, one E.164 column, restrictive foreign keys', () => {
-  it('adds exactly two tables to the identity schema (nine with 0010, eleven after 0011, thirteen after 0012, fifteen after 0013) and no sequence', async () => {
+  it('adds exactly two tables to the identity schema (nine with 0010, eleven after 0011, thirteen after 0012, fifteen after 0013, seventeen after 0014) and no sequence', async () => {
     const tables = await q<{ table_name: string }>(
       "SELECT table_name FROM information_schema.tables WHERE table_schema = 'identity' AND table_type = 'BASE TABLE'",
     );
@@ -460,6 +460,8 @@ describe('A. schema shape: only a hash, no plaintext secret, one E.164 column, r
       'account_devices',
       'account_profiles',
       'account_roles',
+      'account_section_roles',
+      'account_sections',
       'account_status_history',
       'accounts',
       'application_sessions',
@@ -538,6 +540,8 @@ describe('A. schema shape: only a hash, no plaintext secret, one E.164 column, r
     );
     expect(rows.map((r) => `${r.table_name}.${r.column_name}`)).toEqual([
       'account_audit_events.phone_contact_id',
+      // coincidental match: display_order (the menu position of an account section, 0014) contains "display"; it is a position, not a phone display form
+      'account_section_roles.display_order',
       // coincidental match: the word "withdrawal" contains "raw" (the structural withdrawal policy of a consent purpose, 0013; not a phone column)
       'consent_purposes.withdrawal_policy',
       'phone_contacts.phone_contact_id',
@@ -600,13 +604,13 @@ describe('A. schema shape: only a hash, no plaintext secret, one E.164 column, r
     expect(await q("SELECT 1 FROM pg_constraint WHERE conname = 'fk_account_audit_events__phone_contact_id'")).toEqual([]);
   });
 
-  it('brings the identity schema to 141 primary key, unique, foreign key and check constraints (44 from 0009, 26 from 0010, 26 from 0011, 25 from 0012, 20 from 0013)', async () => {
+  it('brings the identity schema to 155 primary key, unique, foreign key and check constraints (44 from 0009, 26 from 0010, 26 from 0011, 25 from 0012, 20 from 0013, 14 from 0014)', async () => {
     const { n } = (
       await q<{ n: number }>(
         "SELECT count(*)::int AS n FROM pg_constraint c JOIN pg_namespace s ON s.oid = c.connamespace WHERE s.nspname = 'identity' AND c.contype IN ('p', 'u', 'f', 'c')",
       )
     )[0]!;
-    expect(n).toBe(141);
+    expect(n).toBe(155);
     expect(CONTACT_CONSTRAINTS.length + CHALLENGE_CONSTRAINTS.length + 2).toBe(26);
   });
 

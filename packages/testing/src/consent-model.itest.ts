@@ -635,7 +635,7 @@ const OLD_ACTIONS = [
 const CONSENT_ACTIONS = ['CONSENT_ACCEPTED', 'CONSENT_WITHDRAWN'];
 
 describe('A. schema shape: the account side of the legal documents, bound to immutable content versions and holding no legal text', () => {
-  it('adds exactly two tables to the identity schema (fifteen in total) and no sequence, view, materialized view or partition', async () => {
+  it('adds exactly two tables to the identity schema (seventeen in total after 0014) and no sequence, view, materialized view or partition', async () => {
     const tables = await q<{ table_name: string }>(
       "SELECT table_name FROM information_schema.tables WHERE table_schema = 'identity' AND table_type = 'BASE TABLE'",
     );
@@ -644,6 +644,8 @@ describe('A. schema shape: the account side of the legal documents, bound to imm
       'account_devices',
       'account_profiles',
       'account_roles',
+      'account_section_roles',
+      'account_sections',
       'account_status_history',
       'accounts',
       'application_sessions',
@@ -729,15 +731,15 @@ describe('A. schema shape: the account side of the legal documents, bound to imm
     ]);
   });
 
-  it('brings the identity schema to 141 primary key, unique, foreign key and check constraints (121 before 0013 plus 6 + 12 + 2)', async () => {
+  it('brings the identity schema to 155 primary key, unique, foreign key and check constraints (121 before 0013 plus 6 + 12 + 2, plus 14 from 0014)', async () => {
     const { n } = (
       await q<{ n: number }>(
         "SELECT count(*)::int AS n FROM pg_constraint c JOIN pg_namespace s ON s.oid = c.connamespace WHERE s.nspname = 'identity' AND c.contype IN ('p', 'u', 'f', 'c')",
       )
     )[0]!;
-    expect(n).toBe(141);
+    expect(n).toBe(155);
     expect(PURPOSE_CONSTRAINTS.length + EVENT_CONSTRAINTS.length + AUDIT_CONSTRAINTS_0013.length).toBe(20);
-    expect(121 + 20).toBe(141);
+    expect(121 + 20 + 14).toBe(155);
   });
 
   it('declares every new foreign key ON DELETE RESTRICT with the default MATCH SIMPLE, and no foreign key of the identity schema cascades', async () => {

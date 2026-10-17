@@ -95,6 +95,20 @@ export interface ProfileInput {
   preferredLocale?: string | null;
   timeZone?: string | null;
 }
+/** The fields of a partial profile change: absent = unchanged, null clears the optional locale and time zone. */
+export interface ProfilePatchInput {
+  firstName?: string;
+  lastName?: string;
+  preferredLocale?: string | null;
+  timeZone?: string | null;
+}
+/** A present locale must be a canonical tag (the registry check that it is ACTIVE happens in the transaction); null and undefined mean "none". */
+function canonicalLocaleOrThrow(raw: string | null | undefined): string | null {
+  if (raw === undefined || raw === null) return null;
+  const locale = canonicalizeLocale(raw);
+  if (locale === null) throw new AccountError('VALIDATION_FAILED', 'the preferred locale is not valid', { reason: 'INVALID_FIELD', field: 'preferredLocale' });
+  return locale;
+}
 
 // ---------------------------------------------------------------- errors
 const RULE_DETAIL = /^identity_rule:([A-Z][A-Z_]*)$/;
@@ -594,48 +608,120 @@ export class AccountService {
     if (!last.ok) issues.push({ field: 'lastName', code: last.code, messageKey: profileIssueMessageKey(last.code) });
     if (issues.length > 0 || !first.ok || !last.ok)
       throw new AccountError('VALIDATION_FAILED', 'the profile is not valid', { reason: 'INVALID_PROFILE', issues });
-    let locale: string | null = null;
-    if (input.preferredLocale !== undefined && input.preferredLocale !== null) {
-      locale = canonicalizeLocale(input.preferredLocale);
-      if (locale === null)
-        throw new AccountError('VALIDATION_FAILED', 'the preferred locale is not valid', { reason: 'INVALID_FIELD', field: 'preferredLocale' });
-    }
+    const locale = canonicalLocaleOrThrow(input.preferredLocale);
     const cid = getCorrelationId() ?? randomUUID();
     return this.tx(async (trx) => {
       assertUsable(await this.lockAccount(trx, accountId));
-      if (locale !== null) {
-        const l = await sql<Row>`SELECT 1 FROM content.locales WHERE locale = ${locale} AND is_active FOR SHARE`.execute(trx);
-        if (l.rows.length === 0)
-          throw new AccountError('VALIDATION_FAILED', 'the preferred locale is not available', { reason: 'UNKNOWN_LOCALE', field: 'preferredLocale' });
-      }
-      let zoneId: string | null = null;
-      if (input.timeZone !== undefined && input.timeZone !== null) {
-        const z = (
-          await sql<Row>`SELECT time_zone_id FROM geography.time_zones WHERE iana_name = ${input.timeZone} AND status = 'ACTIVE' FOR SHARE`.execute(trx)
-        ).rows[0];
-        if (!z) throw new AccountError('VALIDATION_FAILED', 'the time zone is not available', { reason: 'UNKNOWN_TIME_ZONE', field: 'timeZone' });
-        zoneId = z.time_zone_id as string;
-      }
-      const before = (
-        await sql<Row>`SELECT first_name, last_name, preferred_locale, time_zone_id FROM identity.account_profiles WHERE account_id = ${accountId} FOR UPDATE`.execute(
-          trx,
-        )
-      ).rows[0];
-      const changedFields = [
-        ...(before?.first_name !== first.value ? ['firstName'] : []),
-        ...(before?.last_name !== last.value ? ['lastName'] : []),
-        ...((before?.preferred_locale ?? null) !== locale ? ['preferredLocale'] : []),
-        ...((before?.time_zone_id ?? null) !== zoneId ? ['timeZone'] : []),
-      ];
-      const profile: AccountProfileDto = { firstName: first.value, lastName: last.value, preferredLocale: locale, timeZone: input.timeZone ?? null };
-      if (before && changedFields.length === 0) return { changed: false, profile };
-      await sql`INSERT INTO identity.account_profiles (account_id, first_name, last_name, preferred_locale, time_zone_id)
-        VALUES (${accountId}, ${first.value}, ${last.value}, ${locale}, ${zoneId})
-        ON CONFLICT (account_id) DO UPDATE SET first_name = EXCLUDED.first_name, last_name = EXCLUDED.last_name, preferred_locale = EXCLUDED.preferred_locale,
-          time_zone_id = EXCLUDED.time_zone_id, updated_at = now()`.execute(trx);
-      await this.audit(trx, cid, { actor, action: 'PROFILE_UPDATED', accountId, changes: { fields: changedFields } });
-      return { changed: true, profile };
+      return this.applyProfile(trx, accountId, { first: first.value, last: last.value, locale, timeZone: input.timeZone ?? null }, cid, actor);
     });
+  }
+
+  /**
+   * Changes the PRESENT fields of the core profile (ACC-001): an absent field keeps its stored value, null clears the optional locale and time zone. The stored row is read
+   * FOR UPDATE inside the transaction, so two concurrent patches of different fields both apply. A profile that does not exist yet is created only when both names are given
+   * (PROFILE_REQUIRED otherwise). Validation, idempotence and the audit row are the ones of `upsertProfile`.
+   */
+  async patchProfile(accountId: string, patch: ProfilePatchInput, opts: { actor: string }): Promise<{ changed: boolean; profile: AccountProfileDto }> {
+    const actor = requireActor(opts.actor);
+    const issues: { field: string; code: string; messageKey: string }[] = [];
+    let first: string | undefined;
+    let last: string | undefined;
+    if (patch.firstName !== undefined) {
+      const v = validateProfileName(patch.firstName);
+      if (v.ok) first = v.value;
+      else issues.push({ field: 'firstName', code: v.code, messageKey: profileIssueMessageKey(v.code) });
+    }
+    if (patch.lastName !== undefined) {
+      const v = validateProfileName(patch.lastName);
+      if (v.ok) last = v.value;
+      else issues.push({ field: 'lastName', code: v.code, messageKey: profileIssueMessageKey(v.code) });
+    }
+    if (issues.length > 0) throw new AccountError('VALIDATION_FAILED', 'the profile is not valid', { reason: 'INVALID_PROFILE', issues });
+    const locale = patch.preferredLocale === undefined ? undefined : canonicalLocaleOrThrow(patch.preferredLocale);
+    const cid = getCorrelationId() ?? randomUUID();
+    return this.tx(async (trx) => {
+      assertUsable(await this.lockAccount(trx, accountId));
+      const stored = (
+        await sql<Row>`SELECT p.first_name, p.last_name, p.preferred_locale, p.time_zone_id AS stored_zone_id, z.iana_name
+          FROM identity.account_profiles p LEFT JOIN geography.time_zones z ON z.time_zone_id = p.time_zone_id
+          WHERE p.account_id = ${accountId} FOR UPDATE OF p`.execute(trx)
+      ).rows[0];
+      const firstName = first ?? (stored?.first_name as string | undefined);
+      const lastName = last ?? (stored?.last_name as string | undefined);
+      if (firstName === undefined || lastName === undefined)
+        throw new AccountError('VALIDATION_FAILED', 'a profile needs both names', { reason: 'PROFILE_REQUIRED' });
+      const storedLocale = (stored?.preferred_locale as string | null | undefined) ?? null;
+      const storedZone = (stored?.iana_name as string | null | undefined) ?? null;
+      const nextLocale = locale === undefined ? storedLocale : locale;
+      const nextZone = patch.timeZone === undefined ? storedZone : patch.timeZone;
+      // a value that is kept as it is (absent from the patch, or equal to the stored one) is NOT revalidated: it may have been deactivated since it was chosen (a historical
+      // reference, like an address keeps its zone), and a names-only change must still work. Only a value that CHANGES must be an ACTIVE registry value.
+      return this.applyProfile(
+        trx,
+        accountId,
+        {
+          first: firstName,
+          last: lastName,
+          locale: nextLocale,
+          timeZone: nextZone,
+          keepLocale: nextLocale === storedLocale,
+          keepZone: nextZone === storedZone ? ((stored?.stored_zone_id as string | null | undefined) ?? null) : undefined,
+        },
+        cid,
+        actor,
+      );
+    });
+  }
+
+  /** The in-transaction half shared by `upsertProfile` and `patchProfile`: the account row is already locked and the names are already validated. */
+  private async applyProfile(
+    trx: Trx,
+    accountId: string,
+    v: {
+      first: string;
+      last: string;
+      locale: string | null;
+      timeZone: string | null;
+      /** The locale is the stored one, kept as it is: it is not required to be ACTIVE any more (set only by `patchProfile`). */
+      keepLocale?: boolean;
+      /** The time zone is the stored one, kept as it is: its id (null = none), so it is not looked up again; undefined = a new value that must be an ACTIVE registered zone. */
+      keepZone?: string | null;
+    },
+    cid: string,
+    actor: string,
+  ): Promise<{ changed: boolean; profile: AccountProfileDto }> {
+    if (v.locale !== null && v.keepLocale !== true) {
+      const l = await sql<Row>`SELECT 1 FROM content.locales WHERE locale = ${v.locale} AND is_active FOR SHARE`.execute(trx);
+      if (l.rows.length === 0)
+        throw new AccountError('VALIDATION_FAILED', 'the preferred locale is not available', { reason: 'UNKNOWN_LOCALE', field: 'preferredLocale' });
+    }
+    let zoneId: string | null = null;
+    if (v.keepZone !== undefined) zoneId = v.keepZone;
+    else if (v.timeZone !== null) {
+      const z = (await sql<Row>`SELECT time_zone_id FROM geography.time_zones WHERE iana_name = ${v.timeZone} AND status = 'ACTIVE' FOR SHARE`.execute(trx))
+        .rows[0];
+      if (!z) throw new AccountError('VALIDATION_FAILED', 'the time zone is not available', { reason: 'UNKNOWN_TIME_ZONE', field: 'timeZone' });
+      zoneId = z.time_zone_id as string;
+    }
+    const before = (
+      await sql<Row>`SELECT first_name, last_name, preferred_locale, time_zone_id FROM identity.account_profiles WHERE account_id = ${accountId} FOR UPDATE`.execute(
+        trx,
+      )
+    ).rows[0];
+    const changedFields = [
+      ...(before?.first_name !== v.first ? ['firstName'] : []),
+      ...(before?.last_name !== v.last ? ['lastName'] : []),
+      ...((before?.preferred_locale ?? null) !== v.locale ? ['preferredLocale'] : []),
+      ...((before?.time_zone_id ?? null) !== zoneId ? ['timeZone'] : []),
+    ];
+    const profile: AccountProfileDto = { firstName: v.first, lastName: v.last, preferredLocale: v.locale, timeZone: v.timeZone };
+    if (before && changedFields.length === 0) return { changed: false, profile };
+    await sql`INSERT INTO identity.account_profiles (account_id, first_name, last_name, preferred_locale, time_zone_id)
+      VALUES (${accountId}, ${v.first}, ${v.last}, ${v.locale}, ${zoneId})
+      ON CONFLICT (account_id) DO UPDATE SET first_name = EXCLUDED.first_name, last_name = EXCLUDED.last_name, preferred_locale = EXCLUDED.preferred_locale,
+        time_zone_id = EXCLUDED.time_zone_id, updated_at = now()`.execute(trx);
+    await this.audit(trx, cid, { actor, action: 'PROFILE_UPDATED', accountId, changes: { fields: changedFields } });
+    return { changed: true, profile };
   }
 
   // ------------------------------------------------------------------ audit and events

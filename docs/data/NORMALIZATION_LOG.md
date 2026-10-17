@@ -779,3 +779,58 @@ Foreign keys and their lookup paths (all `ON DELETE RESTRICT`; the parents are n
 
 ### Final decision
 Schema accepted. Ownership: both new tables are application-owned in schema `identity`; the audit table keeps its owner; `content.versions` keeps its owner (CFG-002) and receives one additive unique constraint; `configuration` and `content` are written by the seeds through their real workflows; the legal documents and their versions stay owned by the content workflow (Legal publishes them), and BananaGig stores no legal text in `identity`. Cardinality: account 1-N consent events, purpose 1-N consent events, a document (LEGAL entry) 1-0..1 purpose, a content version 0-N consent events, an application session 0-N consent events, a consent event 0-N audit rows (`CONSENT_*`; one per event today). Nullability reviewed: only genuinely optional columns are nullable (`application_session_id` on an event when the request had no session, `consent_event_id` on audit rows of other actions); every other column is NOT NULL, including the whole version binding (`version_id`, `locale`, `body_sha256`), `event_seq`, `event_type`, `source` and `correlation_id`. Immutable historical state: every column of `consent_events` and the row itself (no UPDATE, DELETE or TRUNCATE); `purpose_code`, `document_entry_id`, `withdrawal_policy` and `created_at` of a purpose; no row of either table is ever deleted (DELETE refused by trigger, foreign keys restrict); audit rows immutable as before. Concurrency and lock order: ONE order, the ACCOUNT row first (`FOR UPDATE` in the service, `FOR SHARE` in the guard), then the PURPOSE row (`FOR SHARE`), then, for `ACCEPTED`, the content VERSION row (`FOR SHARE`) BEFORE the window is evaluated, so a publication that closes the window either commits first (the accept is refused) or waits for the accept (a valid historical fact); a withdraw racing an accept serializes through the account row; the sequence unique key is the net underneath two writers outside the lock. Rollback: forward-fix only; consent events and audit rows are never deleted (a correction is a new event), purposes are never deleted (`INACTIVE` instead), and the audit action CHECK is not narrowed back once rows with the new actions exist. Compatibility: additive and backward compatible (existing audit rows satisfy the wider CHECK, the new CHECK and the MATCH SIMPLE composite key; the new unique constraint on `content.versions` covers columns that are already unique together and never change; the email, phone, session and device tables, guards and seeds are untouched; `configuration` and `content` gain rows only; `integration.outbox_events` is reused unchanged). Open items: no purge, erasure or export path for consent events and their audit rows (DEBT-0045, DEBT-0057), and the two `reacceptance` configuration values are an engineering assumption awaiting the legal owner (DEBT-0077). Until Legal publishes the first versions of the two documents, every required purpose is `DOCUMENT_UNAVAILABLE` for an account that has not already satisfied it and nothing can be accepted.
+
+## ACC-001
+
+Date: 2026-10-16
+
+Tables reviewed: new, in schema `identity`: `identity.account_sections` and `identity.account_section_roles`. Reused WITHOUT change (composed, not copied): `identity.account_profiles` (the profile the Profile and Language and region sections edit), `identity.roles`, `identity.account_roles`, `identity.email_contacts`, `identity.phone_contacts`, `identity.application_sessions`, `identity.account_devices`, `identity.consent_events` and `identity.consent_purposes` (summarized by the security and privacy sections through their own services).
+
+### 1NF
+PASS. Every column of both new tables is an atomic scalar (`text`, `boolean`, `integer`, `timestamptz`, `uuid`); there is no array, JSON or delimited-list column. The routes, labels and role lists are single values or rows: the set of sections of a role is rows of the matrix, never a list stored in a cell.
+
+### 2NF
+PASS. `account_sections` has the single-column key `section_code`. `account_section_roles` has the composite key `(section_code, role_id)` and its two non-key columns, `enabled` and `display_order`, depend on the WHOLE pair: whether a role sees a section and where it sits in that role's menu are facts about the pair, not about the section or the role alone. The section attributes (route, labels, status) are deliberately NOT in the matrix table: placed there they would depend on `section_code` only, a partial dependency repeated for every role. That is the reason there are two tables.
+
+### 3NF
+PASS. The pairs checked:
+
+| Table | Pair checked | Verdict |
+|---|---|---|
+| `account_sections` | `section_code` against `route_path` | both are candidate keys (`route_path` is unique), a 1:1 pair by design: the code is the stable name the API and the code use, the path is the web address |
+| `account_sections` | `label_content_key` against the label text | the text is NOT stored here: it is resolved from the content registry by key (CFG-002), so there is nothing derived or duplicated |
+| `account_sections` | `status` against the matrix `enabled` flags | independent columns of different tables; the rule that links them (an enabled row needs an ACTIVE section) is a guard trigger, not a stored derivation |
+| `account_section_roles` | `enabled` against `display_order` | independent: a disabled row keeps its position so the order stays unambiguous when it is enabled |
+| `account_section_roles` | `role_id` against the role's code or name | not stored: the code and the display name stay in `identity.roles` |
+
+No transitive dependency exists; no non-key column determines another non-key column.
+
+### BCNF
+PASS. Determinants: `section_code` (primary key) and `route_path` (candidate key) in `account_sections`; `(section_code, role_id)` (primary key) and `(role_id, display_order)` (candidate key, `uq_account_section_roles__role_order`) in `account_section_roles`. Every determinant is a candidate key. The second key means the same position cannot be given twice to a role, so the menu order is a total order per role.
+
+### Duplicate concepts examined
+- A second profile table or profile columns for the account area: NOT created. The area edits `identity.account_profiles` (names, preferred locale, time zone override) through the existing service; no provider or business field is added.
+- Contact verification state: NOT copied. The Contact details section returns the masked email and phone states the account guard already read from `email_contacts` and `phone_contacts`, and the derived `contacts` summary; nothing is stored in the area.
+- Security state: NOT copied. The Security section summarizes ID-004 (second factor asked of the identity provider, a count of live application sessions, the trust of this browser); no session, device or factor is stored again.
+- Consent state: NOT copied. The Privacy and data section returns counts evaluated by the consent service from `consent_events`; no document, version, hash or history leaves that domain.
+- The active role: NOT persisted. A stored active role would be a second source of truth beside the web session (ADR-0026). The matrix is keyed by role, not by account.
+- A per-person section preference table (`account_section_preferences`): NOT created. Nothing in the area is a persisted personal choice today (no hidden, pinned or reordered sections); a preference table would be a table nothing writes. It is added by the checkpoint that has a real preference.
+- Section visibility in configuration (CFG-001): rejected. The configuration scopes are platform, country, market, category, plan, provider, gig and drop; there is no role scope, and a JSON parameter would have no foreign keys to the roles or the content keys.
+- Section visibility in code constants: rejected. The menu would live in the front end and ship with each release.
+
+### Derived fields examined
+No derived value is stored. Whether a section is available is derived at read time from the three tables (`enabled` AND section `ACTIVE` AND role `ACTIVE`). The name other people see (`displayName`) is derived from the profile on read, as since ID-001. The number of sessions and the count of outstanding agreements in the summaries are computed on read from their own domains.
+
+### Intentional denormalization
+None. The one place where a value is repeated is the guard: `enabled` is only allowed while the section and the role are ACTIVE (and neither can leave ACTIVE while a row is enabled: `SECTION_IN_USE`, `ROLE_HAS_SECTIONS`), and the read query checks the same three conditions again. That is a redundant CHECK of the same fact (defense in depth), not a stored copy.
+
+### Index review
+- `pk_account_sections (section_code)` and `uq_account_sections__route_path (route_path)`: the key, the foreign key target and the lookup of a page.
+- `pk_account_section_roles (section_code, role_id)`: the foreign key to the section and the lookup of one pair.
+- `uq_account_section_roles__role_order (role_id, display_order)`: THE access path (the enabled sections of one role in order, one index range scan) and the uniqueness rule of the order. There is no second index on `role_id`: it is the leading column of this key.
+- No index on `label_content_key` or `description_content_key`: never-deleted reference targets, no filtered query, 8 rows.
+- Tables of 8 and 16 rows are read once per request; the planner may sequentially scan them, which is cheaper than any index at this size and is correct at any size because the unique key exists.
+
+### Final decision
+Two new tables, no column, constraint or index added to any existing table (`identity.roles` gains one guard trigger), no new index beyond the keys, no denormalization. The navigation costs one registry read per request whatever the number of sections.
+

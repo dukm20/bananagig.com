@@ -7,7 +7,15 @@ import {
   AcceptConsentResponse,
   AccountConsentsResponse,
   AccountEmailResponse,
+  AccountNavigationResponse,
+  AccountProfileViewResponse,
   AccountResponse,
+  AccountRolesSectionResponse,
+  ContactVerificationSectionResponse,
+  PrivacySummaryResponse,
+  ProfilePatchedResponse,
+  SecuritySummaryResponse,
+  TimeZoneListResponse,
   AddressFormatResponse,
   AddressValidationResponse,
   AdministrativeAreaListResponse,
@@ -39,6 +47,15 @@ import {
   type AccountConsentsDto,
   type AccountDto,
   type AccountEmailDetailDto,
+  type AccountNavigationDto,
+  type AccountProfileViewDto,
+  type AccountRolesSectionDto,
+  type ContactVerificationSectionDto,
+  type PatchProfileRequest,
+  type PrivacySummaryDto,
+  type ProfilePatchedDto,
+  type SecuritySummaryDto,
+  type TimeZoneDto,
   type AddressFormatDto,
   type AddressInput,
   type AddressValidationResultDto,
@@ -137,7 +154,7 @@ export function createApiClient(opts: ApiClientOptions) {
     path: string,
     parse: (json: unknown) => T,
     body?: unknown,
-    extra: { method?: 'GET' | 'POST' | 'PUT' | 'DELETE'; headers?: Record<string, string> } = {},
+    extra: { method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'; headers?: Record<string, string> } = {},
   ): Promise<{ data: T; correlationId: string | undefined }> {
     const headers: Record<string, string> = { accept: 'application/json', ...extra.headers };
     const cid = opts.correlationId?.();
@@ -366,6 +383,40 @@ export function createApiClient(opts: ApiClientOptions) {
           },
         )
       ).data;
+    },
+    // ---------------------------------------------------------------- the shared account area (ACC-001): every call acts as the session's active role (x-active-role)
+    /** GET /api/v1/account/navigation: the enabled sections of the active role (registry data, in menu order), the switchable roles and the contact summary. */
+    async getAccountNavigation(o: AccountCallOptions = {}): Promise<AccountNavigationDto> {
+      return (await request('/account/navigation', (j) => AccountNavigationResponse.parse(j).data, undefined, { headers: roleHeader(o) })).data;
+    },
+    /** GET /api/v1/account/profile: the caller's own profile (names, the name other people see, locale, time zone) or null before a name was given. 404 ACCOUNT_SECTION_NOT_FOUND when the role has neither Profile nor Language and region. */
+    async getAccountProfile(o: AccountCallOptions = {}): Promise<AccountProfileViewDto> {
+      return (await request('/account/profile', (j) => AccountProfileViewResponse.parse(j).data, undefined, { headers: roleHeader(o) })).data;
+    },
+    /** PATCH /api/v1/account/profile: changes the PRESENT fields only (null clears the locale and time zone). A rejected value is an ApiError (400) with `details.reason` and issue codes, never the value. */
+    async patchAccountProfile(input: PatchProfileRequest, o: AccountCallOptions = {}): Promise<ProfilePatchedDto> {
+      return (await request('/account/profile', (j) => ProfilePatchedResponse.parse(j).data, input, { method: 'PATCH', headers: roleHeader(o) })).data;
+    },
+    /** GET /api/v1/account/contact-verification: the masked email and phone states and the derived summary (Contact details section). */
+    async getAccountContactVerification(o: AccountCallOptions = {}): Promise<ContactVerificationSectionDto> {
+      return (await request('/account/contact-verification', (j) => ContactVerificationSectionResponse.parse(j).data, undefined, { headers: roleHeader(o) }))
+        .data;
+    },
+    /** GET /api/v1/account/roles: the ACTIVE roles the account holds, the role it acts as and the roles it can switch to (Roles section). */
+    async getAccountRolesSection(o: AccountCallOptions = {}): Promise<AccountRolesSectionDto> {
+      return (await request('/account/roles', (j) => AccountRolesSectionResponse.parse(j).data, undefined, { headers: roleHeader(o) })).data;
+    },
+    /** GET /api/v1/account/security-summary: two-step state, number of live sessions and whether this browser is trusted (Security section; the security centre stays the place to act). */
+    async getAccountSecuritySummary(o: AccountCallOptions = {}): Promise<SecuritySummaryDto> {
+      return (await request('/account/security-summary', (j) => SecuritySummaryResponse.parse(j).data, undefined, { headers: roleHeader(o) })).data;
+    },
+    /** GET /api/v1/account/privacy: how many required agreements still need attention and the data-download contract (Privacy and data section). */
+    async getAccountPrivacySummary(o: AccountCallOptions = {}): Promise<PrivacySummaryDto> {
+      return (await request('/account/privacy', (j) => PrivacySummaryResponse.parse(j).data, undefined, { headers: roleHeader(o) })).data;
+    },
+    /** GET /api/v1/geography/time-zones (public: without a bearer token only the ACTIVE zones are returned). */
+    async listGeographyTimeZones(): Promise<TimeZoneDto[]> {
+      return (await request('/geography/time-zones', (j) => TimeZoneListResponse.parse(j).data)).data;
     },
     /** GET /api/v1/system/info */
     async getSystemInfo(): Promise<SystemInfo> {

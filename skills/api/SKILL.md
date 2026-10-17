@@ -80,6 +80,7 @@ Services never write SQL in routes. Persistence changes go through the database 
 
 - Client address behind a proxy (ID-003, ADR-0033, DEBT-0055): Fastify's `trustProxy` receives the function `trustHops(hops)` from `apps/api/src/app.ts` (`(address, hop) => hop < hops`, proxy-addr's contract: hop 0 is the socket peer), so `request.ip` is the first address that is not a trusted proxy: the LAST `X-Forwarded-For` entry with 1 hop, the socket with 0; never `trustProxy: true` and never a client-chosen leftmost entry. `hops` is `TRUSTED_PROXY_HOPS` (0 to 4, required in production, 1 elsewhere). A function is used because the Fastify 5.12.5 option is typed `boolean | string | string[] | TrustProxyFunction` (no number), and the function makes the hop semantics explicit and unit-testable (LRN-0040). The proxy must REPLACE the header (`header_up X-Forwarded-For {remote_host}` in `infra/caddy/Caddyfile`) and the API must not be published; both are asserted by tests (`apps/api/src/trust-proxy.test.ts`).
 - The generated OpenAPI silently lacked the ID-003 phone routes because `scripts/generate-specs.mjs` did not pass the phone service to `buildApp`; `specs:check` could not notice (committed and generated files were equally incomplete). `apps/api/src/spec-completeness.test.ts` now fails when an `AppDeps` property is not passed by the generator or a module's paths are missing from the committed spec: when you add an optional service to `AppDeps`, pass it in the generator (LRN-0044).
+- Account area (ACC-001): `requireAccountSection(...codes)` / `requireAnyAccountSection(...)` / `assertAccountSections(req, codes, mode)` in `apps/api/src/plugins/account-section.ts` come AFTER `requireAccount` and answer 404 `ACCOUNT_SECTION_NOT_FOUND` for any section the active role lacks (order of checks: 401, 403, then the section 404 for static-section routes; PATCH /account/profile derives its sections from the fields, so strict-body 400 comes first there); they read the role's sections once per request. A route whose body decides which sections it needs (the PATCH of the profile) checks after parsing. New AppDeps properties must be added to `scripts/generate-specs.mjs` (the spec-completeness test fails otherwise).
 
 ## Do not
 
@@ -95,7 +96,7 @@ Services never write SQL in routes. Persistence changes go through the database 
 - Do not return legal text, a hash the client claimed, a version id or a service message in a consent error; do not accept an account id, a time or a role on a consent route; do not rate limit by silently dropping consent writes (none is limited today, DEBT-0081).
 
 ## Related ADRs
-ADR-0006, ADR-0004, ADR-0013, ADR-0024, ADR-0025, ADR-0026, ADR-0033, ADR-0034, ADR-0036, ADR-0037, ADR-0038
+ADR-0006, ADR-0004, ADR-0013, ADR-0024, ADR-0025, ADR-0026, ADR-0033, ADR-0034, ADR-0036, ADR-0037, ADR-0038, ADR-0039
 
 ## Last reviewed
-2026-10-16 (ID-005)
+2026-10-16 (ACC-001)

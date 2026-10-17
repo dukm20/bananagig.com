@@ -72,6 +72,7 @@ const app = await buildApp({
   phoneVerification: {},
   security: {},
   consent: {},
+  accountArea: {},
   readiness: async () => ({}),
 });
 await app.ready();

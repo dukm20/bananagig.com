@@ -12,6 +12,7 @@ import type {
   SecurityActivityDto,
   SecurityDevicesDto,
   SecurityOverviewDto,
+  SecuritySummaryDto,
   SecuritySessionsDto,
   SessionRevokedDto,
   SessionsRevokedAllDto,
@@ -149,6 +150,11 @@ export interface SecurityOperations {
 
   /** The second-factor state (asked of the identity provider; observed transitions are audited), the step-up state and the policy. */
   getOverview(current: CurrentSession, token: TokenFacts): Promise<SecurityOverviewDto>;
+  /**
+   * The light summary of the account area (ACC-001): the second-factor flag from the overview, the number of live application sessions (same window as the list, NOT reconciled
+   * with the identity provider) and whether this browser is trusted. Reads; it writes only what the overview writes (observed second-factor transitions).
+   */
+  getSummary(current: CurrentSession, token: TokenFacts): Promise<SecuritySummaryDto>;
   /** Records that the person asked to enrol `method` and returns the Keycloak action the web server must send the browser to. */
   startMfaEnrollment(current: CurrentSession, method: MfaMethod): Promise<MfaEnrollmentDto>;
   /** True when the user has a TOTP credential, or null when the identity provider cannot be asked (the step-up guard then fails closed). */

@@ -24,3 +24,4 @@ export * from './consent-policy';
 export * from './consent-evaluate';
 export * from './consent-service';
 export * from './consent-fakes';
+export * from './account-area';

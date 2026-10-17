@@ -847,6 +847,7 @@ describe('ACCOUNT_ERROR_CODES', () => {
       'CONSENT_NOT_ACCEPTED',
       'CONSENT_REQUIRED_FOR_ROLE',
       'CONSENT_REQUIRED',
+      'SECTION_NOT_FOUND',
       'SESSION_REVOKED',
     ]);
   });
@@ -869,11 +870,12 @@ describe('ACCOUNT_ERROR_CODES', () => {
     expect(ACCOUNT_ERROR_CODES.slice(10 + EMAIL_ERROR_CODES.length + PHONE_ERROR_CODES.length)).toEqual([
       ...SECURITY_ERROR_CODES,
       ...CONSENT_ERROR_CODES,
+      'SECTION_NOT_FOUND',
       'SESSION_REVOKED',
     ]);
     expect(EMAIL_ERROR_CODES).toHaveLength(12);
     expect(PHONE_ERROR_CODES).toHaveLength(13);
-    expect(ACCOUNT_ERROR_CODES).toHaveLength(51); // 10 account + 12 email + 13 phone + 5 security + 10 consent + SESSION_REVOKED
+    expect(ACCOUNT_ERROR_CODES).toHaveLength(52); // 10 account + 12 email + 13 phone + 5 security + 10 consent + SECTION_NOT_FOUND + SESSION_REVOKED
   });
   it('has unique upper-case codes, usable as the ACCOUNT_<code> API error code suffix', () => {
     expect(new Set(ACCOUNT_ERROR_CODES).size).toBe(ACCOUNT_ERROR_CODES.length);

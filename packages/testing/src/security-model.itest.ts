@@ -456,7 +456,7 @@ const AUDIT_CONSTRAINTS_0012 = [
 ];
 
 describe('A. schema shape: a registry of sessions and browsers that holds no token, no secret, no code, no address and no raw user agent', () => {
-  it('adds exactly two tables to the identity schema (thirteen with 0012, fifteen after 0013) and no sequence', async () => {
+  it('adds exactly two tables to the identity schema (thirteen with 0012, fifteen after 0013, seventeen after 0014) and no sequence', async () => {
     const tables = await q<{ table_name: string }>(
       "SELECT table_name FROM information_schema.tables WHERE table_schema = 'identity' AND table_type = 'BASE TABLE'",
     );
@@ -465,6 +465,8 @@ describe('A. schema shape: a registry of sessions and browsers that holds no tok
       'account_devices',
       'account_profiles',
       'account_roles',
+      'account_section_roles',
+      'account_sections',
       'account_status_history',
       'accounts',
       'application_sessions',
@@ -580,15 +582,15 @@ describe('A. schema shape: a registry of sessions and browsers that holds no tok
     ]);
   });
 
-  it('brings the identity schema to 141 primary key, unique, foreign key and check constraints (96 before 0012 plus 12 + 9 + 4, plus 20 from 0013)', async () => {
+  it('brings the identity schema to 155 primary key, unique, foreign key and check constraints (96 before 0012 plus 12 + 9 + 4, plus 20 from 0013, plus 14 from 0014)', async () => {
     const { n } = (
       await q<{ n: number }>(
         "SELECT count(*)::int AS n FROM pg_constraint c JOIN pg_namespace s ON s.oid = c.connamespace WHERE s.nspname = 'identity' AND c.contype IN ('p', 'u', 'f', 'c')",
       )
     )[0]!;
-    expect(n).toBe(141);
+    expect(n).toBe(155);
     expect(DEVICE_CONSTRAINTS.length + SESSION_CONSTRAINTS.length + AUDIT_CONSTRAINTS_0012.length).toBe(25);
-    expect(96 + 25 + 20).toBe(141);
+    expect(96 + 25 + 20 + 14).toBe(155);
   });
 
   it('declares every foreign key of the registry ON DELETE RESTRICT with the default MATCH SIMPLE, and no foreign key of the identity schema cascades', async () => {

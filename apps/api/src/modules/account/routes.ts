@@ -2,11 +2,13 @@
 // (requireAccount); no route accepts an account id, a subject or a role claim from the client, and there is no endpoint that grants a role (granting is
 // server-side: provider sign-up, support and tests call AccountService directly). Bodies are validated raw and strictly (strictBody) before Ajv can coerce them.
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { AccountResponse, ACTIVE_ROLE_HEADER, SetActiveRoleRequest, UpdateProfileRequest } from '@bananagig/contracts';
+import { ACCOUNT_SECTIONS, AccountResponse, ACTIVE_ROLE_HEADER, SetActiveRoleRequest, UpdateProfileRequest } from '@bananagig/contracts';
 import { requireAccount } from '../../plugins/account';
+import { requireAccountSection } from '../../plugins/account-section';
 import { parseBody as parse, strictBody } from '../../plugins/strict-body';
 import { authErrorResponses, errorResponses, schemaOf } from '../../schema';
 import { accountDto, toAppError } from './dto';
+import { accountAreaRoutes, type AccountAreaRouteOptions } from './area-routes';
 import { accountEmailRoutes } from './email-routes';
 import { accountPhoneRoutes } from './phone-routes';
 
@@ -20,7 +22,10 @@ const activeRoleHeader = (req: FastifyRequest): string | undefined => {
   return Array.isArray(h) ? h.join(',') : h;
 };
 
-export async function accountRoutes(app: FastifyInstance, opts: { emailRoutes?: boolean; phoneRoutes?: boolean } = {}): Promise<void> {
+export async function accountRoutes(
+  app: FastifyInstance,
+  opts: { emailRoutes?: boolean; phoneRoutes?: boolean; areaRoutes?: AccountAreaRouteOptions } = {},
+): Promise<void> {
   // the responses (and the error bodies) concern one person and carry the caller's own name: never stored by a shared cache or the browser
   app.addHook('onRequest', async (_req, reply) => {
     reply.header('cache-control', 'no-store');
@@ -29,6 +34,7 @@ export async function accountRoutes(app: FastifyInstance, opts: { emailRoutes?: 
   const svc = (req: FastifyRequest) => req.server.accounts;
   if (opts.emailRoutes) await app.register(accountEmailRoutes);
   if (opts.phoneRoutes) await app.register(accountPhoneRoutes);
+  if (opts.areaRoutes) await app.register(accountAreaRoutes, opts.areaRoutes);
 
   app.get(
     '/account/me',
@@ -73,7 +79,12 @@ export async function accountRoutes(app: FastifyInstance, opts: { emailRoutes?: 
   app.put(
     '/account/profile',
     {
-      preValidation: [requireAccount(), strictBody(UpdateProfileRequest)],
+      // the full replace writes the names AND the locale and time zone: with the account area wired it needs both sections (ACC-001), exactly like the partial update does per field
+      preValidation: [
+        requireAccount(),
+        ...(opts.areaRoutes ? [requireAccountSection(ACCOUNT_SECTIONS.profile, ACCOUNT_SECTIONS.languageRegion)] : []),
+        strictBody(UpdateProfileRequest),
+      ],
       schema: {
         operationId: 'updateAccountProfile',
         summary:

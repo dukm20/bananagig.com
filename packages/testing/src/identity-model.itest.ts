@@ -221,7 +221,16 @@ const PHONE_TABLES_0011 = ['phone_contacts', 'phone_verification_challenges'];
 const SECURITY_TABLES_0012 = ['account_devices', 'application_sessions'];
 // ... and the two of 0013 (consent_purposes, consent_events): tested in consent-model.itest.ts.
 const CONSENT_TABLES_0013 = ['consent_events', 'consent_purposes'];
-const TABLES = [...TABLES_0009, ...EMAIL_TABLES_0010, ...PHONE_TABLES_0011, ...SECURITY_TABLES_0012, ...CONSENT_TABLES_0013].sort();
+// ... and the two of 0014 (account_sections, account_section_roles): tested in account-area-model.itest.ts.
+const ACCOUNT_AREA_TABLES_0014 = ['account_section_roles', 'account_sections'];
+const TABLES = [
+  ...TABLES_0009,
+  ...EMAIL_TABLES_0010,
+  ...PHONE_TABLES_0011,
+  ...SECURITY_TABLES_0012,
+  ...CONSENT_TABLES_0013,
+  ...ACCOUNT_AREA_TABLES_0014,
+].sort();
 // The constraints 0010 adds to a 0009 table (the audit trail): covered by email-model.itest.ts, not here.
 const EMAIL_AUDIT_CONSTRAINTS_0010 = ['ck_account_audit_events__email_contact', 'fk_account_audit_events__account_email_contact'];
 // The constraints 0011 adds to the audit trail (the contact reference and its pairing with the PHONE_ actions): covered by phone-model.itest.ts.
@@ -237,7 +246,7 @@ const SECURITY_AUDIT_CONSTRAINTS_0012 = [
 const CONSENT_AUDIT_CONSTRAINTS_0013 = ['ck_account_audit_events__consent_event', 'fk_account_audit_events__account_consent_event'];
 
 describe('migration 0009 from zero', () => {
-  it('creates exactly the fifteen identity tables (seven from 0009, two from 0010, two from 0011, two from 0012, two from 0013) and nothing else that stores data', async () => {
+  it('creates exactly the seventeen identity tables (seven from 0009, two from 0010, two from 0011, two from 0012, two from 0013, two from 0014) and nothing else that stores data', async () => {
     const tables = await q<{ table_name: string; table_type: string }>(
       "SELECT table_name, table_type FROM information_schema.tables WHERE table_schema = 'identity'",
     );
@@ -597,8 +606,8 @@ describe('table constraints reject bad data, by constraint name', () => {
     // the email model (0010), the phone model (0011), the session/device model (0012) and the consent model (0013) have their own constraint tests: their eight
     // tables and the ten audit constraints they added are accounted for by name (26 constraints each for 0010 and 0011: 24 on the two tables plus 2 on the audit
     // trail; 25 for 0012: 12 on account_devices, 9 on application_sessions and 4 on the audit trail; 20 for 0013: 6 on consent_purposes, 12 on consent_events and
-    // 2 on the audit trail)
-    const MODEL_TABLES = [...EMAIL_TABLES_0010, ...PHONE_TABLES_0011, ...SECURITY_TABLES_0012, ...CONSENT_TABLES_0013];
+    // 2 on the audit trail; 14 for 0014: 9 on account_sections and 5 on account_section_roles, nothing on an older table)
+    const MODEL_TABLES = [...EMAIL_TABLES_0010, ...PHONE_TABLES_0011, ...SECURITY_TABLES_0012, ...CONSENT_TABLES_0013, ...ACCOUNT_AREA_TABLES_0014];
     const MODEL_AUDIT_CONSTRAINTS = [
       ...EMAIL_AUDIT_CONSTRAINTS_0010,
       ...PHONE_AUDIT_CONSTRAINTS_0011,
@@ -608,7 +617,7 @@ describe('table constraints reject bad data, by constraint name', () => {
     const catalog = all.filter((r) => !MODEL_TABLES.includes(r.relname) && !MODEL_AUDIT_CONSTRAINTS.includes(r.conname));
     expect(catalog.length).toBe(44);
     expect([...new Set(CONSTRAINT_CASES.map((c) => c.constraint))].sort()).toEqual(catalog.map((r) => r.conname).sort());
-    expect(all.length - catalog.length).toBe(97);
+    expect(all.length - catalog.length).toBe(111); // 97 before 0014 plus its 14 (9 + 5)
     expect(all.filter((r) => MODEL_AUDIT_CONSTRAINTS.includes(r.conname)).map((r) => r.relname)).toEqual(Array(10).fill('account_audit_events'));
   });
 
@@ -1594,6 +1603,9 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
     'correlation_id',
   ],
   roles: ['role_id', 'code', 'name_content_key', 'status', 'created_at', 'updated_at'],
+  // 0014 (tested in account-area-model.itest.ts)
+  account_sections: ['section_code', 'route_path', 'label_content_key', 'description_content_key', 'status', 'created_at', 'updated_at'],
+  account_section_roles: ['section_code', 'role_id', 'enabled', 'display_order', 'created_at', 'updated_at'],
 };
 const schemaColumns = async (): Promise<{ table_name: string; column_name: string; data_type: string }[]> =>
   q("SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = 'identity' ORDER BY table_name, ordinal_position");
@@ -1663,7 +1675,7 @@ describe('schema shape: Keycloak owns credentials, the email model (0010) stores
     expect(holders).toEqual(['application_sessions.keycloak_session_id', 'external_identities.provider_subject']);
   });
 
-  it('documents the personal-data tables in the catalog (table comments exist for all fifteen tables)', async () => {
+  it('documents the personal-data tables in the catalog (table comments exist for all seventeen tables)', async () => {
     const rows = await q<{ relname: string; comment: string | null }>(
       "SELECT c.relname, obj_description(c.oid, 'pg_class') AS comment FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'identity' AND c.relkind = 'r'",
     );

@@ -694,6 +694,39 @@ CREATE TABLE identity.account_roles (
   CONSTRAINT ck_account_roles__status CHECK ((status = ANY (ARRAY['PENDING'::text, 'ACTIVE'::text, 'INACTIVE'::text])))
 );
 
+CREATE TABLE identity.account_section_roles (
+  section_code text NOT NULL,
+  role_id uuid NOT NULL,
+  enabled boolean NOT NULL DEFAULT false,
+  display_order integer NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_account_section_roles PRIMARY KEY (section_code, role_id),
+  CONSTRAINT uq_account_section_roles__role_order UNIQUE (role_id, display_order),
+  CONSTRAINT fk_account_section_roles__role_id FOREIGN KEY (role_id) REFERENCES identity.roles(role_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_account_section_roles__section_code FOREIGN KEY (section_code) REFERENCES identity.account_sections(section_code) ON DELETE RESTRICT,
+  CONSTRAINT ck_account_section_roles__display_order CHECK (((display_order >= 1) AND (display_order <= 9999)))
+);
+
+CREATE TABLE identity.account_sections (
+  section_code text NOT NULL,
+  route_path text NOT NULL,
+  label_content_key text NOT NULL,
+  description_content_key text,
+  status text NOT NULL DEFAULT 'PLANNED'::text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_account_sections PRIMARY KEY (section_code),
+  CONSTRAINT uq_account_sections__route_path UNIQUE (route_path),
+  CONSTRAINT fk_account_sections__description_content_key FOREIGN KEY (description_content_key) REFERENCES content.entries(key) ON DELETE RESTRICT,
+  CONSTRAINT fk_account_sections__label_content_key FOREIGN KEY (label_content_key) REFERENCES content.entries(key) ON DELETE RESTRICT,
+  CONSTRAINT ck_account_sections__description_content_key_format CHECK (((description_content_key IS NULL) OR (description_content_key ~ '^[a-z][a-z0-9_]*([.][a-z][a-z0-9_]*)+$'::text))),
+  CONSTRAINT ck_account_sections__label_content_key_format CHECK ((label_content_key ~ '^[a-z][a-z0-9_]*([.][a-z][a-z0-9_]*)+$'::text)),
+  CONSTRAINT ck_account_sections__route_path_format CHECK ((route_path ~ '^/account/[a-z][a-z0-9-]{1,39}$'::text)),
+  CONSTRAINT ck_account_sections__section_code_format CHECK ((section_code ~ '^[A-Z][A-Z0-9_]{1,39}$'::text)),
+  CONSTRAINT ck_account_sections__status CHECK ((status = ANY (ARRAY['ACTIVE'::text, 'PLANNED'::text, 'INACTIVE'::text])))
+);
+
 CREATE TABLE identity.account_status_history (
   status_history_id uuid NOT NULL DEFAULT gen_random_uuid(),
   history_seq bigint NOT NULL GENERATED ALWAYS AS IDENTITY,

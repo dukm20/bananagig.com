@@ -1,15 +1,202 @@
-:root { --bg: #fffdf5; --fg: #1b1b1b; --accent: #f5c518; --muted: #5a5a5a; }
-@media (prefers-color-scheme: dark) { :root { --bg: #151410; --fg: #f4f1e6; --muted: #b5b0a0; } }
-* { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
-.site-header { padding: 0.75rem 1rem; border-bottom: 3px solid var(--accent); }
-.brand { font-weight: 700; letter-spacing: 0.02em; }
-main { max-width: 48rem; margin: 0 auto; padding: 1.5rem 1rem; }
-main:focus { outline: none; }
-a:focus-visible, button:focus-visible { outline: 3px solid var(--fg); outline-offset: 2px; }
-.skip-link { position: absolute; left: -999px; top: 0; background: var(--fg); color: var(--bg); padding: 0.5rem 1rem; }
-.skip-link:focus { left: 0; z-index: 10; }
-.muted { color: var(--muted); }
-dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; }
-dt { font-weight: 600; }
-.legal-text { white-space: pre-wrap; }
+:root {
+  --bg: #fffdf5;
+  --fg: #1b1b1b;
+  --accent: #f5c518;
+  --muted: #5a5a5a;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #151410;
+    --fg: #f4f1e6;
+    --muted: #b5b0a0;
+  }
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font:
+    16px/1.5 system-ui,
+    sans-serif;
+}
+.site-header {
+  padding: 0.75rem 1rem;
+  border-bottom: 3px solid var(--accent);
+}
+.brand {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+main {
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: 1.5rem 1rem;
+}
+main:focus {
+  outline: none;
+}
+a:focus-visible,
+button:focus-visible {
+  outline: 3px solid var(--fg);
+  outline-offset: 2px;
+}
+.skip-link {
+  position: absolute;
+  left: -999px;
+  top: 0;
+  background: var(--fg);
+  color: var(--bg);
+  padding: 0.5rem 1rem;
+}
+.skip-link:focus {
+  left: 0;
+  z-index: 10;
+}
+.muted {
+  color: var(--muted);
+}
+dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+}
+dt {
+  font-weight: 600;
+}
+.legal-text {
+  white-space: pre-wrap;
+}
+
+/* Account area (ACC-001). Mobile first: one column, menu first (the list of sections on /account, a link back plus the content on a section page); from 48em the menu stands
+   beside the content. Every interactive target is at least 44x44 CSS px; focus is always visible; nothing depends on hover. */
+main:has(.account-shell) {
+  max-width: 72rem;
+}
+.account-shell {
+  display: grid;
+  gap: 1rem;
+}
+.account-side {
+  min-width: 0;
+}
+.account-content {
+  min-width: 0;
+}
+.account-content:focus {
+  outline: none;
+}
+.account-role {
+  margin: 0 0 0.75rem;
+}
+.account-nav-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+.account-nav-list a {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--muted);
+  border-inline-start: 4px solid transparent;
+  color: inherit;
+  text-decoration: none;
+}
+.account-nav-list a[aria-current='page'] {
+  border-inline-start-color: var(--fg);
+  font-weight: 700;
+}
+.account-nav-list a[aria-current='page'] .account-nav-label {
+  text-decoration: underline;
+}
+.account-nav-list a:hover,
+.account-nav-list a:focus-visible {
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.account-nav-label {
+  font-weight: inherit;
+}
+.account-nav-description {
+  font-weight: 400;
+  font-size: 0.9em;
+}
+.account-back {
+  margin-bottom: 0.5rem;
+}
+.account-shell :is(a, button, select, input:not([type='hidden'])) {
+  min-height: 44px;
+  min-width: 44px;
+}
+.account-shell :is(.account-back, .account-link) {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: underline;
+}
+/* links take the text colour of the theme (contrast above 4.5:1 on the page background in light and dark), visited ones too; the browser default blue and purple fail on the dark background */
+.account-shell a:not(.skip-link):link,
+.account-shell a:not(.skip-link):visited {
+  color: var(--fg);
+}
+.account-shell :is(a, button, select, input):focus-visible {
+  outline: 3px solid var(--fg);
+  outline-offset: 2px;
+}
+.account-form {
+  display: grid;
+  gap: 0.75rem;
+  max-width: 28rem;
+  margin: 1rem 0;
+}
+.account-field {
+  display: grid;
+  gap: 0.25rem;
+}
+.account-field label {
+  font-weight: 600;
+}
+.account-shell :is(select, input:not([type='hidden'])) {
+  width: 100%;
+  font: inherit;
+  padding: 0.5rem;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--muted);
+}
+.account-shell button {
+  font: inherit;
+  padding: 0.5rem 1rem;
+  cursor: pointer;
+  justify-self: start;
+}
+.account-badge {
+  margin-inline-start: 0.5rem;
+  padding: 0.125rem 0.5rem;
+  border: 1px solid var(--muted);
+  font-size: 0.875em;
+}
+.account-pending {
+  display: block;
+}
+/* a section is open on a phone: the menu gives way to the content (the link back is the way to the list) */
+.account-shell:has([data-view='section']) .account-nav {
+  display: none;
+}
+@media (min-width: 48em) {
+  .account-shell {
+    grid-template-columns: 16rem minmax(0, 1fr);
+    gap: 2rem;
+    align-items: start;
+  }
+  .account-shell:has([data-view='section']) .account-nav {
+    display: block;
+  }
+  .account-shell .account-back {
+    display: none;
+  }
+}

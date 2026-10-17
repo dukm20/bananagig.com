@@ -10,8 +10,12 @@ import {
   ACTIVE_ROLE_HEADER,
   AccountConsentsResponse,
   AccountEmailResponse,
+  AccountNavigationResponse,
+  AccountProfileViewResponse,
   AccountResponse,
+  AccountRolesSectionResponse,
   ConsentRequirementsResponse,
+  ContactVerificationSectionResponse,
   CORRELATION_HEADER,
   DeviceRemovedResponse,
   DeviceTrustResponse,
@@ -21,10 +25,13 @@ import {
   MfaEnrollmentResponse,
   PasswordResetAcceptedResponse,
   PhoneVerifiedResponse,
+  PrivacySummaryResponse,
+  ProfilePatchedResponse,
   RegisteredSessionResponse,
   SecurityActivityResponse,
   SecurityDevicesResponse,
   SecurityOverviewResponse,
+  SecuritySummaryResponse,
   SecuritySessionsResponse,
   SessionRevokedResponse,
   SessionsRevokedAllResponse,
@@ -3505,6 +3512,455 @@ const proxy = (host: string, path: string, method = 'GET'): Promise<{ status: nu
     req.on('error', reject);
     req.end();
   });
+await check('Account area', async () => {
+  // The shared account area (ACC-001) end to end with a REAL Keycloak token of customer.dev (bananagig-web), real HTTP through the API, the database and the content
+  // resolver. customer.dev holds CUSTOMER and PROVIDER (PROVIDER is granted idempotently here, as the Accounts scenario does, because no endpoint grants a role).
+  // The seeded matrix gives both roles the same six sections, so the ROLE-DRIVEN difference is proven against the registry itself: the section set is compared with a
+  // direct SQL read of the matrix for the role in use, and one matrix row (PRIVACY_DATA for PROVIDER) is switched off for the duration of one step and ALWAYS restored.
+  // Assumptions: DATABASE_URL (read of the registry; the one temporary UPDATE is restored in `finally`); the seed of migration 0014; content locale en-US.
+  const assert = (ok: boolean, what: string): void => {
+    if (!ok) throw new Error(what);
+  };
+  const cid = `smoke-area-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const seen: string[] = []; // every account-API response body and header block, searched for secrets at the end
+  type Reply = { status: number; text: string; json: any; headers: Headers }; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const call = async (method: 'GET' | 'PATCH', path: string, token?: string, o: { body?: unknown; role?: string } = {}): Promise<Reply> => {
+    const r = await get(`${api}/api/v1${path}`, {
+      method,
+      headers: {
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        [CORRELATION_HEADER]: cid,
+        ...(o.role ? { [ACTIVE_ROLE_HEADER]: o.role } : {}),
+        ...(o.body !== undefined ? { 'content-type': 'application/json' } : {}),
+      },
+      ...(o.body !== undefined ? { body: JSON.stringify(o.body) } : {}),
+    });
+    const text = await r.text();
+    seen.push(text, JSON.stringify([...r.headers]));
+    let json: any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = undefined;
+    }
+    return { status: r.status, text, json, headers: r.headers };
+  };
+  const ok200 = (r: Reply, what: string): Reply => {
+    assert(r.status === 200, `${what} -> ${r.status} ${r.json?.error?.code ?? r.text.slice(0, 120)}`);
+    assert(r.headers.get('cache-control') === 'no-store', `${what}: an account area response must be Cache-Control: no-store`);
+    return r;
+  };
+  const copyOf = async (key: string): Promise<string> => {
+    const r = await get(`${api}/api/v1/content/resolve`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ key, locale: 'en-US', context: {} }),
+    });
+    const json = (await r.json().catch(() => ({}))) as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    assert(r.status === 200 && typeof json.data?.value === 'string' && json.data.value.length > 0, `the registry copy ${key} is not served`);
+    return json.data.value as string;
+  };
+
+  const databaseUrl = env('DATABASE_URL', '');
+  assert(databaseUrl !== '', 'DATABASE_URL is not set in the smoke environment');
+  const database = createDatabase(databaseUrl, { role: 'tests' });
+  let privacyOffForProvider = false;
+  try {
+    // precondition (self-healing): step (9) switches ONE seeded matrix row off and restores it; a run that was killed in between would leave it off. The seeded state is
+    // "enabled", so put it back before anything is compared with it.
+    const healed = await database.query<{ section_code: string }>(
+      `UPDATE identity.account_section_roles SET enabled = true
+        WHERE section_code = 'PRIVACY_DATA' AND NOT enabled AND role_id = (SELECT role_id FROM identity.roles WHERE code = 'PROVIDER')
+        RETURNING section_code`,
+    );
+    if (healed.length > 0) console.warn('Account area: restored PRIVACY_DATA for PROVIDER, which an interrupted earlier run had switched off');
+
+    // (1) authenticate and make sure the account holds both roles (idempotent)
+    const l = await authorizationCodeLogin(kc, { clientId: 'bananagig-web', redirectUri: WEB_REDIRECT_URI, ...DEV_USERS.customer });
+    const customer = (
+      await exchangeAuthorizationCode({
+        tokenEndpoint: ep.token,
+        clientId: 'bananagig-web',
+        redirectUri: WEB_REDIRECT_URI,
+        code: l.code,
+        codeVerifier: l.verifier,
+      })
+    ).accessToken;
+    const principal = await verifier.verifyAccessToken(customer);
+    const me = AccountResponse.parse(ok200(await call('GET', '/account/me', customer), 'GET /account/me').json).data;
+    await new AccountService({ database }).grantRole(me.accountId, 'PROVIDER', { actor: 'system:smoke', source: 'SYSTEM' });
+    assert((await call('GET', '/account/navigation')).status === 401, '(1) the navigation must require a token');
+
+    // the registry as the database holds it, for a role: the oracle the API answer is compared with
+    const registry = async (role: string) =>
+      database.query<{ code: string; route: string; label: string; description: string | null }>(
+        `SELECT s.section_code AS code, s.route_path AS route, s.label_content_key AS label, s.description_content_key AS description
+           FROM identity.roles r
+           JOIN identity.account_section_roles sr ON sr.role_id = r.role_id AND sr.enabled
+           JOIN identity.account_sections s ON s.section_code = sr.section_code AND s.status = 'ACTIVE'
+          WHERE r.code = $1 AND r.status = 'ACTIVE'
+          ORDER BY sr.display_order`,
+        [role],
+      );
+    const navigation = async (what: string, role?: string) =>
+      AccountNavigationResponse.parse(ok200(await call('GET', '/account/navigation', customer, { role }), what).json).data;
+    const asRegistry = (sections: { code: string; route: string; labelContentKey: string; descriptionContentKey: string | null }[]) =>
+      sections.map((s) => ({ code: s.code, route: s.route, label: s.labelContentKey, description: s.descriptionContentKey }));
+
+    // (2) the CUSTOMER section set is the registry's, in its order, with its own URL per section and managed labels
+    const asCustomer = await navigation('(2) navigation as CUSTOMER', 'CUSTOMER');
+    assert(asCustomer.activeRole === 'CUSTOMER', `(2) active role ${asCustomer.activeRole}`);
+    assert(
+      asCustomer.roles
+        .map((r) => r.code)
+        .sort()
+        .join() === 'CUSTOMER,PROVIDER',
+      '(2) the switcher must list both held roles',
+    );
+    const expectedSeed = ['PROFILE', 'CONTACT_VERIFICATION', 'SECURITY', 'LANGUAGE_REGION', 'PRIVACY_DATA', 'ROLES'];
+    assert(
+      JSON.stringify(asRegistry(asCustomer.sections)) === JSON.stringify(await registry('CUSTOMER')),
+      '(2) the CUSTOMER navigation must equal the registry read from the database for that role',
+    );
+    assert(
+      asCustomer.sections.map((s) => s.code).join() === expectedSeed.join(),
+      `(2) seeded CUSTOMER sections: ${asCustomer.sections.map((s) => s.code).join()}`,
+    );
+    assert(
+      new Set(asCustomer.sections.map((s) => s.route)).size === asCustomer.sections.length &&
+        asCustomer.sections.every((s) => /^\/account\/[a-z-]+$/.test(s.route)),
+      '(2) every section has its own /account/<slug> URL',
+    );
+    assert(!asCustomer.sections.some((s) => s.code === 'NOTIFICATIONS' || s.code === 'CLOSE_ACCOUNT'), '(2) PLANNED sections must not be offered');
+    for (const s of asCustomer.sections) {
+      await copyOf(s.labelContentKey);
+      if (s.descriptionContentKey) await copyOf(s.descriptionContentKey);
+    }
+    assert(
+      asCustomer.contacts.contactsVerified === (asCustomer.contacts.emailVerified && asCustomer.contacts.phoneVerified),
+      '(2) the contacts summary must be derived',
+    );
+
+    // (3) profile: composed from identity.account_profiles; the names are PATCHed by field, an unchanged repeat writes nothing
+    const profileOf = async (what: string) =>
+      AccountProfileViewResponse.parse(ok200(await call('GET', '/account/profile', customer, { role: 'CUSTOMER' }), what).json).data.profile;
+    let profile = await profileOf('(3) GET /account/profile');
+    if (profile === null) {
+      const created = ProfilePatchedResponse.parse(
+        ok200(
+          await call('PATCH', '/account/profile', customer, { role: 'CUSTOMER', body: { firstName: 'Dev', lastName: 'Customer' } }),
+          '(3) create the profile',
+        ).json,
+      ).data;
+      assert(created.changed, '(3) creating the profile must report changed');
+      profile = await profileOf('(3) GET /account/profile after creating');
+    }
+    assert(
+      profile !== null && profile.displayName === `${profile.firstName} ${[...profile.lastName][0]!.toUpperCase()}.`,
+      '(3) displayName must be first name and last initial',
+    );
+    const sameName = ProfilePatchedResponse.parse(
+      ok200(await call('PATCH', '/account/profile', customer, { role: 'CUSTOMER', body: { lastName: profile!.lastName } }), '(3) unchanged PATCH').json,
+    ).data;
+    assert(!sameName.changed, '(3) an unchanged PATCH must write nothing');
+    const refusedEmpty = await call('PATCH', '/account/profile', customer, { role: 'CUSTOMER', body: {} });
+    assert(refusedEmpty.status === 400 && refusedEmpty.json?.error?.code === 'VALIDATION_FAILED', '(3) an empty PATCH must be a 400');
+    assert(
+      (await call('PATCH', '/account/profile', customer, { role: 'CUSTOMER', body: { accountId: me.accountId, firstName: 'X' } })).status === 400,
+      '(3) an account id in the body must be refused',
+    );
+    // language and region: an ACTIVE zone is accepted and cleared again, the names stay; an unknown zone is refused without changing anything
+    const zones = (await (await get(`${api}/api/v1/geography/time-zones`)).json()) as { data: { ianaName: string }[] };
+    const zone = zones.data.find((z) => z.ianaName === 'America/New_York')?.ianaName ?? zones.data[0]?.ianaName;
+    assert(typeof zone === 'string', '(3) no ACTIVE time zone is registered');
+    const before = profile!;
+    const setZone = ProfilePatchedResponse.parse(
+      ok200(await call('PATCH', '/account/profile', customer, { role: 'CUSTOMER', body: { timeZone: zone } }), '(3) set the time zone').json,
+    ).data;
+    assert(
+      setZone.profile.timeZone === zone && setZone.profile.firstName === before.firstName && setZone.profile.lastName === before.lastName,
+      '(3) only the time zone changes',
+    );
+    const badZone = await call('PATCH', '/account/profile', customer, { role: 'CUSTOMER', body: { timeZone: 'Mars/Olympus_Mons' } });
+    assert(badZone.status === 400, `(3) an unknown time zone must be refused (${badZone.status})`);
+    assert(!badZone.text.includes('Olympus'), '(3) a refused value must never be echoed');
+    const cleared = ProfilePatchedResponse.parse(
+      ok200(await call('PATCH', '/account/profile', customer, { role: 'CUSTOMER', body: { timeZone: before.timeZone } }), '(3) restore the time zone').json,
+    ).data;
+    assert(cleared.profile.timeZone === before.timeZone, '(3) the time zone must be restored');
+
+    // (4) contact details: the SAME masked values as /account/me, composed
+    const contact = ContactVerificationSectionResponse.parse(
+      ok200(await call('GET', '/account/contact-verification', customer, { role: 'CUSTOMER' }), '(4) contacts').json,
+    ).data;
+    const meAgain = AccountResponse.parse(ok200(await call('GET', '/account/me', customer, { role: 'CUSTOMER' }), '(4) /account/me').json).data;
+    assert(
+      JSON.stringify(contact) === JSON.stringify({ email: meAgain.email, phone: meAgain.phone, contacts: meAgain.contacts }),
+      '(4) the contact section must equal the account read model (composition, not a second copy)',
+    );
+
+    // (5) security: a light summary of ID-004
+    const security = SecuritySummaryResponse.parse(
+      ok200(await call('GET', '/account/security-summary', customer, { role: 'CUSTOMER' }), '(5) security').json,
+    ).data;
+    assert(security.activeSessionCount >= 1, '(5) this login is a live session');
+    assert(typeof security.mfa.available === 'boolean' && typeof security.currentBrowserTrusted === 'boolean', '(5) the summary shape');
+
+    // (6) privacy: counts equal what the consent layer says; the data download is announced as not available
+    const privacy = PrivacySummaryResponse.parse(ok200(await call('GET', '/account/privacy', customer, { role: 'CUSTOMER' }), '(6) privacy').json).data;
+    const req = ConsentRequirementsResponse.parse(
+      ok200(await call('GET', '/account/consents/requirements', customer, { role: 'CUSTOMER' }), '(6) requirements').json,
+    ).data;
+    assert(
+      privacy.consents.satisfied === req.satisfied && privacy.consents.outstandingCount === req.outstanding.length && privacy.consents.locale === req.locale,
+      '(6) the privacy summary must agree with the consent requirements',
+    );
+    assert(privacy.dataDownload.available === false, '(6) the data download is not available yet');
+
+    // (7) roles: held roles and the switch targets
+    const roles = AccountRolesSectionResponse.parse(ok200(await call('GET', '/account/roles', customer, { role: 'CUSTOMER' }), '(7) roles').json).data;
+    assert(roles.activeRole === 'CUSTOMER' && roles.switchableTo.join() === 'PROVIDER', `(7) switchableTo ${roles.switchableTo.join()}`);
+
+    // (8) PROVIDER with the SAME token (no new login): the set follows the active role
+    const asProvider = await navigation('(8) navigation as PROVIDER', 'PROVIDER');
+    assert(asProvider.activeRole === 'PROVIDER', `(8) active role ${asProvider.activeRole}`);
+    assert(
+      JSON.stringify(asRegistry(asProvider.sections)) === JSON.stringify(await registry('PROVIDER')),
+      '(8) the PROVIDER navigation must equal the registry read from the database for that role',
+    );
+    assert(
+      asProvider.roles.map((r) => r.code).join() === asCustomer.roles.map((r) => r.code).join(),
+      '(8) switching role keeps the same account and its roles',
+    );
+    const rolesAsProvider = AccountRolesSectionResponse.parse(
+      ok200(await call('GET', '/account/roles', customer, { role: 'PROVIDER' }), '(8) roles').json,
+    ).data;
+    assert(rolesAsProvider.activeRole === 'PROVIDER' && rolesAsProvider.switchableTo.join() === 'CUSTOMER', '(8) switch targets follow the active role');
+    const stillMe = AccountResponse.parse(ok200(await call('GET', '/account/me', customer, { role: 'PROVIDER' }), '(8) /account/me').json).data;
+    assert(stillMe.accountId === me.accountId, '(8) the same account after the switch');
+    assert((await verifier.verifyAccessToken(customer)).sessionId === principal.sessionId, '(8) the same Keycloak session (no new login)');
+    const notHeld = await call('GET', '/account/navigation', customer, { role: 'ADMIN' });
+    assert(
+      notHeld.status === 403 && notHeld.json?.error?.code === 'ACCOUNT_ROLE_NOT_HELD',
+      `(8) a role the account does not hold must be a 403 (${notHeld.status})`,
+    );
+
+    // (8b) the WEB app through Caddy with a real PKCE session (what a browser reaches): the shell follows whatever the API returns for the active role
+    const webOrigin = new URL(webPublic).origin;
+    type Hop = { status: number; location: string | undefined; body: string; cookies: string[]; headers: http.IncomingHttpHeaders };
+    const caddy = (method: 'GET' | 'POST', path: string, o: { cookie?: string; origin?: string; form?: URLSearchParams } = {}): Promise<Hop> =>
+      new Promise((resolve, reject) => {
+        const payload = o.form?.toString();
+        const req = http.request(
+          {
+            host: 'caddy-proxy',
+            port: 80,
+            path,
+            method,
+            headers: {
+              host: 'app.localhost',
+              ...(o.cookie ? { cookie: o.cookie } : {}),
+              ...(o.origin ? { origin: o.origin } : {}),
+              ...(method === 'POST' ? { 'content-length': String(Buffer.byteLength(payload ?? '')) } : {}),
+              ...(payload !== undefined ? { 'content-type': 'application/x-www-form-urlencoded' } : {}),
+            },
+          },
+          (res) => {
+            let body = '';
+            res.setEncoding('utf8');
+            res.on('data', (chunk) => (body += chunk));
+            res.on('end', () =>
+              resolve({ status: res.statusCode ?? 0, location: res.headers.location, body, cookies: res.headers['set-cookie'] ?? [], headers: res.headers }),
+            );
+          },
+        );
+        req.setTimeout(20_000, () => req.destroy(new Error(`${method} ${path} through Caddy timed out`)));
+        req.on('error', reject);
+        req.end(payload);
+      });
+    const jar = new Map<string, string>();
+    const absorb = (h: Hop): void => {
+      for (const line of h.cookies) {
+        const [pair] = line.split(';');
+        const i = pair!.indexOf('=');
+        const name = pair!.slice(0, i);
+        const value = pair!.slice(i + 1);
+        if (!value || /max-age=0/i.test(line)) jar.delete(name);
+        else jar.set(name, value);
+      }
+    };
+    const cookie = (): string => [...jar].map(([k, v]) => `${k}=${v}`).join('; ');
+    const decode = (x: string): string =>
+      x
+        .replace(/&#x27;|&#39;|&apos;/g, "'")
+        .replace(/&quot;|&#x22;/g, '"')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&amp;/g, '&');
+    const page = async (path: string): Promise<Hop> => caddy('GET', path, { cookie: cookie() });
+    /** The links of the account menu (the `nav` of the account shell, not the site header), in document order. */
+    const menuOf = (html: string): string[] => {
+      const nav = /<nav\b[^>]*\bclass="account-nav"[^>]*>([\s\S]*?)<\/nav>/.exec(html)?.[1] ?? '';
+      return [...nav.matchAll(/<a\b[^>]*\bhref="([^"]+)"/g)].map((m) => decode(m[1]!));
+    };
+    /** Next.js answers 404 for a not-found page, or 200 with the not-found content once the response is streaming: either is "not served". */
+    const notServed = (h: Hop): boolean => h.status === 404 || (h.status === 200 && /Page not found/.test(h.body));
+    const noFraming = (h: Hop, what: string): void =>
+      assert(
+        /frame-ancestors\s+'none'/.test(String(h.headers['content-security-policy'] ?? '')) &&
+          String(h.headers['x-frame-options'] ?? '').toUpperCase() === 'DENY',
+        `${what}: the response must forbid framing`,
+      );
+    const signedOut = await caddy('GET', '/account');
+    assert(
+      (signedOut.status >= 300 && signedOut.status < 400 && (signedOut.location ?? '').includes('/auth/login')) ||
+        signedOut.body.includes('/auth/login?returnTo=/account'),
+      `(8b) /account without a session must lead to sign-in (${signedOut.status} ${signedOut.location ?? ''})`,
+    );
+    const start = await caddy('GET', '/auth/login?returnTo=/account');
+    absorb(start);
+    assert(start.status === 302 && (start.location ?? '').includes('code_challenge_method=S256'), `(8b) web login did not start a PKCE flow (${start.status})`);
+    const callbackUrl = await completeLogin(kc, start.location!, { redirectUri: `${webPublic}/auth/callback`, ...DEV_USERS.customer });
+    const callback = await caddy('GET', `/auth/callback${new URL(callbackUrl).search}`, { cookie: cookie() });
+    absorb(callback);
+    assert(callback.status === 302 && jar.has('bg_session'), `(8b) web callback failed (${callback.status})`);
+    const switchTo = (role: string, next?: string) =>
+      caddy('POST', '/auth/active-role', {
+        cookie: cookie(),
+        origin: webOrigin,
+        form: new URLSearchParams(next === undefined ? { role } : { role, next }),
+      });
+    const labels = new Map<string, string>(); // section code -> managed label
+    for (const sec of asCustomer.sections) labels.set(sec.code, await copyOf(sec.labelContentKey));
+    const expectedMenu = (sections: { route: string }[]): string => sections.map((x) => x.route).join(',');
+    const customerHome = await page('/account');
+    assert(customerHome.status === 200, `(8b) GET /account as CUSTOMER -> ${customerHome.status}`);
+    noFraming(customerHome, '(8b) GET /account');
+    assert(
+      menuOf(customerHome.body).join(',') === expectedMenu(asCustomer.sections),
+      `(8b) the menu must be the API sections in order (${menuOf(customerHome.body).join(',')})`,
+    );
+    for (const label of labels.values()) assert(decode(customerHome.body).includes(label), `(8b) the registry label "${label}" must be on the page`);
+    assert((customerHome.body.match(/<h1\b/g) ?? []).length === 1, '(8b) one h1 per page');
+    assert(/<nav\b[^>]*\bclass="account-nav"[^>]*aria-label="[^"]+"/.test(customerHome.body), '(8b) the menu is a labelled nav landmark');
+    for (const sec of asCustomer.sections) {
+      const h = await page(sec.route);
+      assert(h.status === 200, `(8b) GET ${sec.route} -> ${h.status}`);
+      assert(
+        new RegExp(`href="${sec.route}"[^>]*aria-current="page"|aria-current="page"[^>]*href="${sec.route}"`).test(h.body),
+        `(8b) ${sec.route} must mark itself aria-current`,
+      );
+      assert(decode(h.body).includes(labels.get(sec.code)!), `(8b) ${sec.route} must carry its managed heading`);
+    }
+    for (const gone of ['/account/notifications', '/account/close', '/account/no-such-section'])
+      assert(notServed(await page(gone)), `(8b) ${gone} (a PLANNED or unknown section) must not be served`);
+    for (const v of jar.values()) assert(v.length < 8 || !customerHome.body.includes(v), '(8b) the account page contains the session cookie value');
+    assert(!customerHome.body.includes(customer) && !customerHome.body.includes(me.accountId), '(8b) a token or the account id leaked into the page');
+
+    // the role switch through the BFF: no new login, the next page follows the new role; only the two allowed return paths are honoured
+    const evil = await switchTo('PROVIDER', '//evil.example/x');
+    assert(
+      evil.status === 303 && (evil.location ?? '').endsWith('/session'),
+      `(8b) an unlisted next must fall back to /session (${evil.status} ${evil.location})`,
+    );
+    const sw = await switchTo('PROVIDER', '/account/roles');
+    assert(
+      sw.status === 303 && (sw.location ?? '').endsWith('/account/roles'),
+      `(8b) the role switch must return to the Roles section (${sw.status} ${sw.location})`,
+    );
+    const providerHome = await page('/account');
+    assert(
+      menuOf(providerHome.body).join(',') === expectedMenu(asProvider.sections),
+      `(8b) the menu after the switch must be the PROVIDER sections (${menuOf(providerHome.body).join(',')})`,
+    );
+    assert(
+      (await caddy('POST', '/auth/active-role', { cookie: cookie(), form: new URLSearchParams({ role: 'CUSTOMER' }) })).status === 403,
+      '(8b) the role switch without an Origin must be 403',
+    );
+
+    // (9) hidden means absent ON THE SERVER: switch PRIVACY_DATA off for PROVIDER (restored in finally) and the set, the guarded route and the other role follow
+    await database.query(
+      `UPDATE identity.account_section_roles SET enabled = false
+        WHERE section_code = 'PRIVACY_DATA' AND role_id = (SELECT role_id FROM identity.roles WHERE code = 'PROVIDER')`,
+    );
+    privacyOffForProvider = true;
+    const providerNow = await navigation('(9) navigation as PROVIDER, PRIVACY_DATA off', 'PROVIDER');
+    assert(
+      !providerNow.sections.some((s) => s.code === 'PRIVACY_DATA') && providerNow.sections.length === asProvider.sections.length - 1,
+      '(9) the section must be gone from the PROVIDER navigation (and no other)',
+    );
+    const customerNow = await navigation('(9) navigation as CUSTOMER', 'CUSTOMER');
+    assert(
+      customerNow.sections.some((s) => s.code === 'PRIVACY_DATA'),
+      '(9) CUSTOMER keeps the section',
+    );
+    const hidden = await call('GET', '/account/privacy', customer, { role: 'PROVIDER' });
+    assert(
+      hidden.status === 404 && hidden.json?.error?.code === 'ACCOUNT_SECTION_NOT_FOUND',
+      `(9) the hidden section must be a 404 (${hidden.status} ${hidden.json?.error?.code})`,
+    );
+    assert(hidden.headers.get('cache-control') === 'no-store', '(9) the 404 must be no-store');
+    assert(!/PRIVACY|PROVIDER|CUSTOMER/.test(hidden.text), '(9) the 404 must not name the section or the role');
+    assert((await call('GET', '/account/privacy', customer, { role: 'CUSTOMER' })).status === 200, '(9) CUSTOMER can still read the privacy summary');
+    assert(
+      (await call('GET', '/account/consents/requirements', customer, { role: 'PROVIDER' })).status === 200,
+      '(9) the consent domain endpoint is not gated by the menu',
+    );
+    // the web app follows the server: the menu loses the entry, and the URL is not served (the API answered 404 and the page ends in not-found)
+    const providerWeb = await page('/account');
+    assert(
+      !menuOf(providerWeb.body).includes('/account/privacy') && menuOf(providerWeb.body).length === asProvider.sections.length - 1,
+      '(9) the web menu must lose the hidden section',
+    );
+    assert(notServed(await page('/account/privacy')), '(9) /account/privacy must not be served to PROVIDER when the section is off');
+    await database.query(
+      `UPDATE identity.account_section_roles SET enabled = true
+        WHERE section_code = 'PRIVACY_DATA' AND role_id = (SELECT role_id FROM identity.roles WHERE code = 'PROVIDER')`,
+    );
+    privacyOffForProvider = false;
+    assert(
+      (await navigation('(9) navigation as PROVIDER, restored', 'PROVIDER')).sections.length === asProvider.sections.length,
+      '(9) the registry must be restored',
+    );
+
+    // (10) back to CUSTOMER: the same account and session, the original set
+    assert((await switchTo('CUSTOMER', '/account')).status === 303, '(10) switching back through the web must succeed');
+    assert(menuOf((await page('/account')).body).join(',') === expectedMenu(asCustomer.sections), '(10) the web menu must be the CUSTOMER set again');
+    assert((await page('/account/privacy')).status === 200, '(10) /account/privacy is served again');
+    const back = await navigation('(10) navigation as CUSTOMER again', 'CUSTOMER');
+    assert(JSON.stringify(back.sections) === JSON.stringify(asCustomer.sections), '(10) switching back restores the CUSTOMER set');
+
+    // (11) nothing private leaks: no token, session id, subject or full contact value in any account-area response
+    const blob = seen.join('\n');
+    for (const [what, value] of [
+      ['access token', customer.split('.')[2]?.slice(0, 40)],
+      ['Keycloak session id', principal.sessionId],
+      ['Keycloak subject', principal.subject],
+    ] as const)
+      assert(!value || value.length < 8 || !blob.includes(value), `(11) ${what} appeared in an account area response`);
+    return (
+      `customer.dev: (2) CUSTOMER set = registry (${asCustomer.sections.map((s) => s.code).join(', ')}) with one URL each, labels resolved; (3) profile composed, PATCH by field ` +
+      `(unchanged repeat writes nothing, unknown zone refused, no echo); (4) contacts equal /account/me; (5) security summary; (6) privacy summary agrees with the consents; ` +
+      `(7) roles; (8) PROVIDER with the same token and session = registry for PROVIDER, ADMIN refused 403; (9) PRIVACY_DATA switched off for PROVIDER: gone from its set, ` +
+      `404 ACCOUNT_SECTION_NOT_FOUND on its route, CUSTOMER and the consent endpoints unaffected, restored; (10) back to CUSTOMER; (11) no token, session id or subject in any response`
+    );
+  } finally {
+    if (privacyOffForProvider)
+      await database
+        .query(
+          `UPDATE identity.account_section_roles SET enabled = true
+            WHERE section_code = 'PRIVACY_DATA' AND role_id = (SELECT role_id FROM identity.roles WHERE code = 'PROVIDER')`,
+        )
+        // never silent: the next run heals it, but whoever reads this run must know the registry was left switched off
+        .catch((err: unknown) =>
+          console.error(
+            `Account area: COULD NOT RESTORE PRIVACY_DATA for PROVIDER (${err instanceof Error ? err.message : String(err)}); the next run restores it`,
+          ),
+        );
+    await database.close();
+  }
+});
+
 await check('Caddy Proxy auth routes', async () => {
   const expectStatus = async (host: string, path: string, ok: (s: number) => boolean, what: string) => {
     const r = await proxy(host, path);

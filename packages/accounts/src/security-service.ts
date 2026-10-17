@@ -45,6 +45,7 @@ import {
   type SecurityActivityType,
   type SecurityDevicesDto,
   type SecurityOverviewDto,
+  type SecuritySummaryDto,
   type SecuritySessionsDto,
   type SessionRevocationReason,
   type SessionRevokedDto,
@@ -831,6 +832,25 @@ export class SecurityService implements SecurityOperations {
   }
 
   // ------------------------------------------------------------------ second factor, step-up state, recovery
+  async getSummary(current: CurrentSession, token: TokenFacts): Promise<SecuritySummaryDto> {
+    const overview = await this.getOverview(current, token);
+    const p = await this.policy();
+    const windowSeconds = p.keepSignedInDays * 86400;
+    // the same "live" predicate as the session list (partial index idx_application_sessions__account_live), without the per-row device join and without asking the identity provider
+    const n = (
+      await sql<Row>`SELECT count(*)::int AS n FROM identity.application_sessions s
+        WHERE s.account_id = ${current.accountId} AND s.revoked_at IS NULL
+          AND (s.keycloak_session_id = ${current.keycloakSessionId} OR s.last_seen_at > clock_timestamp() - make_interval(secs => ${windowSeconds}))`
+        .execute(this.db)
+        .catch(mapDbError)
+    ).rows[0]?.n;
+    return {
+      mfa: { available: overview.mfa.available, enabled: overview.mfa.totpConfigured },
+      activeSessionCount: typeof n === 'number' ? n : 0,
+      currentBrowserTrusted: overview.currentSession.deviceTrusted,
+    };
+  }
+
   async getOverview(current: CurrentSession, token: TokenFacts): Promise<SecurityOverviewDto> {
     const p = await this.policy();
     const session = await this.currentSession(this.db, current).catch(mapDbError);

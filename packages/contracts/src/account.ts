@@ -189,6 +189,8 @@ export const ACCOUNT_ERROR_CODES = [
   ...PHONE_ERROR_CODES,
   ...SECURITY_ERROR_CODES,
   ...CONSENT_ERROR_CODES,
+  /** ACC-001: the section is not in the enabled set of the caller's active role (hidden sections behave exactly like sections that do not exist: 404). */
+  'SECTION_NOT_FOUND',
   /** Raised by the security layer when the request's session was revoked; the API answers 401 SESSION_REVOKED (not ACCOUNT_-prefixed: it is an authentication failure). */
   'SESSION_REVOKED',
 ] as const;

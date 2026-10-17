@@ -98,6 +98,7 @@ Schema changes also need constraint-violation and rollback tests, and the data-m
 - Time in security tests: `auth_time` is whole seconds and comes from another clock, so the watermark tolerates 2 s; wait past it (or craft rows) instead of racing it, and take both sides of a database-time comparison from `clock_timestamp()` (LRN-0041).
 - A scripted Keycloak admin client test uses an injected `fetch` and clock and asserts the failure CODES and that no body, token, secret, URL or id ever reaches an error; a realm linter test mutates a copy of the realm file for every rule (positive and negative cases).
 - Consent tests (ID-005): the API integration test and the smoke scenario publish a LEGAL version only through the real content workflow with TWO approvers (the author cannot approve), the accounts package (which does not depend on the content service) crafts versions by SQL in the states the workflow leaves them in with the content guard triggers enabled, and a pinned rendering test of a LEGAL markdown fixture fails on purpose when the renderer or sanitizer changes a legal document's output; craft old or odd events by disabling the guard trigger as the table owner and say so in the test; hold real locks in both orders to prove an accept against a publication, and run 25 parallel accepts to prove ONE event; test `identity.consent_version_state` against `ContentService.resolve` for parity over every version status and window; evaluator logic is a pure table-driven unit test (every status x mode x locale x role); `StaticConsentPolicyProvider` (`set`, `unset`, `failure`, `reads`) replaces configuration. A fresh database has no LEGAL version, so every required purpose is DOCUMENT_UNAVAILABLE until a test publishes one (LRN-0047, LRN-0048).
+- Role-driven behaviour (ACC-001, LRN-0054): when the seed gives every role the same data, compare the API with an SQL oracle for the role in use and prove the effect with ONE reversible flip of a seeded row (precondition that restores the seed, `finally` that restores it and never swallows a failure); extra rows only in isolated databases. For streamed Next pages assert the not-found CONTENT, not the status (LRN-0053). A mutation check by an independent author found two real defects in this checkpoint: keep the habit of breaking the production line a test claims to cover.
 
 ## Do not
 
@@ -107,7 +108,7 @@ Schema changes also need constraint-violation and rollback tests, and the data-m
 - Do not read verification secrets from the database in a test (they are hashes): take them from the delivered message, the fake SMS sink or the `EmailSender` / `SmsSender` double.
 
 ## Related ADRs
-ADR-0004, ADR-0006, ADR-0025, ADR-0034, ADR-0035, ADR-0036, ADR-0037
+ADR-0004, ADR-0006, ADR-0025, ADR-0034, ADR-0035, ADR-0036, ADR-0037, ADR-0039
 
 ## Last reviewed
-2026-10-16 (ID-005)
+2026-10-16 (ACC-001)

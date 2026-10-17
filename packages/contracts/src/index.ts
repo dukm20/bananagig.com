@@ -118,3 +118,4 @@ export * from './email';
 export * from './phone';
 export * from './security';
 export * from './consent';
+export * from './account-area';

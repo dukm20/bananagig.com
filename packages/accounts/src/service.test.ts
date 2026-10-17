@@ -508,6 +508,111 @@ describe('AccountService rejects bad input before it touches the database', () =
     });
   });
 
+  describe('patchProfile', () => {
+    const patch = (input: Record<string, unknown>, ...actor: [unknown?]) =>
+      caught(offline().patchProfile(ACCOUNT_ID, input, { actor: (actor.length > 0 ? actor[0] : `account:${ACCOUNT_ID}`) as string }));
+    const issues = async (input: Record<string, unknown>) => {
+      const e = await patch(input);
+      expect(e.code).toBe('VALIDATION_FAILED');
+      expect(e.details.reason).toBe('INVALID_PROFILE');
+      return e.details.issues;
+    };
+
+    it('reports only the names that are PRESENT: an absent name is not an error (that is the difference from upsertProfile)', async () => {
+      expect(await issues({ firstName: '' })).toEqual([{ field: 'firstName', code: 'REQUIRED', messageKey: 'account.error.name_required' }]);
+      expect(await issues({ lastName: '   ' })).toEqual([{ field: 'lastName', code: 'REQUIRED', messageKey: 'account.error.name_required' }]);
+    });
+    it('reports every name problem with field, code and content key, the first name before the last name', async () => {
+      expect(await issues({ firstName: 'x'.repeat(51), lastName: `Mar${String.fromCharCode(7)}tin` })).toEqual([
+        { field: 'firstName', code: 'TOO_LONG', messageKey: 'account.error.name_too_long' },
+        { field: 'lastName', code: 'INVALID_CHARACTERS', messageKey: 'account.error.name_invalid_characters' },
+      ]);
+    });
+    it('does not trim a name into validity or let an invisible-only name through', async () => {
+      for (const firstName of ['', ' ', '\t\n', String.fromCodePoint(0x200b), String.fromCodePoint(0x202e)]) {
+        const found = await issues({ firstName });
+        expect(found, JSON.stringify(firstName)).toHaveLength(1);
+        expect((found as { field: string }[])[0]!.field).toBe('firstName');
+      }
+    });
+    it('treats null and a non-string for a name as a REQUIRED error, never as "clear the name" (only the locale and the time zone can be cleared)', async () => {
+      for (const value of [null, 5, true, {}, []]) {
+        expect(await issues({ lastName: value }), JSON.stringify(value)).toEqual([
+          { field: 'lastName', code: 'REQUIRED', messageKey: 'account.error.name_required' },
+        ]);
+      }
+    });
+    it('carries content keys, not texts: every issue has exactly field, code and messageKey', async () => {
+      for (const issue of (await issues({ firstName: '', lastName: 'x'.repeat(60) })) as Record<string, unknown>[]) {
+        expect(Object.keys(issue).sort()).toEqual(['code', 'field', 'messageKey']);
+      }
+    });
+    it('never carries any input value in the message, the details, the stack or the cause', async () => {
+      const inputs: Record<string, unknown>[] = [
+        { firstName: `${NAME_MARKER}${String.fromCharCode(0)}` },
+        { lastName: `${NAME_MARKER}${'a'.repeat(60)}` },
+        { firstName: `${NAME_MARKER}-first${String.fromCodePoint(0x202e)}`, lastName: `${NAME_MARKER}-last${'b'.repeat(60)}` },
+        { preferredLocale: `${NAME_MARKER}_en` },
+        { firstName: 'Ana', preferredLocale: `${NAME_MARKER}_US` },
+      ];
+      for (const input of inputs) {
+        const e = await patch(input);
+        expect(exposed(e), JSON.stringify(Object.keys(input))).not.toContain(NAME_MARKER);
+        expect(JSON.stringify(e.details)).not.toContain('marker');
+      }
+    });
+    it.each(['en_US', ' en-US', 'english', 'en-US-x-extra-thing', '', 'e', 'en--US'])(
+      'rejects the invalid locale "%s" with the field name and nothing else',
+      async (preferredLocale) => {
+        const e = await patch({ preferredLocale });
+        expect(e.code).toBe('VALIDATION_FAILED');
+        expect(e.details).toEqual({ reason: 'INVALID_FIELD', field: 'preferredLocale' });
+      },
+    );
+    it('rejects a non-string locale (a number, a boolean, an object) as INVALID_FIELD, but lets null (clear) and an absent locale reach the database', async () => {
+      for (const preferredLocale of [123, true, {}, []])
+        expect((await patch({ preferredLocale })).details).toEqual({ reason: 'INVALID_FIELD', field: 'preferredLocale' });
+      await expect(offline().patchProfile(ACCOUNT_ID, { preferredLocale: null }, { actor: 'account:x' })).rejects.toThrow(
+        'the database was touched (transaction)',
+      );
+      await expect(offline().patchProfile(ACCOUNT_ID, { timeZone: null }, { actor: 'account:x' })).rejects.toThrow('the database was touched (transaction)');
+    });
+    it('reports the name problems before a bad locale, so one request shows the name problem first', async () => {
+      const e = await patch({ firstName: '', preferredLocale: 'not a locale' });
+      expect(e.details.reason).toBe('INVALID_PROFILE');
+    });
+    it('treats an explicit undefined like an absent field (it reaches the database; it is neither an error nor a clear)', async () => {
+      await expect(
+        offline().patchProfile(
+          ACCOUNT_ID,
+          { firstName: undefined, lastName: undefined, preferredLocale: undefined, timeZone: undefined },
+          { actor: 'account:x' },
+        ),
+      ).rejects.toThrow('the database was touched (transaction)');
+    });
+    it.each([
+      ['an empty actor', ''],
+      ['a blank actor', '   '],
+      ['an undefined actor', undefined],
+      ['a numeric actor', 5],
+      ['an actor of 201 characters', 'a'.repeat(201)],
+    ])('rejects %s before validating anything else', async (_label, actor) => {
+      const e = await patch({ firstName: '' }, actor);
+      expect(e.details).toEqual({ reason: 'INVALID_FIELD', field: 'actor' });
+    });
+    it('lets a valid patch through to the database (the stub then refuses), so the rejections above are the validation and not a blanket failure; a time zone is checked inside the transaction', async () => {
+      for (const input of [
+        { firstName: 'Ana' },
+        { lastName: 'M' },
+        { preferredLocale: 'en-US' },
+        { timeZone: 'Not/AZone' },
+        { firstName: 'a'.repeat(50), lastName: 'b'.repeat(50) },
+      ]) {
+        await expect(offline().patchProfile(ACCOUNT_ID, input, { actor: 'a'.repeat(200) })).rejects.toThrow('the database was touched (transaction)');
+      }
+    });
+  });
+
   describe('actor and reason of the administrative operations', () => {
     const svc = offline();
     const BAD_ACTORS: [string, unknown][] = [
@@ -593,6 +698,9 @@ describe('AccountService rejects bad input before it touches the database', () =
         () => svc.ensureAccountForIdentity(identity({ providerType: 'GOOGLE' as never })),
         () => svc.upsertProfile(ACCOUNT_ID, { firstName: SUBJECT, lastName: '' }, { actor: ISSUER.repeat(10) }),
         () => svc.upsertProfile(ACCOUNT_ID, { firstName: `${SUBJECT}${String.fromCharCode(1)}`, lastName: 'x'.repeat(60) }, { actor: 'account:x' }),
+        () => svc.patchProfile(ACCOUNT_ID, { firstName: SUBJECT, lastName: `${SUBJECT}${'x'.repeat(60)}` }, { actor: ISSUER.repeat(10) }),
+        () => svc.patchProfile(ACCOUNT_ID, { firstName: `${SUBJECT}${String.fromCharCode(1)}` }, { actor: 'account:x' }),
+        () => svc.patchProfile(ACCOUNT_ID, { preferredLocale: `${SUBJECT}_xx` }, { actor: 'account:x' }),
         () => svc.grantRole(ACCOUNT_ID, 'CUSTOMER', { actor: '', source: 'ADMIN' }),
         () => svc.changeStatus(ACCOUNT_ID, 'SUSPENDED', { actor: 'admin:x', reason: `${SUBJECT}${'z'.repeat(1001)}` }),
       ];
@@ -1162,6 +1270,7 @@ describe('AccountService maps a database failure to a typed error on every path'
     ['setPrimaryRole', (s) => s.setPrimaryRole(ACCOUNT_ID, 'CUSTOMER', { actor: 'admin:ops' })],
     ['changeStatus', (s) => s.changeStatus(ACCOUNT_ID, 'SUSPENDED', { actor: 'admin:ops' })],
     ['upsertProfile', (s) => s.upsertProfile(ACCOUNT_ID, { firstName: 'Ana', lastName: 'Martinez' }, { actor: 'account:x' })],
+    ['patchProfile', (s) => s.patchProfile(ACCOUNT_ID, { lastName: 'Martinez' }, { actor: 'account:x' })],
   ];
   describe.each(paths)('%s', (_name, run) => {
     it('reports an unreachable database as UNAVAILABLE without leaking the driver text', async () => {
@@ -1211,5 +1320,247 @@ describe('review fixes (ID-001)', () => {
       .upsertProfile(ACCOUNT_ID, { firstName: '', lastName: 'Martin', preferredLocale: 'not a locale' }, { actor: `account:${ACCOUNT_ID}` })
       .catch((x: unknown) => x);
     expect(e).toMatchObject({ code: 'VALIDATION_FAILED', details: { reason: 'INVALID_PROFILE' } });
+  });
+});
+
+// ====================================================================== patchProfile against a scripted connection
+describe('AccountService.patchProfile against a scripted connection', () => {
+  const ZONES: Record<string, string> = { 'America/Denver': 'zone-denver', 'America/Chicago': 'zone-chicago' };
+  const LOCALES = ['en-US', 'es-US'];
+  interface Stored {
+    first_name: string;
+    last_name: string;
+    preferred_locale: string | null;
+    iana_name: string | null;
+  }
+  const STORED: Stored = { first_name: 'Ana', last_name: 'Martinez', preferred_locale: 'en-US', iana_name: 'America/Denver' };
+  /** Answers the statements of patchProfile from an in-memory profile; `status` is the account status the lock returns. */
+  const patchReply =
+    (stored: Stored | null, status = 'ACTIVE') =>
+    (q: Recorded): Reply => {
+      const s = q.sql;
+      if (/^select 1 from identity\.accounts where account_id = \$1 for update/i.test(s)) return [{ '?column?': 1 }];
+      if (/^select status from identity\.accounts where account_id = \$1$/i.test(s)) return [{ status }];
+      if (/from identity\.account_profiles p left join geography\.time_zones z/i.test(s)) {
+        // like PostgreSQL, the row carries only the columns the statement selects: the stored zone id is there only if the patch asks for it
+        if (!stored) return [];
+        return [
+          /p\.time_zone_id as stored_zone_id/i.test(s) ? { ...stored, stored_zone_id: stored.iana_name ? ZONES[stored.iana_name] : null } : { ...stored },
+        ];
+      }
+      if (/^select 1 from content\.locales where locale = \$1 and is_active for share/i.test(s))
+        return LOCALES.includes(q.params[0] as string) ? [{ '?column?': 1 }] : [];
+      if (/^select time_zone_id from geography\.time_zones where iana_name = \$1 and status = 'ACTIVE' for share/i.test(s)) {
+        const id = ZONES[q.params[0] as string];
+        return id ? [{ time_zone_id: id }] : [];
+      }
+      if (/^select first_name, last_name, preferred_locale, time_zone_id from identity\.account_profiles where account_id = \$1 for update/i.test(s)) {
+        return stored
+          ? [
+              {
+                first_name: stored.first_name,
+                last_name: stored.last_name,
+                preferred_locale: stored.preferred_locale,
+                time_zone_id: stored.iana_name ? ZONES[stored.iana_name] : null,
+              },
+            ]
+          : [];
+      }
+      return [];
+    };
+  const patchWith = async (stored: Stored | null, input: Parameters<AccountService['patchProfile']>[1], status?: string) => {
+    const { database, log } = scripted(patchReply(stored, status));
+    const result = new AccountService({ database }).patchProfile(ACCOUNT_ID, input, { actor: `account:${ACCOUNT_ID}` });
+    return { result, log };
+  };
+  const writes = (log: Recorded[]) => log.filter((q) => /^(insert|update|delete)/i.test(q.sql));
+  const upsertOf = (log: Recorded[]) => statements(log, /^insert into identity\.account_profiles/i);
+  const auditOf = (log: Recorded[]) => statements(log, /^insert into identity\.account_audit_events/i);
+  const fieldsOf = (q: Recorded): string[] => (JSON.parse(q.params[4] as string) as { fields: string[] }).fields;
+
+  it('keeps every stored field the patch does not name: a last name alone leaves the first name, the locale and the time zone', async () => {
+    const { result, log } = await patchWith(STORED, { lastName: 'Lopez' });
+    expect(await result).toEqual({ changed: true, profile: { firstName: 'Ana', lastName: 'Lopez', preferredLocale: 'en-US', timeZone: 'America/Denver' } });
+    expect(upsertOf(log)).toHaveLength(1);
+    expect(upsertOf(log)[0]!.params).toEqual([ACCOUNT_ID, 'Ana', 'Lopez', 'en-US', 'zone-denver']);
+    expect(fieldsOf(auditOf(log)[0]!)).toEqual(['lastName']);
+  });
+  it('keeps the names and the time zone when only the locale is patched', async () => {
+    const { result, log } = await patchWith(STORED, { preferredLocale: 'es-US' });
+    expect(await result).toEqual({ changed: true, profile: { firstName: 'Ana', lastName: 'Martinez', preferredLocale: 'es-US', timeZone: 'America/Denver' } });
+    expect(upsertOf(log)[0]!.params).toEqual([ACCOUNT_ID, 'Ana', 'Martinez', 'es-US', 'zone-denver']);
+    expect(fieldsOf(auditOf(log)[0]!)).toEqual(['preferredLocale']);
+  });
+  it('clears the locale and the time zone with null and keeps the names', async () => {
+    const { result, log } = await patchWith(STORED, { preferredLocale: null, timeZone: null });
+    expect(await result).toEqual({ changed: true, profile: { firstName: 'Ana', lastName: 'Martinez', preferredLocale: null, timeZone: null } });
+    expect(upsertOf(log)[0]!.params).toEqual([ACCOUNT_ID, 'Ana', 'Martinez', null, null]);
+    expect(fieldsOf(auditOf(log)[0]!)).toEqual(['preferredLocale', 'timeZone']);
+    // clearing needs no registry lookup: a null locale and a null zone are not looked up
+    expect(statements(log, /content\.locales|geography\.time_zones where/i)).toEqual([]);
+  });
+  it('changes the time zone to another ACTIVE zone and records only that field', async () => {
+    const { result, log } = await patchWith(STORED, { timeZone: 'America/Chicago' });
+    expect((await result).profile.timeZone).toBe('America/Chicago');
+    expect(upsertOf(log)[0]!.params).toEqual([ACCOUNT_ID, 'Ana', 'Martinez', 'en-US', 'zone-chicago']);
+    expect(fieldsOf(auditOf(log)[0]!)).toEqual(['timeZone']);
+  });
+  it('writes nothing and records nothing when the patch repeats what is stored (idempotent): no profile write, no audit row', async () => {
+    for (const input of [
+      { lastName: 'Martinez' },
+      { firstName: 'Ana', lastName: 'Martinez', preferredLocale: 'en-US', timeZone: 'America/Denver' },
+      {},
+      { preferredLocale: 'en-us' },
+    ]) {
+      const { result, log } = await patchWith(STORED, input);
+      expect(await result, JSON.stringify(input)).toEqual({
+        changed: false,
+        profile: { firstName: 'Ana', lastName: 'Martinez', preferredLocale: 'en-US', timeZone: 'America/Denver' },
+      });
+      expect(writes(log), JSON.stringify(input)).toEqual([]);
+    }
+  });
+  it('treats a clear of an already empty locale and zone as no change', async () => {
+    const { result, log } = await patchWith({ ...STORED, preferred_locale: null, iana_name: null }, { preferredLocale: null, timeZone: null });
+    expect((await result).changed).toBe(false);
+    expect(writes(log)).toEqual([]);
+  });
+  it('canonicalizes a locale before the registry lookup and stores the canonical form', async () => {
+    const { result, log } = await patchWith(STORED, { preferredLocale: 'es-us' });
+    expect((await result).profile.preferredLocale).toBe('es-US');
+    expect(statements(log, /content\.locales/i)[0]!.params).toEqual(['es-US']);
+  });
+  it('trims and keeps the stored name when the patched name equals it after trimming', async () => {
+    const { result, log } = await patchWith(STORED, { firstName: '  Ana  ' });
+    expect((await result).changed).toBe(false);
+    expect(writes(log)).toEqual([]);
+  });
+  it('creates the profile when none exists and BOTH names are given, with the optional fields null unless patched', async () => {
+    const { result, log } = await patchWith(null, { firstName: 'Ana', lastName: 'Martinez' });
+    expect(await result).toEqual({ changed: true, profile: { firstName: 'Ana', lastName: 'Martinez', preferredLocale: null, timeZone: null } });
+    expect(upsertOf(log)[0]!.params).toEqual([ACCOUNT_ID, 'Ana', 'Martinez', null, null]);
+    expect(fieldsOf(auditOf(log)[0]!)).toEqual(['firstName', 'lastName']);
+  });
+  it('creates the profile with a locale and zone in the same patch', async () => {
+    const { result, log } = await patchWith(null, { firstName: 'Ana', lastName: 'Martinez', preferredLocale: 'en-US', timeZone: 'America/Denver' });
+    expect((await result).profile).toEqual({ firstName: 'Ana', lastName: 'Martinez', preferredLocale: 'en-US', timeZone: 'America/Denver' });
+    expect(fieldsOf(auditOf(log)[0]!)).toEqual(['firstName', 'lastName', 'preferredLocale', 'timeZone']);
+  });
+  it('refuses to create a profile from one name, a locale alone, a zone alone or an empty patch: PROFILE_REQUIRED, nothing written, the transaction rolled back', async () => {
+    for (const input of [{ firstName: 'Ana' }, { lastName: 'Martinez' }, { preferredLocale: 'en-US' }, { timeZone: 'America/Denver' }, {}]) {
+      const { result, log } = await patchWith(null, input);
+      const e = await caught(result);
+      expect({ code: e.code, details: e.details }, JSON.stringify(input)).toEqual({ code: 'VALIDATION_FAILED', details: { reason: 'PROFILE_REQUIRED' } });
+      expect(writes(log), JSON.stringify(input)).toEqual([]);
+      expect(statements(log, /^rollback/i), JSON.stringify(input)).toHaveLength(1);
+      expect(statements(log, /^commit/i)).toEqual([]);
+    }
+  });
+  it('refuses an unavailable locale (UNKNOWN_LOCALE) and an unavailable time zone (UNKNOWN_TIME_ZONE) with the field name, writes nothing and rolls back', async () => {
+    const locale = await patchWith(STORED, { preferredLocale: 'fr-FR' });
+    const le = await caught(locale.result);
+    expect({ code: le.code, details: le.details }).toEqual({ code: 'VALIDATION_FAILED', details: { reason: 'UNKNOWN_LOCALE', field: 'preferredLocale' } });
+    expect(writes(locale.log)).toEqual([]);
+    const zone = await patchWith(STORED, { timeZone: 'Mars/Olympus_Mons' });
+    const ze = await caught(zone.result);
+    expect({ code: ze.code, details: ze.details }).toEqual({ code: 'VALIDATION_FAILED', details: { reason: 'UNKNOWN_TIME_ZONE', field: 'timeZone' } });
+    expect(writes(zone.log)).toEqual([]);
+    for (const log of [locale.log, zone.log]) expect(statements(log, /^rollback/i)).toHaveLength(1);
+    expect(exposed(le) + exposed(ze)).not.toMatch(/fr-FR|Mars|Olympus/);
+  });
+  it('refuses a SUSPENDED and a CLOSED account before reading the profile (the account lock comes first) and writes nothing', async () => {
+    for (const [status, code] of [
+      ['SUSPENDED', 'SUSPENDED'],
+      ['CLOSED', 'CLOSED'],
+    ] as const) {
+      const { result, log } = await patchWith(STORED, { lastName: 'Lopez' }, status);
+      expect((await caught(result)).code).toBe(code);
+      expect(statements(log, /account_profiles/i)).toEqual([]);
+      expect(writes(log)).toEqual([]);
+    }
+  });
+  it('allows the other usable statuses (PENDING, CLOSURE_REQUESTED) to patch, like upsertProfile', async () => {
+    for (const status of ['PENDING', 'CLOSURE_REQUESTED', 'ACTIVE']) {
+      const { result } = await patchWith(STORED, { lastName: 'Lopez' }, status);
+      expect((await result).changed).toBe(true);
+    }
+  });
+  it('reads the account lock first, then the stored profile FOR UPDATE, then the registry checks, then the write and the audit row, in ONE transaction', async () => {
+    const { result, log } = await patchWith(STORED, { lastName: 'Lopez', timeZone: 'America/Chicago', preferredLocale: 'es-US' });
+    await result;
+    const order = log.map((q) => q.sql.toLowerCase().replace(/ .*/, ''));
+    expect(order[0]).toBe('start'); // start transaction
+    expect(order.at(-1)).toBe('commit');
+    const idx = (re: RegExp) => log.findIndex((q) => re.test(q.sql));
+    const steps = [
+      idx(/^select 1 from identity\.accounts where account_id = \$1 for update/i),
+      idx(/from identity\.account_profiles p left join geography\.time_zones z/i),
+      idx(/^select 1 from content\.locales/i),
+      idx(/^select time_zone_id from geography\.time_zones/i),
+      idx(/^select first_name, last_name, preferred_locale, time_zone_id from identity\.account_profiles/i),
+      idx(/^insert into identity\.account_profiles/i),
+      idx(/^insert into identity\.account_audit_events/i),
+    ];
+    expect(steps.every((i) => i >= 0)).toBe(true);
+    expect([...steps].sort((a, b) => a - b)).toEqual(steps);
+    expect(statements(log, /for update of p$/i)).toHaveLength(1);
+  });
+  it('writes ONE audit row PROFILE_UPDATED that lists the changed FIELD NAMES only, never a value, and the actor and correlation of the caller', async () => {
+    const { result, log } = await patchWith(STORED, { firstName: 'Zoe', lastName: 'Zamora', preferredLocale: 'es-US', timeZone: 'America/Chicago' });
+    await result;
+    const audits = auditOf(log);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.params[0]).toBe(`account:${ACCOUNT_ID}`);
+    expect(audits[0]!.params[1]).toBe('PROFILE_UPDATED');
+    expect(audits[0]!.params[2]).toBe(ACCOUNT_ID);
+    expect(JSON.parse(audits[0]!.params[4] as string)).toEqual({ fields: ['firstName', 'lastName', 'preferredLocale', 'timeZone'] });
+    const text = JSON.stringify(audits[0]!.params);
+    for (const value of ['Zoe', 'Zamora', 'es-US', 'America/Chicago', 'Ana', 'Martinez', 'America/Denver']) expect(text, value).not.toContain(value);
+    expect(statements(log, /outbox_events/i)).toEqual([]); // no event exists for a profile change
+  });
+  it('does not look up a locale or a time zone that is kept: a names-only patch sends no registry statement, even when the stored values are no longer ACTIVE', async () => {
+    // the stored locale is not in the active list of the script and the stored zone is unknown to it: they are historical references
+    const stored: Stored = { first_name: 'Ana', last_name: 'Martinez', preferred_locale: 'xx-XX', iana_name: null };
+    const { result, log } = await patchWith(stored, { firstName: 'Zoe' });
+    expect(await result).toEqual({ changed: true, profile: { firstName: 'Zoe', lastName: 'Martinez', preferredLocale: 'xx-XX', timeZone: null } });
+    expect(statements(log, /content\.locales|geography\.time_zones where/i)).toEqual([]);
+    expect(upsertOf(log)[0]!.params).toEqual([ACCOUNT_ID, 'Zoe', 'Martinez', 'xx-XX', null]);
+    expect(fieldsOf(auditOf(log)[0]!)).toEqual(['firstName']);
+  });
+  it('re-sending the stored inactive locale or zone is a no-op with no lookup, but a DIFFERENT inactive value is still refused', async () => {
+    const gone: Stored = { first_name: 'Ana', last_name: 'Martinez', preferred_locale: 'xx-XX', iana_name: 'America/Denver' };
+    const same = await patchWith(gone, { preferredLocale: 'xx-XX', timeZone: 'America/Denver' });
+    expect((await same.result).changed).toBe(false);
+    expect(statements(same.log, /content\.locales|geography\.time_zones where/i)).toEqual([]);
+    expect(writes(same.log)).toEqual([]);
+    const other = await patchWith(gone, { preferredLocale: 'yy-YY' });
+    expect((await caught(other.result)).details).toEqual({ reason: 'UNKNOWN_LOCALE', field: 'preferredLocale' });
+    expect(statements(other.log, /content\.locales/i)).toHaveLength(1);
+    expect(writes(other.log)).toEqual([]);
+    const zone = await patchWith(gone, { timeZone: 'Mars/Phobos' });
+    expect((await caught(zone.result)).details).toEqual({ reason: 'UNKNOWN_TIME_ZONE', field: 'timeZone' });
+  });
+  it('looks up only the value that changes: a new locale is checked and the kept zone is not, and the other way round', async () => {
+    const a = await patchWith(STORED, { preferredLocale: 'es-US' });
+    await a.result;
+    expect(statements(a.log, /content\.locales/i)).toHaveLength(1);
+    expect(statements(a.log, /geography\.time_zones where/i)).toEqual([]);
+    expect(upsertOf(a.log)[0]!.params[4]).toBe('zone-denver'); // the stored zone id is reused, not looked up
+    const b = await patchWith(STORED, { timeZone: 'America/Chicago' });
+    await b.result;
+    expect(statements(b.log, /geography\.time_zones where/i)).toHaveLength(1);
+    expect(statements(b.log, /content\.locales/i)).toEqual([]);
+  });
+  it('is the same final write as upsertProfile for the same effective input', async () => {
+    const viaPatch = await patchWith(STORED, { lastName: 'Lopez' });
+    await viaPatch.result;
+    const upsert = scripted(patchReply(STORED));
+    await new AccountService({ database: upsert.database }).upsertProfile(
+      ACCOUNT_ID,
+      { firstName: 'Ana', lastName: 'Lopez', preferredLocale: 'en-US', timeZone: 'America/Denver' },
+      { actor: `account:${ACCOUNT_ID}` },
+    );
+    expect(upsertOf(viaPatch.log).map((q) => q.params)).toEqual(upsertOf(upsert.log).map((q) => q.params));
+    expect(auditOf(viaPatch.log).map((q) => q.params.slice(0, 6))).toEqual(auditOf(upsert.log).map((q) => q.params.slice(0, 6)));
   });
 });

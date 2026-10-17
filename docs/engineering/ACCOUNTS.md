@@ -21,7 +21,7 @@ Not in scope (no table, column or route exists for any of them):
 
 | Not here | Where it belongs |
 |---|---|
-| Onboarding screens, sign-up and sign-in forms, carousels, the role switcher UI | web checkpoints (CU-03 and later); the account area (CU-09, PR-09) |
+| Onboarding screens, sign-up and sign-in forms, carousels | web checkpoints (CU-03 and later). The shared account area and the role switcher page are IMPLEMENTED in ACC-001 (`docs/engineering/ACCOUNT_AREA.md`, ADR-0039); the role-specific account sections arrive with their capabilities (CU-09, PR-09, PB-03) |
 | Phone storage and verification | IMPLEMENTED in ID-003 (`docs/engineering/PHONE_VERIFICATION.md`); CU-03.04 to CU-03.06, SV-03 |
 | Account recovery by phone (the phone confirmation after a reset), the step-up before a phone change and the phone screens (verification page, "Change number") | not built: recovery is DEBT-0017 and DEBT-0067; the step-up primitive exists but is not wired into the phone change (DEBT-0062); the production SMS provider is DEBT-0059; see `TECH_DEBT.md` for the others |
 | The account email screens and the step-up before an email change | DEBT-0050 (the email contact and its verification are IMPLEMENTED in ID-002: `docs/engineering/EMAIL_VERIFICATION.md`) |
@@ -33,7 +33,7 @@ Not in scope (no table, column or route exists for any of them):
 | Admin invitation, an admin application identity, application RBAC | AD-07 and the RBAC checkpoint (DEBT-0046, DEBT-0021) |
 | Saved addresses and address ownership | the first checkpoint with an address use case (CU-09); `geography.addresses` stays ownerless |
 | Closure rules (open bookings, money, payouts), deletion, data export, erasure | DEBT-0045 (the status machine exists; no rule does) |
-| An endpoint or screen to change the preferred (primary) role | DEBT-0048 |
+| An endpoint or screen to change the preferred (primary) role | DEBT-0048 (the account area ACC-001 shows the roles and switches the ACTIVE role; the preferred role is still service-only) |
 | Fine-grained permissions | later, with the features that need them |
 
 ## Keycloak versus BananaGig: who owns what
@@ -391,6 +391,10 @@ Seven audit actions and five outbox events are added; the error codes are `ACCOU
 ## Consent and legal-version history (ID-005)
 
 The account's consents (which exact version, language and text hash it accepted or withdrew, the history, and what it must accept now) are specified in `docs/engineering/CONSENT.md` (ADR-0037, ADR-0038). They are not part of the profile: `identity.consent_events` is an append-only log bound to `content.versions` by a composite foreign key, the current state is derived, and the policy (`consent.<purpose>.required_for` and `.reacceptance`) is configuration. Four operations are added under `/account/consents` (`getAccountConsents`, `getAccountConsentRequirements`, `acceptAccountConsent`, `withdrawAccountConsent`), two audit actions (`CONSENT_ACCEPTED`, `CONSENT_WITHDRAWN`) and two outbox events. The roles considered for a requirement are the account's PENDING and ACTIVE `account_roles`. No flow requires consent yet (DEBT-0076); `GET /account/me` carries no consent summary.
+
+## Shared account area (ACC-001)
+
+The account area (the menu, the section pages and the guards that decide which sections a role has) is specified in `docs/engineering/ACCOUNT_AREA.md` (ADR-0039). One framework serves every persona: the sections are reference data (`identity.account_sections`, `identity.account_section_roles`) selected by the ACTIVE role of the request, the section read models compose the profile, contacts, security and consent domains and store nothing of their own, and a section the active role does not have is a 404 `ACCOUNT_SECTION_NOT_FOUND`. Seven operations are added (`getAccountNavigation`, `getAccountProfile`, `patchAccountProfile`, `getAccountContactVerification`, `getAccountRolesSection`, `getAccountSecuritySummary`, `getAccountPrivacySummary`); `PUT /account/profile` now also needs the profile and language sections. `AccountService.patchProfile` changes only the present profile fields. The active role is still request context and is not stored (ADR-0026). `GET /account/me` is unchanged and gains no summary.
 
 ## Operations and troubleshooting
 

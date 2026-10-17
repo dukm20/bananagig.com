@@ -1310,3 +1310,53 @@ In a smoke or integration scenario, wait about 2.6 s after any sign-out-everywhe
 ### Evidence
 `apps/smoke/src/index.ts` (the two waits in (7a) and (7b)), `packages/accounts/src/security-service.ts` (`firstSight`), CI run 38982170853.
 
+## LRN-0053 — With `loading.tsx` present, Next answers a `notFound()` in a dynamic page with HTTP 200 (and the not-found content); the server-side 404 is the API's, and the end-to-end check must say so
+
+Date: 2026-10-16
+Checkpoint: ACC-001
+Domain: web
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0039
+Related skill: skills/web/SKILL.md
+
+### Context
+The account area ends a section the API answers 404 for (or a registry section without a page) in `notFound()`. Probing the running web app through Caddy: `/nope-page` (static not-found, outside any streaming boundary) is 404, but `/account/notifications` and `/account/zzz` are 200 with the not-found content and a noindex meta tag. The root `app/loading.tsx` makes every dynamic page stream, so the status line is sent before the page body runs.
+
+### Learning
+A `notFound()` (or `redirect()`) raised while the page body renders cannot change a status that has already been sent. Raising it from `generateMetadata` does not help either (Next 16 streams metadata too; tried and reverted). The content is blocked, which is what authorization needs; the HTTP 404 that exists is the API's (`ACCOUNT_SECTION_NOT_FOUND`), and a redirect becomes a meta refresh with status 200 for signed-out visitors on a dynamic page.
+
+### Why it matters
+A test or a smoke check that asserts HTTP 404 on a streamed web page fails for a reason that is not a defect, and a monitor that counts 404s will not see these.
+
+### Reuse rule
+Assert the not-found CONTENT (and that no section content is present) for streamed web pages, accept 404 or 200-with-not-found, and put the authoritative status assertions on the API. Do not spend time trying to turn it into a 404 with metadata tricks; if a real 404 is ever required, remove the boundary for that route.
+
+### Evidence
+`apps/smoke/src/index.ts` (the `notServed` helper of the Account area scenario), probes of `/account/zzz` and `/nope-page` through Caddy, `apps/web/src/app/account/[section]/page.tsx`.
+
+## LRN-0054 — When the seed gives every role the same set, prove role-driven behaviour against the data itself: an SQL oracle plus one reversible, self-healing flip
+
+Date: 2026-10-16
+Checkpoint: ACC-001
+Domain: testing / identity
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0039
+Related skill: skills/testing/SKILL.md
+
+### Context
+The account area selects sections by the ACTIVE role, but today CUSTOMER and PROVIDER have the same six sections, so a smoke that only compares the two menus proves nothing about role-driven selection, and the registry tables forbid DELETE, so a smoke cannot create and remove a role-specific row.
+
+### Learning
+Compare the API answer with a direct SQL read of the matrix for the role in use (the oracle: it fails if the service ignores the role), then prove the effect by flipping ONE seeded row off for ONE role for the length of one step and restoring it in `finally`; make the scenario self-healing (a precondition step restores the seeded value if an interrupted run left it flipped) and never swallow a failed restore. Role-specific sets with extra rows belong in tests on an ISOLATED database, where rows can be added freely.
+
+### Why it matters
+A role-driven framework tested only with identical data passes even when the role is ignored, and a flip without a self-healing precondition leaves the shared dev registry changed after one killed run.
+
+### Reuse rule
+For a data-driven selection: oracle query for the expected set, one reversible flip on seeded reference data, a precondition that restores the seed, a loud failure message when the restore fails; extra rows only in isolated databases.
+
+### Evidence
+`apps/smoke/src/index.ts` (Account area, steps (8) to (10) and the precondition), `apps/api/src/account-area.itest.ts`, `packages/accounts/src/account-area.itest.ts`.
+

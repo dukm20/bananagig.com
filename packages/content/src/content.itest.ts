@@ -379,10 +379,14 @@ describe('locales and versions (14)', () => {
     await svc.createEntry(entryReq(k), A);
     const make = (extra: { effectiveFrom?: string; effectiveTo?: string }) => svc.createVersion(k, { locale: 'en-US', body: 'x', reason: 'r', ...extra }, A);
     expect(await code(make({ effectiveFrom: inMs(-60_000).toISOString() }))).toBe('VALIDATION_FAILED');
-    expect(await code(make({ effectiveFrom: inMs(60_000).toISOString(), effectiveTo: inMs(30_000).toISOString() }))).toBe('VALIDATION_FAILED');
-    expect(await code(make({ effectiveFrom: inMs(60_000).toISOString(), effectiveTo: inMs(60_000).toISOString() }))).toBe('VALIDATION_FAILED');
+    // ONE base instant for every pair: two separate Date.now() calls can differ by a millisecond on a loaded machine, which made "start equal to end" a valid window and
+    // "end minus start" 60_001 ms
+    const base = Date.now();
+    const at = (ms: number) => new Date(base + ms).toISOString();
+    expect(await code(make({ effectiveFrom: at(60_000), effectiveTo: at(30_000) }))).toBe('VALIDATION_FAILED');
+    expect(await code(make({ effectiveFrom: at(60_000), effectiveTo: at(60_000) }))).toBe('VALIDATION_FAILED');
     expect((await make({ effectiveFrom: inMs(-2_000).toISOString() })).status).toBe('DRAFT'); // within the clock tolerance
-    const windowed = await make({ effectiveFrom: inMs(60_000).toISOString(), effectiveTo: inMs(120_000).toISOString() });
+    const windowed = await make({ effectiveFrom: at(60_000), effectiveTo: at(120_000) });
     expect(windowed.effectiveTo!.getTime() - windowed.effectiveFrom.getTime()).toBe(60_000);
   });
 

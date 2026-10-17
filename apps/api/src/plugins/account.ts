@@ -8,6 +8,7 @@ import type { FastifyInstance, preHandlerAsyncHookHandler } from 'fastify';
 import fp from 'fastify-plugin';
 import { ACTIVE_ROLE_HEADER } from '@bananagig/contracts';
 import type {
+  AccountAreaOperations,
   AccountContext,
   AccountService,
   ConsentOperations,
@@ -49,6 +50,7 @@ export const accountPlugin = fp(
       phoneVerification?: PhoneVerificationService;
       security?: SecurityOperations;
       consent?: ConsentOperations;
+      accountArea?: AccountAreaOperations;
     },
   ): Promise<void> => {
     app.decorate('accounts', opts.accounts);
@@ -56,6 +58,7 @@ export const accountPlugin = fp(
     if (opts.phoneVerification) app.decorate('phoneVerification', opts.phoneVerification);
     if (opts.security) app.decorate('security', opts.security);
     if (opts.consent) app.decorate('consent', opts.consent);
+    if (opts.accountArea) app.decorate('accountArea', opts.accountArea);
     app.decorateRequest('account', undefined);
     app.decorateRequest('securitySession', undefined);
   },

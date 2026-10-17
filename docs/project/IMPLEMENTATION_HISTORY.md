@@ -881,3 +881,40 @@ None required.
 ### Known follow-up
 A person who signs in again within about 2 s of a sign-out-everywhere would also be refused; in practice a login takes longer, and the rule fails closed. Not recorded as debt unless it is seen in use.
 
+## ACC-001 — 2026-10-16
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(ACC-001)"`.
+Summary: The shared account area. ONE framework for every persona instead of an account system per persona: the sections are reference data (`identity.account_sections`, `identity.account_section_roles`) selected by the ACTIVE role the account guard already validated, the section read models compose the profile, contacts, security and consent domains and store nothing, a section the active role lacks is a 404 `ACCOUNT_SECTION_NOT_FOUND` on its endpoints, and the web has a responsive, accessible shell with one page per section. CUSTOMER and PROVIDER see the same six sections today because no role-specific capability exists yet; this is stated rather than papered over, and the role-driven selection is proven against the registry itself.
+
+### Housekeeping at the start (requested)
+`PROJECT_STATE` records the three ID-005 commits (`b07e161` feature, `3cf0064` integration and session fix, `9b30026` smoke timing fix) and GitHub Actions run 38984639745 SUCCESS (`verify` PASS 9m 42s, `compose-smoke` PASS 4m 45s). `checkpoint:start` ran first (it needs a clean tree), then the housekeeping edit.
+
+### Delivered
+- Migration `0014_account_area.sql`: `account_sections` (code, own URL, label and description content keys, status) and `account_section_roles` (the matrix: enabled, display order, unique per role); three guard functions and triggers (a row is enabled only for an ACTIVE section and role, neither can leave ACTIVE while enabled, no DELETE or TRUNCATE, keys and `created_at` kept; one trigger on `identity.roles`); the seed of 8 sections x 2 roles and 64 managed copy entries through the content lifecycle (en-US, plural-aware count copy). No profile, contact, security or consent column was duplicated and no per-person preference table was added.
+- Contracts `account-area.ts`; `AccountAreaService` (one indexed registry read per call); `AccountService.patchProfile` (present fields only, row read FOR UPDATE in the transaction, a kept locale or time zone is not revalidated); `SecurityService.getSummary`.
+- API: seven operations (`getAccountNavigation`, `getAccountProfile`, `patchAccountProfile`, `getAccountContactVerification`, `getAccountRolesSection`, `getAccountSecuritySummary`, `getAccountPrivacySummary`) and a section guard for `PUT /account/profile`; `requireAccountSection`, `requireAnyAccountSection`, `assertAccountSections` (one registry read per request).
+- Web: the account layout and shell, the six section pages, the not-found fallback, the two no-JS form handlers, the role switch return path (allowlist `/account/roles` or `/account`), contract-validating stub, 180 new web tests.
+- Smoke scenario `Account area`: API and web through Caddy; SQL oracle for each role, one reversible and self-healing flip of a seeded matrix row.
+- Docs: `ACCOUNT_AREA.md`, ADR-0039, the data model documents, DEBT-0082, LRN-0053 and LRN-0054.
+- A pre-existing flaky test (CFG-002, `packages/content/src/content.itest.ts`, the effective window) failed one finalization: it built "now + 60 s" and "now + 120 s" from two `Date.now()` calls and asserted an exact difference (and an equal start and end). It now uses one base instant; three consecutive runs pass. The same weakness (two writes inside one millisecond compared at millisecond resolution) failed a finalization once in the new registry model test and was removed from every new test that compared `updated_at`; the file passes four consecutive runs.
+- Quality process: independent authors for the web, for the database and service tests and for the contract and API tests; two independent read-only reviews. They found and I fixed: a names-only PATCH that revalidated a stored locale or time zone that had been deactivated; my own edit that put the stored-zone column in the wrong SELECT (caught by the independent test author before it shipped: it would have cleared the time zone on every patch); a role that could be retired while the matrix still enabled sections for it; a language form that silently cleared a stored inactive value; name errors not tied to their field; account-area link contrast in dark mode; a TRUNCATE gap; `created_at` documented immutable but not enforced; "1 agreements" copy; and documentation that overstated the guarantees.
+
+### Schema
+Migration 0014: two new tables, three guard functions with five triggers (one trigger on `identity.roles`), seeds. NORMALIZATION_LOG, DATA_MODEL, DATA_DICTIONARY, ERD, DATA_MODEL_CHANGELOG and SCHEMA_SNAPSHOT updated; Data Model Review Gate passed (1NF to BCNF, two tables because section attributes depend on the section alone and enabled/order on the pair).
+
+### Contracts
+`packages/contracts/src/account-area.ts` (vocabulary, DTOs, `PatchProfileRequest`, `PROFILE_FIELD_SECTIONS`, `ACCOUNT_AREA_COPY`); error code `SECTION_NOT_FOUND`; OpenAPI regenerated and valid; AsyncAPI unchanged (no event was added).
+
+### Tests
+Unit 8982 and 163 root script tests, integration 4596 in 43 files, smoke 37 checks. Locally the `Account area`, `Sessions and security` and `Consent` smoke scenarios pass; `Email verification` and `Phone verification` fail on the per-account send caps of the developer database (used up by many runs the same hour, known and by design); a fresh CI database does not have them. Mutation checks by the independent authors (the API layer, the registry service, `patchProfile` and the migration guards, each broken and restored): every mutation was caught by a test except three that are redundant by design (the profile row lock is covered by the account lock, one of two TRUNCATE triggers is behaviourally covered by the other, and the per-request memoization, for which a test was added afterwards).
+
+### Skills updated
+`skills/identity`, `skills/api`, `skills/web`, `skills/database`, `skills/testing`.
+
+### ADRs
+ADR-0039.
+
+### Known follow-up
+DEBT-0082 (later role-specific sections, notifications, closure, privacy export, registry admin editor, visual polish, phone action, registry cache, profile event). CUSTOMER and PROVIDER share one section set until a role-specific capability ships. Next approved checkpoint: CAT-001 (Categories and Service Types).
+

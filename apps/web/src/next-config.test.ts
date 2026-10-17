@@ -14,11 +14,25 @@ describe('next.config', () => {
     ]);
     expect(await frameProtection()).toEqual(rules);
   });
-  it('the source pattern covers the root, a page, a deep path and a BFF route', async () => {
+  it('the source pattern covers the root, a page, a deep path and a BFF route, the account area pages and its form routes', async () => {
     // Next compiles `/:path*` to "zero or more segments"; check the pattern the same way
     const source = (await config.headers!())[0]!.source;
     const re = new RegExp(`^${source.replace('/:path*', '(?:/.*)?')}$`);
     for (const p of ['/', '/consents', '/security', '/a/b/c/d', '/auth/consents/accept', '/auth/security/revoke-all']) expect(re.test(p), p).toBe(true);
+    for (const p of [
+      '/account',
+      '/account/profile',
+      '/account/contact',
+      '/account/security',
+      '/account/language-region',
+      '/account/privacy',
+      '/account/roles',
+      '/account/notifications',
+      '/auth/account/profile',
+      '/auth/account/language-region',
+      '/auth/active-role',
+    ])
+      expect(re.test(p), p).toBe(true);
   });
   it('sends nothing but those two headers (no partial CSP)', async () => {
     const rules = await config.headers!();

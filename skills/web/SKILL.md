@@ -16,6 +16,7 @@ Build web UI and the server-side API client without breaking the workspace bound
 - `apps/web/src/lib/api-client.ts`, `apps/web/src/lib/server.ts`, `apps/web/src/instrumentation.ts`, `apps/web/src/lib/auth/handlers.ts`, `apps/web/src/lib/auth/runtime.ts`, `apps/web/src/app/session/page.tsx`, `apps/web/src/app/auth/active-role/route.ts`, `apps/web/src/testing/account-stub.ts`
 - `apps/web/next.config.ts`, `apps/web/src/web.test.tsx`
 - `Dockerfile` (target `runtime-web`)
+- ACC-001 (account area): `apps/web/src/lib/account-area.ts` (per-request `cache()` loader: session, navigation and ONE content batch), `apps/web/src/lib/auth/account-handlers.ts`, `apps/web/src/app/account/{layout.tsx,page.tsx,<section>/page.tsx,[section]/page.tsx,_components}`, `apps/web/src/app/auth/account/{profile,language-region}/route.ts`, `apps/web/src/testing/account-area-stub.ts`
 - ID-004: `apps/web/src/lib/auth/{device,security-handlers}.ts`, `apps/web/src/app/{security,forgot-password}/page.tsx`, `apps/web/src/app/auth/{security/[action],password-reset,revoked}/route.ts`, `apps/web/src/security-handlers.test.ts`, `apps/web/src/security.test.tsx`
 
 ## Architecture rules
@@ -78,6 +79,7 @@ The web app has no database access and no data-model impact. Needing data means 
 - One-time tokens in links travel in the URL FRAGMENT (`/verify-email#token=...`): a fragment is never sent to a server, so it is in no access log, trace or Referer. A client component reads it, removes it with `history.replaceState`, and the page offers a button that POSTs it in a form body to a same-origin BFF handler; opening the link must never change state (mail scanners prefetch). The token is never stored (not in the login transaction, storage or a cookie): a signed-out visitor signs in and opens the link again.
 - BFF handlers that act for the signed-in user (`/auth/email/<action>`): POST only, `Origin` must equal the web origin, session required, forward the browser's address as `x-forwarded-for` (the API's IP rate limit must count real clients, not the web server), answer a 303 back to the page with `?ok=` or `?error=<API code>` and never put a submitted value in the redirect, a cookie or a log line.
 - The address a BFF handler forwards (`clientIpOf` in `apps/web/src/lib/auth/email-handlers.ts`) is the LAST `x-forwarded-for` entry, the one Caddy wrote (it REPLACES the header with `{remote_host}`), never the leftmost, which a client can set. The web server forwards exactly one value to the API, which trusts one hop (ADR-0033). No phone verification page exists yet (DEBT-0062); a future one reuses this handler pattern.
+- Account area (ACC-001, ADR-0039): the shell draws exactly the sections the API returned for the ACTIVE role (registry data); it never decides visibility, and a page whose API read answers 404 `ACCOUNT_SECTION_NOT_FOUND` (or whose section is absent from the navigation) ends in `notFound()`. `/account/[section]` only calls `notFound()` so a registry section without a page is not served. One `cache()`d loader gives layout, page and metadata ONE session read, ONE navigation call and ONE content batch; copy with REQUIRED variables (`account.area.active_role`, `account.area.roles.switch`, `account.area.privacy.outstanding`) is resolved one by one with its values, because `renderMany` fails the whole batch when a variable is missing. Forms are no-JS POSTs to `/auth/account/*` (Origin check, field allowlist, 303 with a closed-word flag, never an echoed value). The role switch accepts a hidden `next` only if it is EXACTLY `/account/roles` or `/account`. Responsive: mobile-first CSS, menu-first on the phone (`:has([data-view=section])` hides the menu beside a section), sidebar from 48em; 44px targets and `:focus-visible` are asserted from the CSS source in tests. With `loading.tsx` present Next may answer a not-found page with 200 once the response streams: the end-to-end check accepts 404 or the not-found content.
 
 ## Do not
 
@@ -92,7 +94,7 @@ The web app has no database access and no data-model impact. Needing data means 
 - Do not offer an Accept control for text you did not verify to be the version in force, build the form from anything but that verified document, or let a page or a GET record a consent.
 
 ## Related ADRs
-ADR-0006, ADR-0007, ADR-0014, ADR-0026, ADR-0033, ADR-0034, ADR-0036, ADR-0037
+ADR-0006, ADR-0007, ADR-0014, ADR-0026, ADR-0033, ADR-0034, ADR-0036, ADR-0037, ADR-0039
 
 ## Last reviewed
-2026-10-16 (ID-005)
+2026-10-16 (ACC-001)

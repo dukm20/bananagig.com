@@ -790,6 +790,7 @@ describe('account API error mapping', () => {
   const expected: Record<AccountErrorCode, [number, string]> = {
     NOT_FOUND: [404, 'NOT_FOUND'],
     ROLE_NOT_FOUND: [404, 'NOT_FOUND'],
+    SECTION_NOT_FOUND: [404, 'NOT_FOUND'],
     SUSPENDED: [403, 'AUTHORIZATION'],
     CLOSED: [403, 'AUTHORIZATION'],
     ROLE_NOT_HELD: [403, 'AUTHORIZATION'],

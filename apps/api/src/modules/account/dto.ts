@@ -51,6 +51,7 @@ export function toAppError(err: unknown, realm?: string): never {
   switch (err.code) {
     case 'NOT_FOUND':
     case 'ROLE_NOT_FOUND':
+    case 'SECTION_NOT_FOUND':
       throw new AppError('NOT_FOUND', code, err.message, details);
     case 'SUSPENDED':
     case 'CLOSED':

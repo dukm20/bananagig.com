@@ -4,7 +4,14 @@ import type { AppConfig } from '@bananagig/config';
 import { API_PREFIX } from '@bananagig/contracts';
 import type { ConfigurationService } from '@bananagig/configuration';
 import type { ContentService } from '@bananagig/content';
-import type { AccountService, ConsentOperations, EmailVerificationService, PhoneVerificationService, SecurityOperations } from '@bananagig/accounts';
+import type {
+  AccountAreaOperations,
+  AccountService,
+  ConsentOperations,
+  EmailVerificationService,
+  PhoneVerificationService,
+  SecurityOperations,
+} from '@bananagig/accounts';
 import type { AddressService, GeographyService } from '@bananagig/geography';
 import type { TokenVerifier } from '@bananagig/identity';
 import { metrics } from '@bananagig/observability';
@@ -68,6 +75,11 @@ export interface AppDeps {
    * account services; the consent routes are registered only when provided together with `accounts`.
    */
   consent?: ConsentOperations;
+  /**
+   * The shared account area registry (ACC-001): which sections each role sees. Optional like the other account services; the account area routes (and the section
+   * guard of PUT /account/profile) are active only when provided together with `accounts`. index.ts always provides it.
+   */
+  accountArea?: AccountAreaOperations;
 }
 
 /**
@@ -130,6 +142,11 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
             "The caller's own sessions, browsers (devices) and second-factor state, the step-up protocol (RFC 9470) and the security timeline (ID-004), plus the public password-reset request. Passwords, authenticator secrets and recovery codes live in the identity provider; BananaGig stores none of them",
         },
         {
+          name: 'account-area',
+          description:
+            'The shared account area (ACC-001): one framework for every persona. The navigation is data (a registry of sections per application role) selected by the ACTIVE role of the request; the section read models compose the profile, contact, security and consent domains and store nothing of their own. A section the active role does not have is a 404 on its endpoints, whatever the front end shows',
+        },
+        {
           name: 'consent',
           description:
             "The caller's own consent to the legal documents (ID-005): what each purpose needs, the version in force, and an append-only history of acceptances and withdrawals bound to the exact version, locale and text hash. The legal text itself is owned and served by the content registry; no account id is ever accepted",
@@ -166,11 +183,13 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       phoneVerification: deps.phoneVerification,
       security: deps.security,
       consent: deps.consent,
+      accountArea: deps.accountArea,
     });
     await app.register(accountRoutes, {
       prefix: API_PREFIX,
       emailRoutes: deps.emailVerification !== undefined,
       phoneRoutes: deps.phoneVerification !== undefined,
+      areaRoutes: deps.accountArea ? { securitySummary: deps.security !== undefined, privacySummary: deps.consent !== undefined } : undefined,
     });
     if (deps.security) {
       const security = deps.security;

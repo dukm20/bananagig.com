@@ -17,7 +17,7 @@ import {
 } from '@bananagig/platform';
 import { ConfigurationService, ValkeyConfigCache } from '@bananagig/configuration';
 import { ContentService } from '@bananagig/content';
-import { AccountService, ConsentService, EmailVerificationService, PhoneVerificationService, SecurityService } from '@bananagig/accounts';
+import { AccountAreaService, AccountService, ConsentService, EmailVerificationService, PhoneVerificationService, SecurityService } from '@bananagig/accounts';
 import {
   AddressService,
   GeographyService,
@@ -170,6 +170,10 @@ const consent = new ConsentService({
   defaultLocale: createDefaultLocaleResolver(content),
 });
 
+// The shared account area (ACC-001): the registry of sections per application role (data in identity.account_sections / account_section_roles). It owns no state of its own
+// (the section read models compose the profile, contact, security and consent domains) and reads one indexed query per request; nothing is cached.
+const accountArea = new AccountAreaService({ database });
+
 const app = await buildApp({
   cfg,
   verifier,
@@ -182,6 +186,7 @@ const app = await buildApp({
   phoneVerification,
   security,
   consent,
+  accountArea,
   // Critical for serving requests: Postgres only. Valkey/NATS/OpenSearch/flagd outages must not take the API down.
   readiness: async () => ({ postgres: (await database.health()).ok ? 'up' : 'down' }),
   diagnostics: () => runDiagnostics(adapters),
