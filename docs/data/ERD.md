@@ -892,3 +892,172 @@ erDiagram
 **Three concepts, three owners.** The role (`identity.account_roles`, PENDING / ACTIVE / INACTIVE) is not drawn here because the registration does not reference it: the role is requested PENDING when the registration starts and activated by the identity service when it completes, but its status is never a column of the registration. Go-Live (PRO-003) has no table yet.
 
 **The market is a column, the service types are rows.** A registration has at most one market (`market_id`, nullable until chosen, required by a COMPLETED row) and many service types (the join table, primary key `(provider_registration_id, service_type_id)`). Both reference the taxonomy and geography by id; nothing is copied. The selections change only while the registration is IN_PROGRESS and are frozen history afterwards. All foreign keys are `ON DELETE RESTRICT`.
+
+
+## trust schema (TRUST-001)
+
+The `trust` schema is the provider verification domain. A provider is NOT a second account: `trust.verification_cases` references `identity.accounts` by id only (the foreign key is the whole link; no email, phone, name or profile is copied). Three layers are kept apart: the DEFINITION (what can be asked) is separate from the RULE (where it applies, by market and service type) and from the INSTANCE (`case_requirements`, one row per definition and cycle in a case). Evidence is document METADATA (the bytes are in private object storage), structured reviews and external verification references, all hanging off the instance. The audit trail names a case, an instance or a definition. There is no `verified` column anywhere: the overall state is derived. The provider registration (PRO-001) and Go-Live (PRO-003) are not referenced.
+
+```mermaid
+erDiagram
+  TRUST_ACCOUNTS {
+    uuid account_id PK "same table as identity.accounts (referenced by id only)"
+  }
+  TRUST_MARKETS {
+    uuid market_id PK "same table as geography.markets"
+  }
+  TRUST_SERVICE_TYPES {
+    uuid service_type_id PK "same table as catalog.service_types"
+  }
+  TRUST_CONTENT_ENTRIES {
+    text key PK "same table as content.entries"
+  }
+  TRUST_REQUIREMENT_DEFINITIONS {
+    uuid requirement_definition_id PK
+    text code UK "immutable snake_case identity"
+    text requirement_type "IDENTITY, BACKGROUND_CHECK, LICENSE, INSURANCE, CERTIFICATION, BUSINESS_REGISTRATION, OTHER_DOCUMENT, immutable"
+    text evidence_kind "DOCUMENT or EXTERNAL, immutable"
+    boolean expiry_required "an approval needs an expiry date"
+    text status "INACTIVE, ACTIVE, RETIRED"
+    text name_content_key FK "GENERATED from code, FK to content.entries"
+    text instructions_content_key FK "GENERATED from code, FK to content.entries"
+    timestamptz created_at
+    timestamptz updated_at
+  }
+  TRUST_DOCUMENT_TYPES {
+    uuid document_type_id PK
+    text code UK "immutable snake_case identity"
+    text requirement_type "the ONE requirement type it evidences, immutable"
+    text status "ACTIVE, INACTIVE"
+    text name_content_key FK "GENERATED from code, FK to content.entries"
+    timestamptz created_at
+    timestamptz updated_at
+  }
+  TRUST_REASON_CODES {
+    uuid reason_code_id PK
+    text code UK "immutable UPPER_SNAKE identity, target of reviews.reason_code"
+    text applies_to "REJECT, ACTION_REQUIRED, BOTH, immutable"
+    text status "ACTIVE, INACTIVE"
+    text name_content_key FK "GENERATED from lower(code), FK to content.entries"
+    timestamptz created_at
+    timestamptz updated_at
+  }
+  TRUST_REQUIREMENT_RULES {
+    uuid requirement_rule_id PK
+    uuid requirement_definition_id FK "unique with market and service type, NULLS NOT DISTINCT"
+    uuid market_id FK "NULL = every market"
+    uuid service_type_id FK "NULL = every service type"
+    boolean enabled "switched off, never deleted"
+    timestamptz created_at
+    timestamptz updated_at
+  }
+  TRUST_VERIFICATION_CASES {
+    uuid verification_case_id PK
+    uuid account_id FK "the existing identity account, restrict"
+    integer case_number UK "contiguous per account, unique with account_id"
+    text status "OPEN, IN_REVIEW, ACTION_REQUIRED, APPROVED, EXPIRED, CANCELLED: derived, stored for the queue"
+    integer revision "concurrency token"
+    timestamptz submitted_at "set once when the case leaves OPEN"
+    timestamptz decided_at "last time the case became APPROVED"
+    timestamptz cancelled_at "set exactly when CANCELLED"
+    timestamptz created_at
+    timestamptz updated_at
+  }
+  TRUST_CASE_REQUIREMENTS {
+    uuid case_requirement_id PK
+    uuid verification_case_id FK "ownership is read through the case, no account id"
+    uuid requirement_definition_id FK "the policy snapshot"
+    integer cycle UK "unique with case and definition, contiguous"
+    text status "NOT_STARTED, PENDING, IN_REVIEW, ACTION_REQUIRED, APPROVED, REJECTED, EXPIRED, NOT_REQUIRED"
+    integer round "provider evidence submissions in this cycle"
+    integer revision "concurrency token"
+    timestamptz required_at
+    timestamptz submitted_at
+    timestamptz decided_at
+    timestamptz approved_at
+    timestamptz expires_at "reviewer-supplied end of the approval"
+    timestamptz superseded_at "set when a newer cycle replaced an EXPIRED one"
+    timestamptz created_at
+    timestamptz updated_at
+  }
+  TRUST_DOCUMENTS {
+    uuid verification_document_id PK
+    uuid case_requirement_id FK
+    uuid document_type_id FK
+    text object_key UK "server-only, never in an API, event, log or audit row"
+    text mime_type "verified content type"
+    bigint size_bytes "verified size"
+    text sha256 "server-computed at finalize, set once"
+    text status "UPLOAD_PENDING, ATTACHED, SUBMITTED, WITHDRAWN, ABANDONED"
+    text scan_status "PENDING, CLEAN, INFECTED, ERROR"
+    integer round "NULL until SUBMITTED"
+    timestamptz upload_expires_at
+    timestamptz finalized_at
+    timestamptz scanned_at
+    timestamptz submitted_at
+    timestamptz withdrawn_at
+    timestamptz created_at
+    timestamptz updated_at
+  }
+  TRUST_REVIEWS {
+    uuid review_id PK
+    uuid case_requirement_id FK
+    integer round "the evidence round decided"
+    text decision "STARTED, APPROVED, REJECTED, ACTION_REQUIRED"
+    text reason_code FK "to reason_codes.code, required for REJECTED and ACTION_REQUIRED"
+    text reviewer "admin:subject or external:adapter, text actor"
+    timestamptz expires_at "APPROVED only"
+    text correlation_id
+    timestamptz reviewed_at
+  }
+  TRUST_EXTERNAL_VERIFICATIONS {
+    uuid external_verification_id PK
+    uuid case_requirement_id FK "unique with round"
+    integer round
+    text adapter "unique with external_id"
+    text external_id "reference, not a credential"
+    text status "CREATED, PENDING, APPROVED, REJECTED, ERROR, CANCELLED"
+    timestamptz last_checked_at
+    timestamptz created_at
+    timestamptz updated_at
+  }
+  TRUST_AUDIT_EVENTS {
+    uuid audit_event_id PK
+    timestamptz occurred_at
+    text actor
+    text action "19 VERIFICATION_* and TRUST_* actions"
+    uuid verification_case_id FK "subject, nullable"
+    uuid case_requirement_id FK "subject, nullable"
+    uuid requirement_definition_id FK "subject, nullable"
+    jsonb changes "identifiers, codes, statuses and counts only"
+    text reason_code "no foreign key"
+    text correlation_id
+  }
+  TRUST_ACCOUNTS ||--o{ TRUST_VERIFICATION_CASES : "cases of an account (account_id)"
+  TRUST_MARKETS |o--o{ TRUST_REQUIREMENT_RULES : "NULL = every market (market_id)"
+  TRUST_SERVICE_TYPES |o--o{ TRUST_REQUIREMENT_RULES : "NULL = every service type (service_type_id)"
+  TRUST_REQUIREMENT_DEFINITIONS ||--o{ TRUST_REQUIREMENT_RULES : "where it applies (requirement_definition_id)"
+  TRUST_REQUIREMENT_DEFINITIONS ||--o{ TRUST_CASE_REQUIREMENTS : "policy snapshot (requirement_definition_id)"
+  TRUST_VERIFICATION_CASES ||--o{ TRUST_CASE_REQUIREMENTS : "instances (verification_case_id)"
+  TRUST_CASE_REQUIREMENTS ||--o{ TRUST_DOCUMENTS : "evidence (case_requirement_id)"
+  TRUST_DOCUMENT_TYPES ||--o{ TRUST_DOCUMENTS : "kind of document (document_type_id)"
+  TRUST_CASE_REQUIREMENTS ||--o{ TRUST_REVIEWS : "decisions (case_requirement_id)"
+  TRUST_REASON_CODES |o--o{ TRUST_REVIEWS : "structured reason (reason_code -> code)"
+  TRUST_CASE_REQUIREMENTS ||--o{ TRUST_EXTERNAL_VERIFICATIONS : "external reference (case_requirement_id)"
+  TRUST_VERIFICATION_CASES |o--o{ TRUST_AUDIT_EVENTS : "audited subject (verification_case_id)"
+  TRUST_CASE_REQUIREMENTS |o--o{ TRUST_AUDIT_EVENTS : "audited subject (case_requirement_id)"
+  TRUST_REQUIREMENT_DEFINITIONS |o--o{ TRUST_AUDIT_EVENTS : "audited subject (requirement_definition_id)"
+  TRUST_CONTENT_ENTRIES ||--o{ TRUST_REQUIREMENT_DEFINITIONS : "name and instructions (name_content_key, instructions_content_key -> key)"
+  TRUST_CONTENT_ENTRIES ||--o{ TRUST_DOCUMENT_TYPES : "name (name_content_key -> key)"
+  TRUST_CONTENT_ENTRIES ||--o{ TRUST_REASON_CODES : "provider-facing message (name_content_key -> key)"
+```
+
+**The account is referenced by id only.** `fk_verification_cases__account_id` is the entire link to the person: the case holds no copy of the email, the phone, the name or the profile, and whether the account is active, its contacts are verified and its registration is live is read from `identity` and `provider` when the verification is evaluated. One account has many cases over time (`case_number`, contiguous) but at most one LIVE (non-cancelled) case, enforced by the partial unique index `uq_verification_cases__live (account_id) WHERE status <> 'CANCELLED'`; a cancelled case stays as history and a new case is the next number. There is no foreign key between `trust` and `provider`: verification is a separate fact from the registration (PRO-001), from the PROVIDER role (`identity.account_roles`, not drawn) and from Go-Live (PRO-003, no table yet).
+
+**Definition, rule, instance.** `requirement_rules` joins a definition to an optional market and an optional service type (NULL = all; `uq_requirement_rules__scope` is UNIQUE NULLS NOT DISTINCT, so two all-markets rules for a definition cannot coexist). `case_requirements` references the DEFINITION, not the rule: the definition id plus the cycle is the policy snapshot, so changing a rule never edits an instance and the history of what a provider was asked stays explainable. The current instance of a requirement is the row with `superseded_at IS NULL` (`uq_case_requirements__current`); re-verification adds `cycle + 1` and supersedes the expired one.
+
+**Evidence hangs off the instance, ownership off the case.** `documents`, `reviews` and `external_verifications` reference `case_requirement_id` only; none carries an `account_id` or a case id, so the owner is always reached through the case and cannot drift. Each names the evidence `round`: `uq_reviews__decision` and `uq_reviews__started` (one terminal decision and one start per requirement and round) and `uq_external_verifications__round` (one external reference per requirement and round). `reviews.reason_code` references `reason_codes.code` (a unique, immutable, never-reused key) so the structured reason is a real foreign key; `documents` reference their `document_types` row. There are no free-text columns for reviewers.
+
+**The audit trail has three optional subjects.** `audit_events` names a case, a requirement instance or a definition (at least one, `ck_audit_events__subject`); there is no composite key tying them together because the trail is immutable, written in the same transaction as the change and read only for investigation. `reason_code` there is plain text. All foreign keys are `ON DELETE RESTRICT`, and no trust row is ever deleted.
+
+**Copy is content.** The generated `name_content_key` and `instructions_content_key` of definitions, the `name_content_key` of document types and the provider-facing `name_content_key` of reason codes are foreign keys to `content.entries (key)` (restrict), so a reference row cannot exist without its managed text. Labels for statuses, errors and page copy are content entries that no table references.

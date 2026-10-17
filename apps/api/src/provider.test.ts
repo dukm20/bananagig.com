@@ -1358,7 +1358,9 @@ describe('OpenAPI inventory and the committed documents', () => {
       expect(openapi, r.operationId).toContain(`operationId: ${r.operationId}`);
       expect(openapi, r.spec).toMatch(new RegExp(`^ {2}${r.spec}:`, 'm'));
     }
-    expect([...openapi.matchAll(/^ {2}(\/api\/v1\/provider[^:]*):/gm)].map((m) => m[1]).sort()).toEqual([...new Set(ROUTES.map((r) => r.spec))].sort());
+    expect([...openapi.matchAll(/^ {2}(\/api\/v1\/provider\/registration[^:]*):/gm)].map((m) => m[1]).sort()).toEqual(
+      [...new Set(ROUTES.map((r) => r.spec))].sort(),
+    );
     const asyncapi = readFileSync(path.join(root, 'docs/events/asyncapi.yaml'), 'utf8');
     for (const type of Object.values(PROVIDER_EVENTS)) expect(asyncapi, type).toContain(type);
     for (const name of ['ProviderRegistrationStarted', 'ProviderRegistrationCompleted', 'ProviderRegistrationCancelled'])

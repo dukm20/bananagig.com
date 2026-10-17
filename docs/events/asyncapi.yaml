@@ -336,6 +336,48 @@ channels:
     messages:
       ProviderRegistrationCancelled:
         $ref: "#/components/messages/ProviderRegistrationCancelled"
+  trust_caseOpened:
+    address: bananagig.trust.verification-case-opened.v1
+    description: A verification case was opened for a provider account (the requirements policy derived from the registration). Verification is multi-dimensional and an approved case is NOT Go-Live. Published through the transactional outbox (aggregate verification_case); the payload carries identifiers and codes only, never a contact, a name or a text.
+    messages:
+      ProviderVerificationCaseOpened:
+        $ref: "#/components/messages/ProviderVerificationCaseOpened"
+  trust_submitted:
+    address: bananagig.trust.verification-submitted.v1
+    description: A provider submitted evidence for review (documents in private storage, or an external verification started). Identifiers and the case status only; never a document. Published through the transactional outbox (aggregate verification_case); the payload carries identifiers and codes only, never a contact, a name or a text.
+    messages:
+      ProviderVerificationSubmitted:
+        $ref: "#/components/messages/ProviderVerificationSubmitted"
+  trust_requirementApproved:
+    address: bananagig.trust.verification-requirement-approved.v1
+    description: One verification requirement was approved (by a reviewer or by an external provider through the adapter). Identifiers, the requirement code and statuses only. Published through the transactional outbox (aggregate verification_case); the payload carries identifiers and codes only, never a contact, a name or a text.
+    messages:
+      ProviderVerificationRequirementApproved:
+        $ref: "#/components/messages/ProviderVerificationRequirementApproved"
+  trust_requirementRejected:
+    address: bananagig.trust.verification-requirement-rejected.v1
+    description: One verification requirement was rejected with a structured reason code; the provider may resubmit. Published through the transactional outbox (aggregate verification_case); the payload carries identifiers and codes only, never a contact, a name or a text.
+    messages:
+      ProviderVerificationRequirementRejected:
+        $ref: "#/components/messages/ProviderVerificationRequirementRejected"
+  trust_actionRequired:
+    address: bananagig.trust.verification-action-required.v1
+    description: A reviewer asked the provider for more evidence for one requirement, with a structured reason code. Published through the transactional outbox (aggregate verification_case); the payload carries identifiers and codes only, never a contact, a name or a text.
+    messages:
+      ProviderVerificationActionRequired:
+        $ref: "#/components/messages/ProviderVerificationActionRequired"
+  trust_expired:
+    address: bananagig.trust.verification-expired.v1
+    description: An approved requirement reached the end of its validity (the original approval stays as history; a new cycle re-verifies it). Published through the transactional outbox (aggregate verification_case); the payload carries identifiers and codes only, never a contact, a name or a text.
+    messages:
+      ProviderVerificationExpired:
+        $ref: "#/components/messages/ProviderVerificationExpired"
+  trust_completed:
+    address: bananagig.trust.verification-completed.v1
+    description: Every required requirement of a case is approved. This is a SIGNAL for the later Go-Live decision (PRO-003) and does not make the provider live or change any role. Published through the transactional outbox (aggregate verification_case); the payload carries identifiers and codes only, never a contact, a name or a text.
+    messages:
+      ProviderVerificationCompleted:
+        $ref: "#/components/messages/ProviderVerificationCompleted"
 operations:
   receiveInfraPing:
     action: receive
@@ -612,6 +654,41 @@ operations:
     channel:
       $ref: "#/channels/provider_registrationCancelled"
     summary: An IN_PROGRESS provider registration was cancelled. The account and its roles are untouched.
+  sendProviderVerificationCaseOpened:
+    action: send
+    channel:
+      $ref: "#/channels/trust_caseOpened"
+    summary: A verification case was opened for a provider account (the requirements policy derived from the registration). Verification is multi-dimensional and an approved case is NOT Go-Live.
+  sendProviderVerificationSubmitted:
+    action: send
+    channel:
+      $ref: "#/channels/trust_submitted"
+    summary: A provider submitted evidence for review (documents in private storage, or an external verification started). Identifiers and the case status only; never a document.
+  sendProviderVerificationRequirementApproved:
+    action: send
+    channel:
+      $ref: "#/channels/trust_requirementApproved"
+    summary: One verification requirement was approved (by a reviewer or by an external provider through the adapter). Identifiers, the requirement code and statuses only.
+  sendProviderVerificationRequirementRejected:
+    action: send
+    channel:
+      $ref: "#/channels/trust_requirementRejected"
+    summary: One verification requirement was rejected with a structured reason code; the provider may resubmit.
+  sendProviderVerificationActionRequired:
+    action: send
+    channel:
+      $ref: "#/channels/trust_actionRequired"
+    summary: A reviewer asked the provider for more evidence for one requirement, with a structured reason code.
+  sendProviderVerificationExpired:
+    action: send
+    channel:
+      $ref: "#/channels/trust_expired"
+    summary: An approved requirement reached the end of its validity (the original approval stays as history; a new cycle re-verifies it).
+  sendProviderVerificationCompleted:
+    action: send
+    channel:
+      $ref: "#/channels/trust_completed"
+    summary: Every required requirement of a case is approved. This is a SIGNAL for the later Go-Live decision (PRO-003) and does not make the provider live or change any role.
 components:
   messages:
     EventEnvelope:
@@ -1164,6 +1241,76 @@ components:
             type: string
       payload:
         $ref: "#/components/schemas/ProviderRegistrationCancelled"
+    ProviderVerificationCaseOpened:
+      name: ProviderVerificationCaseOpened
+      title: A verification case was opened for a provider account (the requirements policy derived from the registration). Verification is multi-dimensional and an approved case is NOT Go-Live.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/ProviderVerificationCaseOpened"
+    ProviderVerificationSubmitted:
+      name: ProviderVerificationSubmitted
+      title: A provider submitted evidence for review (documents in private storage, or an external verification started). Identifiers and the case status only; never a document.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/ProviderVerificationSubmitted"
+    ProviderVerificationRequirementApproved:
+      name: ProviderVerificationRequirementApproved
+      title: One verification requirement was approved (by a reviewer or by an external provider through the adapter). Identifiers, the requirement code and statuses only.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/ProviderVerificationRequirementApproved"
+    ProviderVerificationRequirementRejected:
+      name: ProviderVerificationRequirementRejected
+      title: One verification requirement was rejected with a structured reason code; the provider may resubmit.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/ProviderVerificationRequirementRejected"
+    ProviderVerificationActionRequired:
+      name: ProviderVerificationActionRequired
+      title: A reviewer asked the provider for more evidence for one requirement, with a structured reason code.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/ProviderVerificationActionRequired"
+    ProviderVerificationExpired:
+      name: ProviderVerificationExpired
+      title: An approved requirement reached the end of its validity (the original approval stays as history; a new cycle re-verifies it).
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/ProviderVerificationExpired"
+    ProviderVerificationCompleted:
+      name: ProviderVerificationCompleted
+      title: Every required requirement of a case is approved. This is a SIGNAL for the later Go-Live decision (PRO-003) and does not make the provider live or change any role.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/ProviderVerificationCompleted"
   schemas:
     EventEnvelope:
       type: object
@@ -5451,6 +5598,723 @@ components:
             - accountId
             - providerRegistrationId
             - attempt
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    ProviderVerificationCaseOpened:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.trust.verification-case-opened.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            accountId:
+              type: string
+            verificationCaseId:
+              type: string
+            caseNumber:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
+            status:
+              type: string
+              enum:
+                - OPEN
+                - IN_REVIEW
+                - ACTION_REQUIRED
+                - APPROVED
+                - EXPIRED
+                - CANCELLED
+          required:
+            - accountId
+            - verificationCaseId
+            - caseNumber
+            - status
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    ProviderVerificationSubmitted:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.trust.verification-submitted.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            accountId:
+              type: string
+            verificationCaseId:
+              type: string
+            caseNumber:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
+            status:
+              type: string
+              enum:
+                - OPEN
+                - IN_REVIEW
+                - ACTION_REQUIRED
+                - APPROVED
+                - EXPIRED
+                - CANCELLED
+          required:
+            - accountId
+            - verificationCaseId
+            - caseNumber
+            - status
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    ProviderVerificationRequirementApproved:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.trust.verification-requirement-approved.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            accountId:
+              type: string
+            verificationCaseId:
+              type: string
+            caseNumber:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
+            status:
+              type: string
+              enum:
+                - OPEN
+                - IN_REVIEW
+                - ACTION_REQUIRED
+                - APPROVED
+                - EXPIRED
+                - CANCELLED
+            caseRequirementId:
+              type: string
+            requirementCode:
+              type: string
+            requirementType:
+              type: string
+              enum:
+                - IDENTITY
+                - BACKGROUND_CHECK
+                - LICENSE
+                - INSURANCE
+                - CERTIFICATION
+                - BUSINESS_REGISTRATION
+                - OTHER_DOCUMENT
+            requirementStatus:
+              type: string
+              enum:
+                - NOT_STARTED
+                - PENDING
+                - IN_REVIEW
+                - ACTION_REQUIRED
+                - APPROVED
+                - REJECTED
+                - EXPIRED
+                - NOT_REQUIRED
+            reasonCode:
+              type:
+                - string
+                - "null"
+          required:
+            - accountId
+            - verificationCaseId
+            - caseNumber
+            - status
+            - caseRequirementId
+            - requirementCode
+            - requirementType
+            - requirementStatus
+            - reasonCode
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    ProviderVerificationRequirementRejected:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.trust.verification-requirement-rejected.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            accountId:
+              type: string
+            verificationCaseId:
+              type: string
+            caseNumber:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
+            status:
+              type: string
+              enum:
+                - OPEN
+                - IN_REVIEW
+                - ACTION_REQUIRED
+                - APPROVED
+                - EXPIRED
+                - CANCELLED
+            caseRequirementId:
+              type: string
+            requirementCode:
+              type: string
+            requirementType:
+              type: string
+              enum:
+                - IDENTITY
+                - BACKGROUND_CHECK
+                - LICENSE
+                - INSURANCE
+                - CERTIFICATION
+                - BUSINESS_REGISTRATION
+                - OTHER_DOCUMENT
+            requirementStatus:
+              type: string
+              enum:
+                - NOT_STARTED
+                - PENDING
+                - IN_REVIEW
+                - ACTION_REQUIRED
+                - APPROVED
+                - REJECTED
+                - EXPIRED
+                - NOT_REQUIRED
+            reasonCode:
+              type:
+                - string
+                - "null"
+          required:
+            - accountId
+            - verificationCaseId
+            - caseNumber
+            - status
+            - caseRequirementId
+            - requirementCode
+            - requirementType
+            - requirementStatus
+            - reasonCode
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    ProviderVerificationActionRequired:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.trust.verification-action-required.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            accountId:
+              type: string
+            verificationCaseId:
+              type: string
+            caseNumber:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
+            status:
+              type: string
+              enum:
+                - OPEN
+                - IN_REVIEW
+                - ACTION_REQUIRED
+                - APPROVED
+                - EXPIRED
+                - CANCELLED
+            caseRequirementId:
+              type: string
+            requirementCode:
+              type: string
+            requirementType:
+              type: string
+              enum:
+                - IDENTITY
+                - BACKGROUND_CHECK
+                - LICENSE
+                - INSURANCE
+                - CERTIFICATION
+                - BUSINESS_REGISTRATION
+                - OTHER_DOCUMENT
+            requirementStatus:
+              type: string
+              enum:
+                - NOT_STARTED
+                - PENDING
+                - IN_REVIEW
+                - ACTION_REQUIRED
+                - APPROVED
+                - REJECTED
+                - EXPIRED
+                - NOT_REQUIRED
+            reasonCode:
+              type:
+                - string
+                - "null"
+          required:
+            - accountId
+            - verificationCaseId
+            - caseNumber
+            - status
+            - caseRequirementId
+            - requirementCode
+            - requirementType
+            - requirementStatus
+            - reasonCode
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    ProviderVerificationExpired:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.trust.verification-expired.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            accountId:
+              type: string
+            verificationCaseId:
+              type: string
+            caseNumber:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
+            status:
+              type: string
+              enum:
+                - OPEN
+                - IN_REVIEW
+                - ACTION_REQUIRED
+                - APPROVED
+                - EXPIRED
+                - CANCELLED
+            caseRequirementId:
+              type: string
+            requirementCode:
+              type: string
+            requirementType:
+              type: string
+              enum:
+                - IDENTITY
+                - BACKGROUND_CHECK
+                - LICENSE
+                - INSURANCE
+                - CERTIFICATION
+                - BUSINESS_REGISTRATION
+                - OTHER_DOCUMENT
+            requirementStatus:
+              type: string
+              enum:
+                - NOT_STARTED
+                - PENDING
+                - IN_REVIEW
+                - ACTION_REQUIRED
+                - APPROVED
+                - REJECTED
+                - EXPIRED
+                - NOT_REQUIRED
+            reasonCode:
+              type:
+                - string
+                - "null"
+          required:
+            - accountId
+            - verificationCaseId
+            - caseNumber
+            - status
+            - caseRequirementId
+            - requirementCode
+            - requirementType
+            - requirementStatus
+            - reasonCode
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    ProviderVerificationCompleted:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.trust.verification-completed.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            accountId:
+              type: string
+            verificationCaseId:
+              type: string
+            caseNumber:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
+            status:
+              type: string
+              enum:
+                - OPEN
+                - IN_REVIEW
+                - ACTION_REQUIRED
+                - APPROVED
+                - EXPIRED
+                - CANCELLED
+          required:
+            - accountId
+            - verificationCaseId
+            - caseNumber
+            - status
           additionalProperties: false
       required:
         - eventId

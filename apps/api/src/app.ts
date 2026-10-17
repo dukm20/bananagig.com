@@ -4,6 +4,7 @@ import type { AppConfig } from '@bananagig/config';
 import { API_PREFIX } from '@bananagig/contracts';
 import type { CatalogService, GigTemplateService } from '@bananagig/catalog';
 import type { ProviderRegistrationService } from '@bananagig/provider';
+import type { TrustService } from '@bananagig/trust';
 import type { ConfigurationService } from '@bananagig/configuration';
 import type { ContentService } from '@bananagig/content';
 import type {
@@ -27,6 +28,8 @@ import { contentRoutes } from './modules/content/routes';
 import { accountRoutes } from './modules/account/routes';
 import { catalogRoutes } from './modules/catalog/routes';
 import { providerRoutes } from './modules/provider/routes';
+import { trustAdminRoutes } from './modules/trust/admin-routes';
+import { trustProviderRoutes } from './modules/trust/routes';
 import { consentRoutes } from './modules/consent/routes';
 import { passwordResetRoutes, securityRoutes } from './modules/security/routes';
 import { drainWithTimeout } from './modules/security/wiring';
@@ -90,6 +93,8 @@ export interface AppDeps {
   gigTemplates?: GigTemplateService;
   /** The provider registration (PRO-001): registered with the account routes (it acts on the account of the verified token), so it needs `accounts`. */
   providerRegistrations?: ProviderRegistrationService;
+  /** Provider verification (TRUST-001): the provider routes act on the account of the verified token, so they need `accounts`; the reviewer routes need the `trust-*` admin roles. */
+  trust?: TrustService;
 }
 
 /**
@@ -162,6 +167,11 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
             'The PLATFORM-OWNED catalogue taxonomy (CAT-001): categories and service types (a Gig belongs to a provider and is not here), their availability and display order per market and the prohibited-service list. Reads are public with visibility rules (ACTIVE items enabled in an ACTIVE market, resolved names and descriptions); management needs the admin context plus catalog-read or catalog-write, a reason and writes an immutable audit row',
         },
         {
+          name: 'trust',
+          description:
+            "Provider verification (TRUST-001): a case of requirements that policy derives from the provider's market and service types, each evidenced by documents in private storage (or an external verification) and decided by reviewers with structured reasons. No `verified` flag exists and an approved case is NOT Go-Live (PRO-003). Provider routes act on the caller's own case; reviewer routes need the trust-read, trust-review or trust-admin admin roles.",
+        },
+        {
           name: 'provider',
           description:
             'The provider registration of the caller (PRO-001): the same account, not a second one. The application role (identity), the registration (market, service types, status) and Go-Live eligibility (PRO-003) are separate. Contact and agreement state are composed from their owners, never stored here; verification, subscription, profile and Gigs are future prerequisites reported as not available. Owner only: every route acts on the account of the verified token.',
@@ -203,6 +213,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   if (deps.address) await app.register(addressRoutes, { prefix: `${API_PREFIX}/geography`, address: deps.address });
   if (deps.catalog && deps.content)
     await app.register(catalogRoutes, { prefix: `${API_PREFIX}/catalog`, catalog: deps.catalog, gigTemplates: deps.gigTemplates, content: deps.content });
+  if (deps.trust) await app.register(trustAdminRoutes, { prefix: `${API_PREFIX}/admin/trust`, trust: deps.trust });
   if (deps.accounts) {
     await app.register(accountPlugin, {
       accounts: deps.accounts,
@@ -219,6 +230,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       areaRoutes: deps.accountArea ? { securitySummary: deps.security !== undefined, privacySummary: deps.consent !== undefined } : undefined,
     });
     if (deps.providerRegistrations) await app.register(providerRoutes, { prefix: `${API_PREFIX}/provider`, registrations: deps.providerRegistrations });
+    if (deps.trust) await app.register(trustProviderRoutes, { prefix: `${API_PREFIX}/provider/verification`, trust: deps.trust });
     if (deps.security) {
       const security = deps.security;
       // graceful stop (index.ts closes the database only after app.close()): wait, bounded, for the detached password-reset work

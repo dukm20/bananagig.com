@@ -658,22 +658,22 @@ const FUNCTIONS = [
 /** A fingerprint of every object of the database that does NOT belong to the catalog schema (compared before and after 0015). */
 async function outsideCatalog(from: pg.Pool) {
   const rows = async (text: string) => (await from.query(text)).rows.map((r) => JSON.stringify(r));
-  const other = "n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast', 'catalog', 'provider')";
+  const other = "n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast', 'catalog', 'provider', 'trust')";
   return {
     schemas: await rows(
-      "SELECT nspname FROM pg_namespace WHERE nspname NOT LIKE 'pg_%' AND nspname NOT IN ('information_schema', 'catalog', 'provider') ORDER BY 1",
+      "SELECT nspname FROM pg_namespace WHERE nspname NOT LIKE 'pg_%' AND nspname NOT IN ('information_schema', 'catalog', 'provider', 'trust') ORDER BY 1",
     ),
     relations: await rows(`SELECT n.nspname, c.relname, c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE ${other} ORDER BY 1, 2`),
     columns: await rows(
       `SELECT table_schema, table_name, column_name, data_type, is_nullable, column_default, is_generated, generation_expression, ordinal_position FROM information_schema.columns
-        WHERE table_schema NOT IN ('pg_catalog', 'information_schema', 'catalog', 'provider') ORDER BY table_schema, table_name, ordinal_position`,
+        WHERE table_schema NOT IN ('pg_catalog', 'information_schema', 'catalog', 'provider', 'trust') ORDER BY table_schema, table_name, ordinal_position`,
     ),
     constraints: await rows(
       `SELECT n.nspname, t.relname, c.conname, c.contype, c.confdeltype, c.confupdtype, pg_get_constraintdef(c.oid) AS def FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid JOIN pg_namespace n ON n.oid = t.relnamespace
         WHERE ${other} ORDER BY n.nspname, t.relname, c.conname COLLATE "C"`,
     ),
     indexes: await rows(
-      `SELECT schemaname, tablename, indexname, indexdef FROM pg_indexes WHERE schemaname NOT IN ('pg_catalog', 'information_schema', 'catalog', 'provider') ORDER BY schemaname, tablename, indexname COLLATE "C"`,
+      `SELECT schemaname, tablename, indexname, indexdef FROM pg_indexes WHERE schemaname NOT IN ('pg_catalog', 'information_schema', 'catalog', 'provider', 'trust') ORDER BY schemaname, tablename, indexname COLLATE "C"`,
     ),
     triggers: await rows(
       `SELECT n.nspname, t.relname, g.tgname, g.tgenabled, pg_get_triggerdef(g.oid) AS def FROM pg_trigger g JOIN pg_class t ON t.oid = g.tgrelid JOIN pg_namespace n ON n.oid = t.relnamespace
@@ -681,7 +681,7 @@ async function outsideCatalog(from: pg.Pool) {
     ),
     functions: await rows(
       `SELECT n.nspname, p.proname, pg_get_function_identity_arguments(p.oid) AS args, md5(p.prosrc) AS src, p.provolatile, p.prosecdef FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-        WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'catalog', 'provider') AND p.prokind = 'f' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e')
+        WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'catalog', 'provider', 'trust') AND p.prokind = 'f' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e')
         ORDER BY n.nspname, p.proname, args`,
     ),
     comments: await rows(
@@ -960,24 +960,24 @@ describe('A. schema shape: a platform-owned taxonomy with generated content keys
         (
           await from.query(
             `SELECT (SELECT count(*)::int FROM identity.accounts) AS accounts, (SELECT count(*)::int FROM integration.outbox_events) AS outbox,
-                    (SELECT count(*)::int FROM configuration.parameters WHERE key NOT LIKE 'provider.registration.%') AS parameters,
-                    (SELECT count(*)::int FROM configuration.audit_events a WHERE NOT EXISTS (SELECT 1 FROM configuration.parameters p WHERE p.parameter_id = a.parameter_id AND p.key LIKE 'provider.registration.%')) AS config_audit,
+                    (SELECT count(*)::int FROM configuration.parameters WHERE key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'trust.%') AS parameters,
+                    (SELECT count(*)::int FROM configuration.audit_events a WHERE NOT EXISTS (SELECT 1 FROM configuration.parameters p WHERE p.parameter_id = a.parameter_id AND (p.key LIKE 'provider.registration.%' OR p.key LIKE 'trust.%'))) AS config_audit,
                     (SELECT count(*)::int FROM geography.markets) AS markets, (SELECT count(*)::int FROM geography.audit_events) AS geo_audit,
                     (SELECT count(*)::int FROM identity.account_sections) AS sections, (SELECT count(*)::int FROM identity.roles) AS roles,
                     (SELECT count(*)::int FROM content.locales) AS locales,
-                    (SELECT count(*)::int FROM content.entries WHERE key NOT LIKE 'catalog.%' AND key NOT LIKE 'provider.registration.%') AS other_entries,
-                    (SELECT count(*)::int FROM content.versions v JOIN content.entries e ON e.entry_id = v.entry_id WHERE e.key NOT LIKE 'catalog.%' AND e.key NOT LIKE 'provider.registration.%') AS other_versions,
-                    (SELECT count(*)::int FROM content.audit_events a JOIN content.entries e ON e.entry_id = a.entry_id WHERE e.key NOT LIKE 'catalog.%' AND e.key NOT LIKE 'provider.registration.%') AS other_audit`,
+                    (SELECT count(*)::int FROM content.entries WHERE key NOT LIKE 'catalog.%' AND key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'trust.%') AS other_entries,
+                    (SELECT count(*)::int FROM content.versions v JOIN content.entries e ON e.entry_id = v.entry_id WHERE e.key NOT LIKE 'catalog.%' AND e.key NOT LIKE 'provider.registration.%' AND e.key NOT LIKE 'trust.%') AS other_versions,
+                    (SELECT count(*)::int FROM content.audit_events a JOIN content.entries e ON e.entry_id = a.entry_id WHERE e.key NOT LIKE 'catalog.%' AND e.key NOT LIKE 'provider.registration.%' AND e.key NOT LIKE 'trust.%') AS other_audit`,
           )
         ).rows[0];
       expect(await counts(pool)).toEqual(await counts(beforePool));
       const total = (from: pg.Pool) =>
         from
           .query(
-            // the provider registration copy of 0018 (provider.registration.*, 56 entries) is a later migration: only what 0015 and 0016 added may differ
-            `SELECT (SELECT count(*)::int FROM content.entries WHERE key NOT LIKE 'provider.registration.%') AS entries,
-                    (SELECT count(*)::int FROM content.versions v JOIN content.entries e ON e.entry_id = v.entry_id WHERE e.key NOT LIKE 'provider.registration.%') AS versions,
-                    (SELECT count(*)::int FROM content.audit_events a JOIN content.entries e ON e.entry_id = a.entry_id WHERE e.key NOT LIKE 'provider.registration.%') AS audit`,
+            // the provider registration copy of 0018 (provider.registration.*, 56 entries) and the verification copy of 0019 (trust.*, 97 entries) are later migrations: only what 0015 and 0016 added may differ
+            `SELECT (SELECT count(*)::int FROM content.entries WHERE key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'trust.%') AS entries,
+                    (SELECT count(*)::int FROM content.versions v JOIN content.entries e ON e.entry_id = v.entry_id WHERE e.key NOT LIKE 'provider.registration.%' AND e.key NOT LIKE 'trust.%') AS versions,
+                    (SELECT count(*)::int FROM content.audit_events a JOIN content.entries e ON e.entry_id = a.entry_id WHERE e.key NOT LIKE 'provider.registration.%' AND e.key NOT LIKE 'trust.%') AS audit`,
           )
           .then((r) => r.rows[0] as { entries: number; versions: number; audit: number });
       const [x, y] = [await total(beforePool), await total(seedPool)];
@@ -990,14 +990,18 @@ describe('A. schema shape: a platform-owned taxonomy with generated content keys
     }
   });
 
-  it('is referenced from outside the schema only by the provider registration selections (0018) and references only reference data: content.entries, geography.markets and itself', async () => {
-    // migration 0018 (PRO-001) adds the ONE foreign key into the catalogue: a selected service type of a provider registration (asserted in full by provider-model.itest.ts)
+  it('is referenced from outside the schema only by the provider registration selections (0018) and the trust requirement rules (0019) and references only reference data: content.entries, geography.markets and itself', async () => {
+    // migration 0018 (PRO-001) adds a foreign key into the catalogue: a selected service type of a provider registration (asserted in full by provider-model.itest.ts);
+    // migration 0019 (TRUST-001) adds the second: the service type a verification requirement rule applies to (asserted in full by trust-model.itest.ts)
     expect(
       await q(
         `SELECT conrelid::regclass::text AS from_table, conname FROM pg_constraint
-          WHERE contype = 'f' AND confrelid IN (SELECT oid FROM pg_class WHERE relnamespace = 'catalog'::regnamespace) AND connamespace <> 'catalog'::regnamespace`,
+          WHERE contype = 'f' AND confrelid IN (SELECT oid FROM pg_class WHERE relnamespace = 'catalog'::regnamespace) AND connamespace <> 'catalog'::regnamespace ORDER BY conname COLLATE "C"`,
       ),
-    ).toEqual([{ from_table: 'provider.registration_service_types', conname: 'fk_registration_service_types__service_type_id' }]);
+    ).toEqual([
+      { from_table: 'provider.registration_service_types', conname: 'fk_registration_service_types__service_type_id' },
+      { from_table: 'trust.requirement_rules', conname: 'fk_requirement_rules__service_type_id' },
+    ]);
     expect(
       (
         await q<{ target: string }>(

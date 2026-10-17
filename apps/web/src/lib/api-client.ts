@@ -6,6 +6,9 @@ import {
   ErrorResponse,
   AcceptConsentResponse,
   CatalogServiceTypeListResponse,
+  DocumentUploadAuthorizationResponse,
+  ProviderVerificationResponse,
+  VerificationDocumentResponse,
   MarketListResponse,
   ProviderRegistrationStateResponse,
   ProviderRequirementsResponse,
@@ -48,6 +51,12 @@ import {
   WithdrawConsentResponse,
   type AcceptConsentRequest,
   type CatalogServiceTypeDto,
+  type DocumentUploadAuthorizationDto,
+  type FinalizeDocumentRequest,
+  type ProviderVerificationDto,
+  type RequestDocumentUploadRequest,
+  type SubmitVerificationRequest,
+  type VerificationDocumentDto,
   type MarketDto,
   type ProviderRegistrationStateDto,
   type ProviderRequirementsDto,
@@ -451,6 +460,73 @@ export function createApiClient(opts: ApiClientOptions) {
     async listMarketServiceTypes(market: string, locale?: string): Promise<CatalogServiceTypeDto[]> {
       const qs = new URLSearchParams({ market, ...(locale ? { locale } : {}) }).toString();
       return (await request(`/catalog/service-types?${qs}`, (j) => CatalogServiceTypeListResponse.parse(j).data)).data;
+    },
+    // ---------------------------------------------------------------- provider verification (TRUST-001): the caller's own case; no call carries an account id, a case id or a decision
+    /** GET /api/v1/provider/verification: the requirements, their statuses, the documents' metadata and the overall state (derived; never Go-Live). */
+    async getProviderVerification(o: AccountCallOptions = {}): Promise<ProviderVerificationDto> {
+      return (await request('/provider/verification', (j) => ProviderVerificationResponse.parse(j).data, undefined, { headers: roleHeader(o) })).data;
+    },
+    /** POST /api/v1/provider/verification: opens or resumes the case (idempotent). `created` tells which. */
+    async openProviderVerification(o: AccountCallOptions = {}): Promise<{ created: boolean; verification: ProviderVerificationDto }> {
+      const r = await request('/provider/verification', (j) => ProviderVerificationResponse.parse(j).data, {}, { method: 'POST', headers: roleHeader(o) });
+      return { created: r.status === 201, verification: r.data };
+    },
+    /** POST /api/v1/provider/verification/documents/upload: authorizes ONE upload (a one-time URL: never store or log it). */
+    async requestVerificationUpload(input: RequestDocumentUploadRequest, o: AccountCallOptions = {}): Promise<DocumentUploadAuthorizationDto> {
+      return (
+        await request('/provider/verification/documents/upload', (j) => DocumentUploadAuthorizationResponse.parse(j).data, input, {
+          method: 'POST',
+          headers: roleHeader(o),
+        })
+      ).data;
+    },
+    /** POST /api/v1/provider/verification/documents/:id/finalize: the server verifies the stored file and scans it. */
+    async finalizeVerificationDocument(documentId: string, input: FinalizeDocumentRequest = {}, o: AccountCallOptions = {}): Promise<VerificationDocumentDto> {
+      return (
+        await request(`/provider/verification/documents/${encodeURIComponent(documentId)}/finalize`, (j) => VerificationDocumentResponse.parse(j).data, input, {
+          method: 'POST',
+          headers: roleHeader(o),
+        })
+      ).data;
+    },
+    /** POST /api/v1/provider/verification/documents/:id/withdraw: removes a draft document. */
+    async withdrawVerificationDocument(documentId: string, o: AccountCallOptions = {}): Promise<VerificationDocumentDto> {
+      return (
+        await request(
+          `/provider/verification/documents/${encodeURIComponent(documentId)}/withdraw`,
+          (j) => VerificationDocumentResponse.parse(j).data,
+          {},
+          {
+            method: 'POST',
+            headers: roleHeader(o),
+          },
+        )
+      ).data;
+    },
+    /** POST /api/v1/provider/verification/submit: submits the evidence for review (a stale revision is an ApiError 409). */
+    async submitProviderVerification(input: SubmitVerificationRequest, o: AccountCallOptions = {}): Promise<ProviderVerificationDto> {
+      return (
+        await request('/provider/verification/submit', (j) => ProviderVerificationResponse.parse(j).data, input, { method: 'POST', headers: roleHeader(o) })
+      ).data;
+    },
+    /** POST /api/v1/provider/verification/cancel: withdraws a case that was not decided. */
+    async cancelProviderVerification(o: AccountCallOptions = {}): Promise<ProviderVerificationDto> {
+      return (await request('/provider/verification/cancel', (j) => ProviderVerificationResponse.parse(j).data, {}, { method: 'POST', headers: roleHeader(o) }))
+        .data;
+    },
+    /** POST /api/v1/provider/verification/requirements/:code/reverify: starts a new cycle of an expired requirement. */
+    async reverifyProviderRequirement(requirementCode: string, o: AccountCallOptions = {}): Promise<ProviderVerificationDto> {
+      return (
+        await request(
+          `/provider/verification/requirements/${encodeURIComponent(requirementCode)}/reverify`,
+          (j) => ProviderVerificationResponse.parse(j).data,
+          {},
+          {
+            method: 'POST',
+            headers: roleHeader(o),
+          },
+        )
+      ).data;
     },
     // ---------------------------------------------------------------- the shared account area (ACC-001): every call acts as the session's active role (x-active-role)
     /** GET /api/v1/account/navigation: the enabled sections of the active role (registry data, in menu order), the switchable roles and the contact summary. */

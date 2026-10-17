@@ -8,3 +8,4 @@ export * from './email';
 export * from './rate-limit';
 export * from './sms';
 export * from './phone-intelligence';
+export * from './object-store';

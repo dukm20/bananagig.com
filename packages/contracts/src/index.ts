@@ -122,3 +122,4 @@ export * from './account-area';
 export * from './catalog';
 export * from './gig-template';
 export * from './provider';
+export * from './trust';

@@ -1,0 +1,38 @@
+import type { TrustErrorCode } from '@bananagig/contracts';
+
+/**
+ * Typed verification failure. `details` holds identifiers (requirement codes, steps) and machine-readable reasons only; it never carries a document, a hash, an object key, a URL,
+ * a contact, SQL or any other internal or personal value.
+ */
+export class TrustError extends Error {
+  constructor(
+    public readonly code: TrustErrorCode,
+    message: string,
+    public readonly details: Record<string, unknown> = {},
+  ) {
+    super(message);
+    this.name = 'TrustError';
+  }
+}
+
+const CONNECTIVITY_CODES = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ECONNABORTED',
+  'ETIMEDOUT',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EPIPE',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+]);
+
+/** Whether an error means "the database could not answer". Typed errors, programming errors and SQL-level rejections (data, integrity, syntax classes) are NOT outages. */
+export function isDatabaseOutage(err: unknown): boolean {
+  if (err instanceof TrustError) return false;
+  if (err instanceof TypeError || err instanceof RangeError || err instanceof ReferenceError || err instanceof SyntaxError) return false;
+  const code = (err as { code?: unknown } | null)?.code;
+  if (typeof code === 'string' && (CONNECTIVITY_CODES.has(code) || /^(08|53|57|58)[0-9A-Z]{3}$/.test(code))) return true;
+  if (typeof code === 'string' && /^(22|23|25|40|42)[0-9A-Z]{3}$/.test(code)) return false;
+  return err instanceof Error && /connect|connection|timeout|timed out|terminat|socket|ECONN/i.test(err.message);
+}

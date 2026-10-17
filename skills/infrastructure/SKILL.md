@@ -75,6 +75,9 @@ Compose services add no tables. A service that stores state (queue, cache, searc
 - Distroless images (otel-collector, flagd) cannot have shell healthchecks (DEBT-0009).
 - Fix audit findings with a scoped, major-capped override (`"parent>child": "^x.y.z"`) and check `pnpm peers check`; an open `>=` range can adopt a new major. Run `pnpm audit --prod` and read its exit code before calling a finding accepted (LRN-0018).
 
+- A host `pnpm dev` worker shares the pg-boss queue with the container worker: when `Worker runtime` fails and many checks cascade with "worker: no result", look for it before touching code (LRN-0057).
+- The private object store (SeaweedFS, bucket `bananagig-dev`) is used by the verification evidence through `PrivateObjectStore` (presigned one-object URLs; `S3_PUBLIC_ENDPOINT` is the host of those URLs for callers outside the container network; `TRUST_SCANNER` / `TRUST_EXTERNAL_PROVIDER` select the DEV/TEST fakes and are refused in production, LRN-0056).
+
 ## Do not
 
 - Do not publish internal service ports to all interfaces or add `privileged: true`.
@@ -88,4 +91,4 @@ ADR-0001, ADR-0003, ADR-0005, ADR-0007
 
 ## Last reviewed
 
-2026-10-05 (CI-001)
+2026-10-18 (TRUST-001)

@@ -247,7 +247,8 @@ describe('migration 0006 seeded shell copy', () => {
     // migration 0006 seeds no product configuration (migrations 0010 and 0011 seed the verification.email.* and verification.phone.* parameters, tested in
     // email-model.itest.ts and phone-model.itest.ts; migration 0012 seeds the six session, MFA and recovery parameters, tested in security-model.itest.ts;
     // migration 0013 seeds the four consent.* policy parameters, tested in consent-model.itest.ts; migration 0018 seeds the five provider.registration.* policy
-    // parameters, tested in provider-model.itest.ts): the parameters that exist besides those are EXACTLY the fifteen named here
+    // parameters, tested in provider-model.itest.ts; migration 0019 seeds the six trust.* evidence policy parameters, tested in trust-model.itest.ts): the parameters that exist
+    // besides those are EXACTLY the twenty-one named here
     const others = await iso.database.query<{ key: string }>(
       "SELECT key FROM configuration.parameters WHERE key NOT LIKE 'verification.email.%' AND key NOT LIKE 'verification.phone.%' ORDER BY key COLLATE \"C\"",
     );
@@ -267,6 +268,12 @@ describe('migration 0006 seeded shell copy', () => {
       'security.step_up_valid_minutes',
       'session.keep_signed_in_days',
       'session.trusted_browser_days',
+      'trust.document.allowed_mime_types',
+      'trust.document.download_url_ttl_seconds',
+      'trust.document.max_per_requirement',
+      'trust.document.max_size_bytes',
+      'trust.document.upload_url_ttl_seconds',
+      'trust.verification.require_clean_scan',
     ]);
   });
 });

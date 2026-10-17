@@ -5109,7 +5109,9 @@ await check('Provider registration', async () => {
     assert(
       ['ACCOUNT', 'MARKET', 'SERVICES'].every((s) => stepOf(req0, s).status === 'NOT_STARTED') &&
         stepOf(req0, 'CONTACT').status === 'NOT_STARTED' &&
-        ['VERIFICATION', 'SUBSCRIPTION', 'PROFILE', 'GIGS'].every((s) => stepOf(req0, s).status === 'NOT_AVAILABLE') &&
+        // VERIFICATION is answered by the verification domain (TRUST-001): identity verification applies to everyone and has not started; the later steps are not built yet
+        stepOf(req0, 'VERIFICATION').status === 'NOT_STARTED' &&
+        ['SUBSCRIPTION', 'PROFILE', 'GIGS'].every((s) => stepOf(req0, s).status === 'NOT_AVAILABLE') &&
         req0.overall.registrationReady === false &&
         req0.overall.goLive.evaluated === false &&
         req0.overall.goLive.eligible === false,
@@ -5622,8 +5624,9 @@ await check('Provider registration', async () => {
       reqDone.overall.registrationComplete === true &&
         reqDone.overall.goLive.evaluated === false &&
         reqDone.overall.goLive.eligible === false &&
-        ['VERIFICATION', 'SUBSCRIPTION', 'PROFILE', 'GIGS'].every((s) => stepOf(reqDone, s).status === 'NOT_AVAILABLE'),
-      '(13) completing the registration is not Go-Live: later steps are NOT_AVAILABLE and Go-Live is not evaluated',
+        stepOf(reqDone, 'VERIFICATION').status === 'NOT_STARTED' &&
+        ['SUBSCRIPTION', 'PROFILE', 'GIGS'].every((s) => stepOf(reqDone, s).status === 'NOT_AVAILABLE'),
+      '(13) completing the registration is not Go-Live and does not need verification: VERIFICATION (TRUST-001) is not started, later steps are NOT_AVAILABLE and Go-Live is not evaluated',
     );
     const submitAgain = ok(await provider('POST', '/submit', token, { expectedRevision: done.registration.revision }), 200, '(13) submit again');
     assert(submitAgain.registration.status === 'COMPLETED', '(13) submitting a completed registration is idempotent');
@@ -5711,6 +5714,831 @@ await check('Provider registration', async () => {
   }
 });
 
+// ---------------------------------------------------------------- Provider verification (TRUST-001)
+await check('Provider verification', async () => {
+  // Provider verification and documents (TRUST-001) end to end with REAL Keycloak tokens, a THROWAWAY customer-only identity (created through the Keycloak admin API and deleted at the
+  // end), the real private object store (SeaweedFS: one-object presigned PUT and GET), the fake scanner (DEV/TEST), the database (read-only SELECTs on audit and outbox) and Loki.
+  // The identity is verified through the REAL email and phone flows (verification starts only after both), starts a provider registration, and the policy is exercised with the
+  // seeded requirement definitions: identity verification is ACTIVE for everyone (PRD PR-02.06) and liability insurance is turned on, for a DEV/TEST market only, by a
+  // trust-admin (admin.dev) and turned off again at the end. Evidence is SYNTHETIC (a few bytes with a PDF signature): never a real document. Reviewers are admin.dev.
+  // Assumptions: DATABASE_URL, LOKI_URL, MAILPIT_URL, VALKEY_URL, KEYCLOAK_ADMIN*, the realm roles trust-read/-review/-admin on admin.dev (run `pnpm identity:sync` after pulling
+  // this checkpoint), TRUST_SCANNER=fake and the object store reachable at S3_ENDPOINT (the presigned host) from this container.
+  const assert = (ok: boolean, what: string): void => {
+    if (!ok) throw new Error(what);
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  type Json = any; // parsed response bodies are checked field by field below
+  const runId = Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+  const cid = `smoke-trust-${runId}`;
+  const flowStart = Date.now() * 1e6;
+  const marketCode = `devtest-trust-${runId}`;
+  const username = `trust001.${runId}`;
+  const password = `Pw-${randomBytes(9).toString('hex')}`; // secret-scan:allow throwaway DEV/TEST identity, deleted at the end
+  const email = `trust001-${runId}@bananagig.localhost`;
+  const mailpit = env('MAILPIT_URL', 'http://mailpit-email:8025');
+  const loki = env('LOKI_URL', 'http://loki-logs:3100');
+  const webOrigin = new URL(webPublic).origin;
+  const seen: string[] = []; // every PROVIDER verification response (body and headers): searched for keys, urls, hashes, contacts and tokens at the end
+  await clearLimiterBuckets('email-verification');
+  await clearLimiterBuckets('phone-verification');
+
+  type Reply = { status: number; text: string; json: Json; headers: Headers };
+  const request = async (path: string, method: string, token: string | null, body?: unknown): Promise<Reply> => {
+    const r = await get(`${api}/api/v1${path}`, {
+      method,
+      headers: {
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        [CORRELATION_HEADER]: cid,
+        ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
+      },
+      ...(body !== undefined ? { body: typeof body === 'string' ? body : JSON.stringify(body) } : {}),
+    });
+    const text = await r.text();
+    let json: Json;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = undefined;
+    }
+    return { status: r.status, text, json, headers: r.headers };
+  };
+  const ok = (r: Reply, status: number, what: string): Json => {
+    assert(r.status === status, `${what} -> ${r.status} ${r.json?.error?.code ?? r.text.slice(0, 160)} ${r.json?.error?.details?.reason ?? ''}`);
+    return r.json.data;
+  };
+  /** The provider verification API as the throwaway customer (everything it answers is kept for the secret scan, except the one-time upload authorization). */
+  const provider = async (method: 'GET' | 'POST', path: string, token: string | null, body?: unknown, keep = true): Promise<Reply> => {
+    const r = await request(`/provider/verification${path}`, method, token, body);
+    if (keep) seen.push(r.text, JSON.stringify([...r.headers]));
+    assert(
+      r.headers.get('cache-control') === 'no-store',
+      `${method} /provider/verification${path}: every response must be Cache-Control: no-store (${r.status})`,
+    );
+    return r;
+  };
+  const admin = async (method: 'GET' | 'POST' | 'PUT', path: string, token: string | null, body?: unknown): Promise<Reply> => {
+    const r = await request(`/admin/trust${path}`, method, token, body);
+    assert(r.headers.get('cache-control') === 'no-store', `${method} /admin/trust${path}: every response must be Cache-Control: no-store (${r.status})`);
+    return r;
+  };
+  const refusal = (r: Reply, status: number, code: string, what: string): Reply => {
+    assert(
+      r.status === status && r.json?.error?.code === code,
+      `${what}: expected ${status} ${code}, got ${r.status} ${r.json?.error?.code ?? r.text.slice(0, 160)}`,
+    );
+    assert(
+      r.json.error.details?.messageKey === `trust.verification.error.${code.replace(/^TRUST_/, '').toLowerCase()}`,
+      `${what}: the error must carry its content message key`,
+    );
+    return r;
+  };
+  /** The standard EICAR antivirus TEST string: harmless by design; the fake scanner reports a file that contains it INFECTED. */
+  const EICAR = 'X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*';
+  const sha256 = (b: Buffer): string => createHash('sha256').update(b).digest('hex');
+  const pdf = (label: string): Buffer => Buffer.from(`%PDF-1.4\n% BananaGig DEV/TEST synthetic evidence ${label} ${runId}\n%%EOF\n`, 'latin1');
+  const requirementOf = (v: Json, code: string): Json => v.requirements.find((r: Json) => r.requirementCode === code);
+
+  // ---- Keycloak: the throwaway identity (customer realm role only)
+  const kcToken = await kcMasterToken();
+  const kcAdmin = async (method: string, path: string, body?: unknown): Promise<{ status: number; json: Json; location: string | null }> => {
+    const res = await get(`${kcUrl}/admin/realms/bananagig${path}`, {
+      method,
+      headers: { authorization: `Bearer ${kcToken}`, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    const text = await res.text();
+    let json: Json;
+    try {
+      json = text ? JSON.parse(text) : undefined;
+    } catch {
+      json = text;
+    }
+    return { status: res.status, json, location: res.headers.get('location') };
+  };
+  let kcUserId = '';
+  const database = createDatabase(env('DATABASE_URL', ''), { role: 'tests' });
+  const valkey = new Redis(env('VALKEY_URL', 'redis://valkey-cache:6379'), { maxRetriesPerRequest: 2 });
+  valkey.on('error', () => undefined);
+  const inbox = new FakeSmsInbox(valkey);
+  let adminToken = '';
+  let marketCreated = false;
+  let ruleOn = false;
+  let definitionOn = false;
+  try {
+    const created = await kcAdmin('POST', '/users', {
+      username,
+      enabled: true,
+      email: `kc-${email}`,
+      emailVerified: true,
+      firstName: 'Trust',
+      lastName: 'Smoke',
+      attributes: { 'bananagig.devOnly': ['true'] },
+    });
+    assert(created.status === 201 && !!created.location, `(1) creating the throwaway Keycloak user -> ${created.status} ${JSON.stringify(created.json)}`);
+    kcUserId = created.location!.split('/').pop()!;
+    const role = await kcAdmin('GET', '/roles/customer');
+    assert((await kcAdmin('POST', `/users/${kcUserId}/role-mappings/realm`, [role.json])).status === 204, '(1) mapping the customer realm role');
+    assert(
+      (await kcAdmin('PUT', `/users/${kcUserId}/reset-password`, { type: 'password', value: password, temporary: false })).status === 204,
+      '(1) setting the throwaway password',
+    );
+    const login = await authorizationCodeLogin(kc, { clientId: 'bananagig-web', redirectUri: WEB_REDIRECT_URI, username, password });
+    const token = (
+      await exchangeAuthorizationCode({
+        tokenEndpoint: ep.token,
+        clientId: 'bananagig-web',
+        redirectUri: WEB_REDIRECT_URI,
+        code: login.code,
+        codeVerifier: login.verifier,
+      })
+    ).accessToken;
+    const accountId = AccountResponse.parse((await request('/account/me', 'GET', token)).json).data.accountId;
+    const adminLogin = await authorizationCodeLogin(kc, { clientId: 'bananagig-admin', redirectUri: ADMIN_REDIRECT_URI, ...DEV_USERS.admin });
+    adminToken = (
+      await exchangeAuthorizationCode({
+        tokenEndpoint: ep.token,
+        clientId: 'bananagig-admin',
+        redirectUri: ADMIN_REDIRECT_URI,
+        code: adminLogin.code,
+        codeVerifier: adminLogin.verifier,
+      })
+    ).accessToken;
+    const laocBefore = (await request('/geography/markets/la-oc', 'GET', adminToken)).json.data.status as string;
+
+    // (2) not a provider yet and not verified: the prerequisites are real and the requirements policy applies to a provider, not to a customer
+    const v0 = ok(await provider('GET', '', token), 200, '(2) GET /provider/verification');
+    assert(
+      v0.prerequisiteMet === false && v0.case === null && v0.overall.status === 'NOT_STARTED' && v0.goLive.evaluated === false && v0.goLive.eligible === false,
+      `(2) before registering: nothing met, no case, Go-Live not evaluated (${JSON.stringify(v0.overall)})`,
+    );
+    refusal(await provider('POST', '', token, {}), 409, 'TRUST_PREREQUISITE_NOT_MET', '(2) opening before the registration and the contacts');
+    assert((await provider('GET', '', null)).status === 401, '(2) GET without a token must be 401');
+    assert((await provider('POST', '', null, {})).status === 401, '(2) POST without a token must be 401');
+    for (const [what, body] of [
+      ['an account id', { accountId }],
+      ['a status', { status: 'APPROVED' }],
+      ['a case id', { verificationCaseId: accountId }],
+    ] as const)
+      assert((await provider('POST', '', token, body)).status === 400, `(2) an open request naming ${what} must be 400`);
+    for (const path of ['/cases', '/policy'])
+      assert((await admin('GET', path, token)).status === 403, `(2) a provider token must be 403 on /admin/trust${path}`);
+    assert((await admin('GET', '/cases', null)).status === 401, '(2) admin routes without a token must be 401');
+
+    // (3) the contacts are verified through the real flows (verification starts only after both), then a provider registration is started: the SAME account
+    assert((await request('/account/email', 'POST', token, { email })).status === 200, '(3) setting the email');
+    assert((await request('/account/email/verification/send', 'POST', token, {})).status === 200, '(3) sending the email verification');
+    const message = await retry(
+      async () => {
+        const found = (await (await expectOk(`${mailpit}/api/v1/search?query=${encodeURIComponent(`to:"${email}"`)}`)).json()) as {
+          messages: { ID: string }[] | null;
+        };
+        if (!found.messages?.length) throw new Error('the verification email has not arrived');
+        return (await (await expectOk(`${mailpit}/api/v1/message/${found.messages[0]!.ID}`)).json()) as { Text: string };
+      },
+      10,
+      1000,
+    );
+    const emailCode = /code is\s+([0-9]{6})\b/i.exec(message.Text)?.[1];
+    assert(!!emailCode, '(3) the email code is missing from the delivered message');
+    assert((await request('/account/email/verification/confirm-code', 'POST', token, { code: emailCode })).status === 200, '(3) confirming the email code');
+    let tail = '';
+    do tail = String(Math.floor(Math.random() * 10_000)).padStart(4, '0');
+    while (['901', '902', '903', '904', '905'].includes(tail.slice(-3)));
+    const e164 = `+1202555${tail}`;
+    await inbox.clear(e164);
+    assert((await request('/account/phone', 'POST', token, { phone: `(202) 555-${tail}`, country: 'US' })).status === 200, '(3) setting the phone number');
+    assert((await request('/account/phone/verification/send', 'POST', token, {})).status === 200, '(3) sending the SMS');
+    const smsCode = extractSmsCode((await inbox.wait(e164, 1, 10_000))[0]!.body);
+    assert(!!smsCode, '(3) the SMS code is missing');
+    assert((await request('/account/phone/verification/confirm-code', 'POST', token, { code: smsCode })).status === 200, '(3) confirming the SMS code');
+    assert((await request('/provider/registration', 'POST', token, {})).status === 201, '(3) starting the provider registration');
+
+    // (4) the DEV/TEST market and the policy: identity verification applies to everyone; liability insurance is turned on for THIS market only, by a trust-admin
+    await ensureDevtestGeography(adminToken);
+    const geo = async (path: string, method: string, body?: unknown): Promise<Json> => {
+      const r = await get(`${api}/api/v1/geography${path}`, {
+        method,
+        headers: { authorization: `Bearer ${adminToken}`, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      });
+      assert([200, 201].includes(r.status), `${method} /geography${path} -> ${r.status}`);
+      return r.json();
+    };
+    await geo('/markets', 'POST', {
+      code: marketCode,
+      name: `DEV/TEST trust smoke ${runId}`,
+      countryCode: 'ZZ',
+      defaultLocale: 'qaa',
+      currencyCode: 'USD',
+      defaultTimeZone: 'America/Los_Angeles',
+      reason: 'DEV/TEST ONLY smoke market',
+    });
+    marketCreated = true;
+    await geo(`/markets/${marketCode}/activation`, 'POST', { active: true, reason: 'smoke test' });
+    const policy0 = ok(await admin('GET', '/policy', adminToken), 200, '(4) GET /admin/trust/policy');
+    const defOf = (p: Json, code: string): Json => p.requirements.find((r: Json) => r.code === code);
+    assert(
+      defOf(policy0, 'identity_verification')?.status === 'ACTIVE' && defOf(policy0, 'liability_insurance')?.status === 'INACTIVE',
+      '(4) seeded: identity ACTIVE, insurance INACTIVE',
+    );
+    assert(
+      policy0.rules
+        .filter((r: Json) => r.enabled)
+        .every((r: Json) => r.requirementCode === 'identity_verification' && r.marketCode === null && r.serviceTypeCode === null),
+      '(4) the only seeded rule requires identity verification everywhere (no invented obligation)',
+    );
+    ok(await admin('PUT', '/requirement-definitions/liability_insurance/status', adminToken, { status: 'ACTIVE' }), 200, '(4) activate insurance');
+    definitionOn = true;
+    ok(
+      await admin('PUT', '/requirement-rules', adminToken, { requirementCode: 'liability_insurance', marketCode, serviceTypeCode: null, enabled: true }),
+      200,
+      '(4) require insurance in the test market',
+    );
+    ruleOn = true;
+    assert((await request('/provider/registration/market', 'PUT', token, { marketCode })).status === 200, '(4) choosing the test market in the registration');
+
+    // (5) open the case: requirements derive from the registration's market; open is idempotent
+    const before = ok(await provider('GET', '', token), 200, '(5) overview before opening');
+    assert(
+      before.prerequisiteMet === true &&
+        before.case === null &&
+        before.requirements.map((r: Json) => r.requirementCode).join() === 'identity_verification,liability_insurance',
+      `(5) policy derives identity + insurance for the test market (${before.requirements.map((r: Json) => r.requirementCode)})`,
+    );
+    const opened = ok(await provider('POST', '', token, {}), 201, '(5) open');
+    assert(
+      opened.case.status === 'OPEN' && opened.requirements.every((r: Json) => r.status === 'NOT_STARTED' && r.caseRequirementId),
+      '(5) a new case is OPEN with both requirements NOT_STARTED',
+    );
+    ok(await provider('POST', '', token, {}), 200, '(5) open again (resume)');
+    assert(
+      (await request('/provider/registration', 'GET', token)).json.data.registration.status === 'IN_PROGRESS',
+      '(5) the registration lifecycle is not changed by verification',
+    );
+    const regReq0 = (await request('/provider/registration/requirements', 'GET', token)).json.data;
+    assert(
+      regReq0.steps.find((s: Json) => s.step === 'VERIFICATION').status === 'IN_PROGRESS',
+      `(5) PRO-001 reports the VERIFICATION step from TRUST-001 (${regReq0.steps.find((s: Json) => s.step === 'VERIFICATION').status})`,
+    );
+
+    // (6) evidence: authorization rules, the private store, the server-side checks
+    const up = (requirementCode: string, documentTypeCode: string, mimeType: string, sizeBytes: number) =>
+      provider('POST', '/documents/upload', token, { requirementCode, documentTypeCode, mimeType, sizeBytes }, false);
+    refusal(await up('identity_verification', 'drivers_license', 'text/html', 100), 400, 'TRUST_MIME_NOT_ALLOWED', '(6) a file type that is not allowed');
+    assert(
+      (await up('identity_verification', 'drivers_license', 'application/pdf', 999_999_999)).status === 400,
+      '(6) a size above the structural ceiling must be 400',
+    );
+    refusal(
+      await up('identity_verification', 'drivers_license', 'application/pdf', 20_000_000),
+      400,
+      'TRUST_FILE_TOO_LARGE',
+      '(6) a size above the configured maximum',
+    );
+    refusal(
+      await up('identity_verification', 'insurance_certificate', 'application/pdf', 100),
+      400,
+      'TRUST_DOCUMENT_TYPE_NOT_ACCEPTED',
+      '(6) a document type of another requirement type',
+    );
+    refusal(
+      await up('background_check', 'drivers_license', 'application/pdf', 100),
+      409,
+      'TRUST_REQUIREMENT_NOT_APPLICABLE',
+      '(6) a requirement that does not apply',
+    );
+    const idBytes = pdf('identity');
+    const putTo = async (a: Json, bytes: Buffer, type: string): Promise<number> => {
+      const r = await fetch(a.upload.url, { method: 'PUT', headers: { 'content-type': type }, body: new Uint8Array(bytes), signal: AbortSignal.timeout(8000) });
+      return r.status;
+    };
+    const authorizeIdentity = async (bytes: Buffer, mime = 'application/pdf'): Promise<Json> =>
+      ok(await up('identity_verification', 'drivers_license', mime, bytes.byteLength), 201, '(6) authorize an upload');
+    // a spoofed file (HTML bytes declared as a PDF) is refused by the server after it is stored, the document is abandoned and the object is deleted
+    const html = Buffer.from('<html><body>not a pdf</body></html>');
+    const spoof = await authorizeIdentity(html);
+    assert((await putTo(spoof, html, 'application/pdf')) < 300, '(6) the store accepts the PUT of the authorized object');
+    refusal(
+      await provider('POST', `/documents/${spoof.document.verificationDocumentId}/finalize`, token, {}),
+      400,
+      'TRUST_OBJECT_MISMATCH',
+      '(6) a spoofed content type (signature)',
+    );
+    // the same for an infected file (the harmless EICAR antivirus test string)
+    const eicar = Buffer.from(`%PDF-1.4\n${EICAR}\n%%EOF\n`, 'latin1');
+    const infected = await authorizeIdentity(eicar);
+    assert((await putTo(infected, eicar, 'application/pdf')) < 300, '(6) PUT of the EICAR test file');
+    refusal(
+      await provider('POST', `/documents/${infected.document.verificationDocumentId}/finalize`, token, {}),
+      400,
+      'TRUST_SCAN_INFECTED',
+      '(6) an infected file',
+    );
+    // a wrong client hash is refused too
+    const wrongHash = await authorizeIdentity(idBytes);
+    assert((await putTo(wrongHash, idBytes, 'application/pdf')) < 300, '(6) PUT for the wrong-hash case');
+    refusal(
+      await provider('POST', `/documents/${wrongHash.document.verificationDocumentId}/finalize`, token, { sha256: '0'.repeat(64) }),
+      400,
+      'TRUST_OBJECT_MISMATCH',
+      '(6) a client hash that differs from the stored bytes',
+    );
+    // finalize without any upload: the object is missing and the call can be repeated
+    const missing = await authorizeIdentity(idBytes);
+    refusal(
+      await provider('POST', `/documents/${missing.document.verificationDocumentId}/finalize`, token, {}),
+      400,
+      'TRUST_OBJECT_MISSING',
+      '(6) finalize before the upload',
+    );
+    // the good path
+    const good = await authorizeIdentity(idBytes);
+    assert(!JSON.stringify(good).includes(accountId) && good.upload.method === 'PUT', '(6) the authorization names no account');
+    assert((await putTo(good, idBytes, 'application/pdf')) < 300, '(6) PUT of the evidence to the one-time URL');
+    const attached = ok(
+      await provider('POST', `/documents/${good.document.verificationDocumentId}/finalize`, token, { sha256: sha256(idBytes) }),
+      200,
+      '(6) finalize',
+    );
+    assert(
+      attached.status === 'ATTACHED' && attached.scanStatus === 'CLEAN' && !('sha256' in attached) && !('objectKey' in attached),
+      `(6) finalized: ATTACHED and CLEAN, no hash and no key for the provider (${JSON.stringify(attached)})`,
+    );
+    ok(await provider('POST', `/documents/${good.document.verificationDocumentId}/finalize`, token, {}), 200, '(6) finalize again (idempotent)');
+    // the presigned PUT is still valid after finalize: a REPLAY with other bytes of the same size and type must change nothing the reviewers will see (the bytes were promoted to a
+    // different key; the upload key is never read again). Whether the store accepts the replay is its business; what is stored as evidence is checked at the download below.
+    const swapped = Buffer.from(idBytes);
+    swapped.write('X', 20, 'latin1');
+    await putTo(good, swapped, 'application/pdf').catch(() => 0);
+    // the store should refuse a body whose length differs from the signed one; if it does not, finalize must (the size is checked after the bytes are stored)
+    const longBytes = Buffer.concat([idBytes, Buffer.from('padding-padding')]);
+    const sized = await authorizeIdentity(idBytes);
+    const sizedStatus = await putTo(sized, longBytes, 'application/pdf').catch(() => 0);
+    if (sizedStatus >= 200 && sizedStatus < 300)
+      refusal(
+        await provider('POST', `/documents/${sized.document.verificationDocumentId}/finalize`, token, {}),
+        400,
+        'TRUST_OBJECT_MISMATCH',
+        '(6) a body longer than the authorized size',
+      );
+    else ok(await provider('POST', `/documents/${sized.document.verificationDocumentId}/withdraw`, token, {}), 200, '(6) withdraw the refused upload');
+    const ids = await provider('GET', '/documents', token);
+    assert(
+      ids.json.data.some((d: Json) => d.status === 'ABANDONED') && ids.json.data.filter((d: Json) => d.status === 'ATTACHED').length === 1,
+      '(6) the history keeps the abandoned uploads; one draft is attached',
+    );
+    // withdraw + replace
+    ok(await provider('POST', `/documents/${missing.document.verificationDocumentId}/withdraw`, token, {}), 200, '(6) withdraw the pending document');
+    // another account cannot touch it (customer.dev): not found, indistinguishable
+    const otherLogin = await authorizationCodeLogin(kc, { clientId: 'bananagig-web', redirectUri: WEB_REDIRECT_URI, ...DEV_USERS.customer });
+    const other = (
+      await exchangeAuthorizationCode({
+        tokenEndpoint: ep.token,
+        clientId: 'bananagig-web',
+        redirectUri: WEB_REDIRECT_URI,
+        code: otherLogin.code,
+        codeVerifier: otherLogin.verifier,
+      })
+    ).accessToken;
+    refusal(
+      await provider('POST', `/documents/${good.document.verificationDocumentId}/finalize`, other, {}),
+      404,
+      'TRUST_NOT_FOUND',
+      '(6) another account finalizing this document',
+    );
+    refusal(
+      await provider('POST', `/documents/${good.document.verificationDocumentId}/withdraw`, other, {}),
+      404,
+      'TRUST_NOT_FOUND',
+      '(6) another account withdrawing this document',
+    );
+    const insBytes = pdf('insurance');
+    const insAuth = ok(
+      await up('liability_insurance', 'insurance_certificate', 'application/pdf', insBytes.byteLength),
+      201,
+      '(6) authorize the insurance document',
+    );
+    assert((await putTo(insAuth, insBytes, 'application/pdf')) < 300, '(6) PUT of the insurance evidence');
+    ok(await provider('POST', `/documents/${insAuth.document.verificationDocumentId}/finalize`, token, {}), 200, '(6) finalize the insurance document');
+
+    // (7) submit: a stale revision is refused; the submission moves both requirements to PENDING; a repeat changes nothing
+    const toSubmit = ok(await provider('GET', '', token), 200, '(7) overview');
+    refusal(await provider('POST', '/submit', token, { expectedRevision: toSubmit.case.revision + 5 }), 409, 'TRUST_STALE_CASE', '(7) a stale revision');
+    const submitted = ok(await provider('POST', '/submit', token, { expectedRevision: toSubmit.case.revision }), 200, '(7) submit');
+    assert(
+      submitted.case.status === 'IN_REVIEW' && submitted.requirements.every((r: Json) => r.status === 'PENDING' && r.round === 1),
+      `(7) both requirements are PENDING in round 1 (${submitted.requirements.map((r: Json) => `${r.requirementCode}:${r.status}`)})`,
+    );
+    const again = ok(await provider('POST', '/submit', token, { expectedRevision: submitted.case.revision }), 200, '(7) submit again (idempotent)');
+    assert(again.case.revision === submitted.case.revision, '(7) a repeat submit changes nothing');
+    refusal(
+      await up('identity_verification', 'drivers_license', 'application/pdf', 100),
+      409,
+      'TRUST_EVIDENCE_NOT_ACCEPTED',
+      '(7) no new evidence while the requirement is under review',
+    );
+
+    // (8) the reviewer (admin.dev, trust-read + trust-review): the queue, the case, the integrity hash, an audited short-lived link
+    const queue = ok(await admin('GET', '/cases?status=IN_REVIEW&limit=50', adminToken), 200, '(8) the reviewers queue');
+    const mine = queue.find((c: Json) => c.accountId === accountId);
+    assert(
+      !!mine && mine.awaitingReviewCount === 2 && !('email' in mine) && !('name' in mine),
+      '(8) the case is in the queue with the internal account id only',
+    );
+    const detail = ok(await admin('GET', `/cases/${mine.verificationCaseId}`, adminToken), 200, '(8) the case');
+    const idReq = detail.requirements.find((r: Json) => r.requirementCode === 'identity_verification');
+    const insReq = detail.requirements.find((r: Json) => r.requirementCode === 'liability_insurance');
+    const idDoc = idReq.documents.find((d: Json) => d.status === 'SUBMITTED');
+    assert(idDoc.sha256 === sha256(idBytes) && idDoc.round === 1, '(8) the SERVER-computed SHA-256 of the stored bytes is recorded for the reviewers');
+    assert(!/trust\/evidence|X-Amz|objectKey/.test(JSON.stringify(detail)), '(8) the case view carries no object key and no link');
+    const link = ok(await admin('GET', `/documents/${idDoc.verificationDocumentId}/download`, adminToken), 200, '(8) download link');
+    const fetched = Buffer.from(await (await fetch(link.url, { signal: AbortSignal.timeout(8000) })).arrayBuffer());
+    assert(fetched.equals(idBytes), '(8) the link serves exactly the bytes that were hashed and scanned (a replayed PUT changed nothing)');
+    assert(
+      (await fetch(link.url.replace(/X-Amz-Signature=[0-9a-f]+/, 'X-Amz-Signature=' + '0'.repeat(64)), { signal: AbortSignal.timeout(8000) })).status >= 400,
+      '(8) a tampered link is refused by the store',
+    );
+
+    // (9) decisions: structured reasons, the round, stale and repeated decisions
+    const round = idReq.round as number;
+    assert(round === 1, '(9) the evidence is in round 1');
+    ok(await admin('POST', `/requirements/${idReq.caseRequirementId}/start-review`, adminToken, { round }), 200, '(9) start review');
+    const approve = ok(await admin('POST', `/requirements/${idReq.caseRequirementId}/approve`, adminToken, { round }), 200, '(9) approve identity');
+    assert(
+      approve.changed === true && approve.requirement.status === 'APPROVED' && approve.caseStatus === 'IN_REVIEW',
+      '(9) identity is APPROVED; the case still waits for the insurance',
+    );
+    const approveAgain = ok(await admin('POST', `/requirements/${idReq.caseRequirementId}/approve`, adminToken, { round }), 200, '(9) approve again');
+    assert(approveAgain.changed === false, '(9) the same decision again is a no-op');
+    refusal(
+      await admin('POST', `/requirements/${idReq.caseRequirementId}/reject`, adminToken, { round, reasonCode: 'DOCUMENT_UNREADABLE' }),
+      409,
+      'TRUST_ALREADY_DECIDED',
+      '(9) a different decision on the same evidence',
+    );
+    refusal(
+      await admin('POST', `/requirements/${insReq.caseRequirementId}/request-action`, adminToken, { round: 99, reasonCode: 'DOCUMENT_UNREADABLE' }),
+      409,
+      'TRUST_STALE_ROUND',
+      '(9) a decision on a round that does not exist',
+    );
+    refusal(
+      await admin('POST', `/requirements/${insReq.caseRequirementId}/request-action`, adminToken, { round, reasonCode: 'NOT_A_REASON' }),
+      400,
+      'TRUST_REASON_INVALID',
+      '(9) a reason code that does not exist',
+    );
+    const asked = ok(
+      await admin('POST', `/requirements/${insReq.caseRequirementId}/request-action`, adminToken, { round, reasonCode: 'DOCUMENT_UNREADABLE' }),
+      200,
+      '(9) request action on the insurance',
+    );
+    assert(asked.requirement.status === 'ACTION_REQUIRED' && asked.caseStatus === 'ACTION_REQUIRED', '(9) the insurance needs action and so does the case');
+
+    // (10) the provider sees the reason, PRO-001 reports the step as blocked, and the registration is unchanged
+    const needs = ok(await provider('GET', '', token), 200, '(10) overview');
+    const insNeeds = requirementOf(needs, 'liability_insurance');
+    assert(
+      insNeeds.status === 'ACTION_REQUIRED' && insNeeds.reasonKey === 'trust.reason.document_unreadable.name' && insNeeds.canAttachEvidence === true,
+      '(10) the insurance shows its structured reason and takes new evidence',
+    );
+    assert(
+      requirementOf(needs, 'identity_verification').status === 'APPROVED' && needs.overall.verificationComplete === false,
+      '(10) identity approved, verification not complete',
+    );
+    assert(
+      (await request('/provider/registration/requirements', 'GET', token)).json.data.steps.find((s: Json) => s.step === 'VERIFICATION').status === 'BLOCKED',
+      '(10) PRO-001 reports the VERIFICATION step BLOCKED while action is required',
+    );
+
+    // (11) resubmission through the WEB app behind Caddy (the browser posts the file to the handler; the handler talks to the store): history is kept
+    type Hop = { status: number; location: string | undefined; body: string; cookies: string[]; headers: http.IncomingHttpHeaders };
+    const caddy = (method: 'GET' | 'POST', path: string, o: { cookie?: string; origin?: string; body?: Buffer; contentType?: string } = {}): Promise<Hop> =>
+      new Promise((resolve, reject) => {
+        const req = http.request(
+          {
+            host: 'caddy-proxy',
+            port: 80,
+            path,
+            method,
+            headers: {
+              host: 'app.localhost',
+              ...(o.cookie ? { cookie: o.cookie } : {}),
+              ...(o.origin ? { origin: o.origin } : {}),
+              ...(o.body ? { 'content-length': String(o.body.byteLength), 'content-type': o.contentType ?? 'application/x-www-form-urlencoded' } : {}),
+            },
+          },
+          (res) => {
+            let body = '';
+            res.setEncoding('utf8');
+            res.on('data', (chunk) => (body += chunk));
+            res.on('end', () =>
+              resolve({ status: res.statusCode ?? 0, location: res.headers.location, body, cookies: res.headers['set-cookie'] ?? [], headers: res.headers }),
+            );
+          },
+        );
+        req.setTimeout(30_000, () => req.destroy(new Error(`${method} ${path} through Caddy timed out`)));
+        req.on('error', reject);
+        req.end(o.body);
+      });
+    const jar = new Map<string, string>();
+    const absorb = (h: Hop): void => {
+      for (const line of h.cookies) {
+        const [pair] = line.split(';');
+        const i = pair!.indexOf('=');
+        const name = pair!.slice(0, i);
+        const value = pair!.slice(i + 1);
+        if (!value || /max-age=0/i.test(line)) jar.delete(name);
+        else jar.set(name, value);
+      }
+    };
+    const cookie = (): string => [...jar].map(([k, v]) => `${k}=${v}`).join('; ');
+    const multipart = (fields: Record<string, string>, file: { name: string; type: string; bytes: Buffer }): { body: Buffer; contentType: string } => {
+      const boundary = `----bg${randomBytes(12).toString('hex')}`;
+      const parts: Buffer[] = [];
+      for (const [k, v] of Object.entries(fields)) parts.push(Buffer.from(`--${boundary}\r\ncontent-disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`));
+      parts.push(
+        Buffer.from(`--${boundary}\r\ncontent-disposition: form-data; name="file"; filename="${file.name}"\r\ncontent-type: ${file.type}\r\n\r\n`),
+        file.bytes,
+        Buffer.from(`\r\n--${boundary}--\r\n`),
+      );
+      return { body: Buffer.concat(parts), contentType: `multipart/form-data; boundary=${boundary}` };
+    };
+    const anon = await caddy('GET', '/provider/verification');
+    assert(
+      anon.status === 200 && anon.body.includes('/auth/login?returnTo=/provider/verification') && !/<form\b/.test(anon.body),
+      '(11) signed out: sign-in is offered and no form exists',
+    );
+    assert((await caddy('GET', '/auth/provider/verification/upload')).status === 405, '(11) GET on the upload handler must be 405 (no GET changes state)');
+    assert((await caddy('POST', '/auth/provider/verification/open', { body: Buffer.from('') })).status === 403, '(11) POST without an Origin must be 403');
+    const start = await caddy('GET', '/auth/login?returnTo=/provider/verification');
+    absorb(start);
+    const callbackUrl = await completeLogin(kc, start.location!, { redirectUri: `${webPublic}/auth/callback`, username, password });
+    const callback = await caddy('GET', `/auth/callback${new URL(callbackUrl).search}`, { cookie: cookie() });
+    absorb(callback);
+    assert(
+      callback.status === 302 && (callback.location ?? '').endsWith('/provider/verification') && jar.has('bg_session'),
+      `(11) web callback failed (${callback.status} ${callback.location})`,
+    );
+    const page = await caddy('GET', '/provider/verification', { cookie: cookie() });
+    assert(
+      page.status === 200 && !page.body.includes(token) && !page.body.includes(accountId) && !/trust\/evidence|X-Amz/.test(page.body),
+      '(11) the verification page leaks no token, account id, key or link',
+    );
+    assert(
+      /enctype="multipart\/form-data"/i.test(page.body) &&
+        /<label[^>]*for="file-liability_insurance"/.test(page.body) &&
+        /name="file"[^>]*type="file"|type="file"[^>]*name="file"/.test(page.body),
+      `(11) the insurance requirement offers a labelled multipart file form (forms: ${(page.body.match(/<form\b[^>]*>/g) ?? []).join(' | ').slice(0, 600)}; alert: ${(/role="alert"[^>]*>([^<]*)/.exec(page.body) ?? [])[1] ?? 'none'}; inputs: ${(page.body.match(/<(input|select|label)\b[^>]*>/g) ?? []).join(' ').slice(0, 600)})`,
+    );
+    assert(!/href="[^"]*download/i.test(page.body) && !/action="[^"]*approve/i.test(page.body), '(11) the page has no download link and no approve control');
+    const insBytes2 = pdf('insurance-2');
+    const m = multipart(
+      { requirementCode: 'liability_insurance', documentTypeCode: 'insurance_certificate' },
+      { name: 'insurance.pdf', type: 'application/pdf', bytes: insBytes2 },
+    );
+    const wrongOrigin = await caddy('POST', '/auth/provider/verification/upload', {
+      cookie: cookie(),
+      origin: 'http://evil.example',
+      body: m.body,
+      contentType: m.contentType,
+    });
+    assert(wrongOrigin.status === 403, '(11) a foreign Origin is refused');
+    const uploaded = await caddy('POST', '/auth/provider/verification/upload', {
+      cookie: cookie(),
+      origin: webOrigin,
+      body: m.body,
+      contentType: m.contentType,
+    });
+    assert(
+      uploaded.status === 303 && (uploaded.location ?? '').endsWith('/provider/verification?notice=uploaded'),
+      `(11) the web upload must end in a notice (${uploaded.status} ${uploaded.location})`,
+    );
+    assert(!(uploaded.location ?? '').includes('insurance.pdf'), '(11) the file name is not in the redirect');
+    const draftPage = await caddy('GET', '/provider/verification?notice=uploaded', { cookie: cookie() });
+    assert(
+      /action="\/auth\/provider\/verification\/submit"/.test(draftPage.body),
+      '(11) with every waiting requirement holding a draft, the page offers Submit',
+    );
+    const revisionOnPage = (/name="expectedRevision"[^>]*value="(\d+)"/.exec(draftPage.body) ?? [])[1];
+    assert(!!revisionOnPage, '(11) the submit form carries the revision');
+    const submitWeb = await caddy('POST', '/auth/provider/verification/submit', {
+      cookie: cookie(),
+      origin: webOrigin,
+      body: Buffer.from(new URLSearchParams({ expectedRevision: revisionOnPage! }).toString()),
+    });
+    assert(
+      submitWeb.status === 303 && (submitWeb.location ?? '').endsWith('/provider/verification?notice=submitted'),
+      `(11) the web submit must end in a notice (${submitWeb.status} ${submitWeb.location})`,
+    );
+    const history = (await provider('GET', '/documents', token)).json.data as Json[];
+    assert(
+      history.filter((d) => d.status === 'SUBMITTED' && d.round === 1).length === 2 && history.some((d) => d.status === 'SUBMITTED' && d.round === 2),
+      '(11) resubmission preserved the round-1 evidence and added the round-2 document',
+    );
+
+    // (12) the second round: approve with an end date (insurance expires), the case is approved, PRO-001 reports COMPLETE, Go-Live untouched
+    const afterResubmit = ok(await admin('GET', `/cases/${mine.verificationCaseId}`, adminToken), 200, '(12) the case');
+    const ins2 = afterResubmit.requirements.find((r: Json) => r.requirementCode === 'liability_insurance' && !r.superseded);
+    assert(
+      ins2.round === 2 && ins2.status === 'PENDING' && ins2.reviews.some((r: Json) => r.round === 1 && r.decision === 'ACTION_REQUIRED'),
+      '(12) round 2 is pending and the round-1 decision is kept',
+    );
+    refusal(
+      await admin('POST', `/requirements/${ins2.caseRequirementId}/approve`, adminToken, { round: 2 }),
+      400,
+      'TRUST_VALIDATION_FAILED',
+      '(12) an approval of an expiring requirement needs an end date',
+    );
+    refusal(
+      await admin('POST', `/requirements/${ins2.caseRequirementId}/approve`, adminToken, { round: 1, expiresAt: new Date(Date.now() + 60_000).toISOString() }),
+      409,
+      'TRUST_STALE_ROUND',
+      '(12) the earlier round is stale now',
+    );
+    const expiresAt = new Date(Date.now() + 4000).toISOString();
+    const approvedIns = ok(
+      await admin('POST', `/requirements/${ins2.caseRequirementId}/approve`, adminToken, { round: 2, expiresAt }),
+      200,
+      '(12) approve insurance with an end date',
+    );
+    assert(approvedIns.requirement.status === 'APPROVED' && approvedIns.caseStatus === 'APPROVED', '(12) the case is APPROVED');
+    const complete = ok(await provider('GET', '', token), 200, '(12) overview');
+    assert(
+      complete.overall.status === 'APPROVED' &&
+        complete.overall.verificationComplete === true &&
+        complete.goLive.evaluated === false &&
+        complete.goLive.eligible === false,
+      '(12) verification complete, and Go-Live is not evaluated',
+    );
+    const regReq = (await request('/provider/registration/requirements', 'GET', token)).json.data;
+    assert(
+      regReq.steps.find((s: Json) => s.step === 'VERIFICATION').status === 'COMPLETE' && regReq.overall.goLive.evaluated === false,
+      '(12) PRO-001 reports VERIFICATION COMPLETE and still does not evaluate Go-Live',
+    );
+    assert(
+      (await request('/provider/registration', 'GET', token)).json.data.registration.status === 'IN_PROGRESS',
+      '(12) the registration lifecycle is independent of verification',
+    );
+
+    // (13) expiry is derived from the timestamp; the original approval stays as history; a new cycle re-verifies
+    await sleep(4500);
+    const expired = ok(await provider('GET', '', token), 200, '(13) overview after the end date');
+    const insExpired = requirementOf(expired, 'liability_insurance');
+    assert(
+      insExpired.status === 'EXPIRED' &&
+        expired.overall.status === 'EXPIRED' &&
+        insExpired.canReverify === true &&
+        expired.overall.verificationComplete === false,
+      '(13) an approval past its end reads EXPIRED (derived), complete is false again',
+    );
+    refusal(
+      await provider('POST', '/requirements/identity_verification/reverify', token, {}),
+      409,
+      'TRUST_NOT_REVERIFIABLE',
+      '(13) a requirement that has not expired cannot be re-verified',
+    );
+    const reverified = ok(await provider('POST', '/requirements/liability_insurance/reverify', token, {}), 200, '(13) reverify');
+    const insCycle2 = requirementOf(reverified, 'liability_insurance');
+    assert(
+      insCycle2.cycle === 2 && insCycle2.status === 'NOT_STARTED' && reverified.case.status === 'ACTION_REQUIRED',
+      '(13) cycle 2 starts NOT_STARTED and the case needs action',
+    );
+    const cycles = await database.query<{ cycle: number; status: string; superseded: boolean; has_approval: boolean }>(
+      `SELECT cr.cycle, cr.status, cr.superseded_at IS NOT NULL AS superseded, cr.approved_at IS NOT NULL AS has_approval
+         FROM trust.case_requirements cr JOIN trust.requirement_definitions d USING (requirement_definition_id)
+        WHERE cr.verification_case_id = $1 AND d.code = 'liability_insurance' ORDER BY cr.cycle`,
+      [mine.verificationCaseId],
+    );
+    assert(
+      cycles.length === 2 && cycles[0]!.superseded && cycles[0]!.status === 'EXPIRED' && cycles[0]!.has_approval && !cycles[1]!.superseded,
+      `(13) cycle 1 (with its approval) is kept as history (${JSON.stringify(cycles)})`,
+    );
+
+    // (14) audit and events: complete, exactly once, and free of evidence, keys, links and hashes
+    const audit = await database.query<{ action: string; n: number }>(
+      `SELECT action, count(*)::int AS n FROM trust.audit_events WHERE verification_case_id = $1 GROUP BY action`,
+      [mine.verificationCaseId],
+    );
+    const a = Object.fromEntries(audit.map((r) => [r.action, r.n]));
+    assert(
+      a.VERIFICATION_CASE_OPENED === 1 &&
+        a.VERIFICATION_SUBMITTED === 2 &&
+        a.VERIFICATION_APPROVED === 2 &&
+        a.VERIFICATION_ACTION_REQUIRED === 1 &&
+        a.VERIFICATION_REVIEW_STARTED === 1 &&
+        a.VERIFICATION_EXPIRED === 1 &&
+        a.VERIFICATION_REVERIFICATION_REQUESTED === 1 &&
+        a.VERIFICATION_DOCUMENT_ACCESSED === 1 &&
+        (a.VERIFICATION_DOCUMENT_SUBMITTED ?? 0) >= 3 &&
+        (a.VERIFICATION_DOCUMENT_UPLOAD_REFUSED ?? 0) >= 3,
+      `(14) the audit trail holds every action exactly as often as it happened (${JSON.stringify(a)})`,
+    );
+    const events = await database.query<{ event_type: string; n: number }>(
+      `SELECT event_type, count(*)::int AS n FROM integration.outbox_events WHERE event_type LIKE 'bananagig.trust.%' AND payload_json->>'verificationCaseId' = $1::text GROUP BY event_type`,
+      [mine.verificationCaseId],
+    );
+    const e = Object.fromEntries(events.map((r) => [r.event_type, r.n]));
+    assert(
+      e['bananagig.trust.verification-case-opened.v1'] === 1 &&
+        e['bananagig.trust.verification-submitted.v1'] === 2 &&
+        e['bananagig.trust.verification-requirement-approved.v1'] === 2 &&
+        e['bananagig.trust.verification-action-required.v1'] === 1 &&
+        e['bananagig.trust.verification-completed.v1'] === 1 &&
+        e['bananagig.trust.verification-expired.v1'] === 1,
+      `(14) the outbox holds each event exactly once (${JSON.stringify(e)})`,
+    );
+    const stored = await database.query<{ s: string }>(
+      `SELECT (SELECT string_agg(changes::text, ' ') FROM trust.audit_events WHERE verification_case_id = $1) || ' ' ||
+              (SELECT string_agg(payload_json::text, ' ') FROM integration.outbox_events WHERE event_type LIKE 'bananagig.trust.%' AND payload_json->>'verificationCaseId' = $1::text) AS s`,
+      [mine.verificationCaseId],
+    );
+    assert(
+      !/trust\/evidence|X-Amz|[0-9a-f]{64}/.test(stored[0]!.s) && !stored[0]!.s.includes(email) && !stored[0]!.s.includes(e164),
+      '(14) no object key, link, hash or contact in the audit trail or the outbox',
+    );
+    const columns = await database.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM information_schema.columns WHERE table_schema = 'trust' AND (column_name ~* 'email|phone|password|name|address|body|note|text|content$' AND column_name !~* 'content_key|object_key|mime_type|code|reviewer|requirement_type')`,
+    );
+    assert(columns[0]!.n === 0, `(14) the trust schema holds no personal-data or free-text column (${columns[0]!.n})`);
+    const everything = seen.join('\n');
+    for (const [what, value] of [
+      ['email', email],
+      ['phone', e164],
+      ['account id', accountId],
+      ['access token', token],
+      ['password', password],
+      ['object key', 'trust/evidence'],
+      ['signature', 'X-Amz-Signature'],
+      ['document hash', sha256(idBytes)],
+    ] as const)
+      assert(!everything.includes(value), `(14) a provider verification response contains the ${what}`);
+    const query = async (q: string) =>
+      (await (
+        await expectOk(`${loki}/loki/api/v1/query_range?query=${encodeURIComponent(q)}&start=${flowStart}&end=${Date.now() * 1e6 + 60e9}&limit=5`)
+      ).json()) as { data: { result: unknown[] } };
+    await retry(
+      async () => {
+        if ((await query(`{service_name="bananagig-api"} | correlationId = \`${cid}\``)).data.result.length < 1)
+          throw new Error('this flow is not in Loki yet');
+      },
+      12,
+      2000,
+    );
+    await sleep(6000);
+    for (const [what, q] of [
+      ['signature', '{service_name=~"bananagig-.+"} |= `X-Amz-Signature`'],
+      ['object key', '{service_name=~"bananagig-.+"} |= `trust/evidence`'],
+      ['document hash', `{service_name=~"bananagig-.+"} |= \`${sha256(idBytes)}\``],
+      ['email', `{service_name=~"bananagig-.+"} |= \`${email}\``],
+      ['access token', `{service_name=~"bananagig-.+"} |= \`${token}\``],
+    ] as const)
+      assert((await query(q)).data.result.length === 0, `(14) the ${what} appears in the logs`);
+    // no span carries a signed URL: a trace backend is also a log
+    const tempo = env('TEMPO_URL', 'http://tempo-traces:3200');
+    for (const q of ['{ name =~ ".*X-Amz-Signature.*" }', '{ span.http.url =~ ".*X-Amz-Signature.*" }', '{ span.url.full =~ ".*X-Amz-Signature.*" }']) {
+      const r = await get(
+        `${tempo}/api/search?q=${encodeURIComponent(q)}&limit=5&start=${Math.floor(flowStart / 1e9) - 60}&end=${Math.floor(Date.now() / 1000) + 60}`,
+      );
+      const found = r.ok ? (((await r.json()) as { traces?: unknown[] }).traces ?? []) : [];
+      assert(found.length === 0, `(14) a trace span carries a signed URL (${q})`);
+    }
+    const laocAfter = (await request('/geography/markets/la-oc', 'GET', adminToken)).json.data.status as string;
+    assert(laocAfter === laocBefore, `(14) la-oc must stay as it was (${laocBefore} -> ${laocAfter})`);
+
+    return (
+      `throwaway provider (contacts verified through the real flows, registration started on the SAME account); policy: identity verification everywhere, insurance turned on for a DEV/TEST market by a trust-admin; ` +
+      `case opened from the registration (idempotent), PRO-001 reports the VERIFICATION step from TRUST-001; private store: one-object presigned PUT, server-side size/type/signature/SHA-256 checks, spoofed, infected, wrong-hash and missing uploads refused, ` +
+      `another account gets 404; submit (stale revision 409, idempotent), reviewer queue, audited short-lived link serving the exact bytes, structured decisions on a named round (stale/duplicate refused), resubmission through the web app keeps round 1; ` +
+      `approval with an end date, expiry derived from the timestamp, new cycle keeps the old approval; Go-Live never evaluated; audit and outbox exact; no key, link, hash or contact in responses, audit, outbox or logs; la-oc ${laocBefore} untouched`
+    );
+  } finally {
+    // cleanup: the policy is put back (rule off, definition INACTIVE), the DEV/TEST market deactivated, the throwaway Keycloak user removed. Cases and evidence stay (history is never deleted).
+    try {
+      if (adminToken && ruleOn)
+        await request('/admin/trust/requirement-rules', 'PUT', adminToken, {
+          requirementCode: 'liability_insurance',
+          marketCode,
+          serviceTypeCode: null,
+          enabled: false,
+        });
+      if (adminToken && definitionOn)
+        await request('/admin/trust/requirement-definitions/liability_insurance/status', 'PUT', adminToken, { status: 'INACTIVE' });
+      if (adminToken && marketCreated)
+        await request('/geography/markets/' + marketCode + '/activation', 'POST', adminToken, { active: false, reason: 'smoke cleanup' });
+    } catch {
+      // best effort: the failure that got us here is the one to report
+    }
+    try {
+      if (kcUserId) await kcAdmin('DELETE', `/users/${kcUserId}`);
+    } catch {
+      // best effort
+    }
+    valkey.disconnect();
+    await database.close();
+  }
+});
+
 await check('Caddy Proxy auth routes', async () => {
   const expectStatus = async (host: string, path: string, ok: (s: number) => boolean, what: string) => {
     const r = await proxy(host, path);
@@ -5770,6 +6598,7 @@ const order = [
   'Sessions and security',
   'Consent',
   'Provider registration',
+  'Provider verification',
   'NATS Events',
   'JetStream',
   'SeaweedFS Storage',

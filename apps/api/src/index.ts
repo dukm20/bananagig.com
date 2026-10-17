@@ -6,19 +6,22 @@ import {
   FakePhoneIntelligence,
   NatsClient,
   RenderingSmsSender,
+  S3PrivateObjectStore,
   SmtpEmailSender,
   UnknownPhoneIntelligence,
   ValkeyFakeSmsTransport,
   ValkeyRateLimiter,
   closeValkey,
   createS3,
+  createS3Presigner,
   createValkey,
   runDiagnostics,
 } from '@bananagig/platform';
 import { ConfigurationService, ValkeyConfigCache } from '@bananagig/configuration';
 import { ContentService } from '@bananagig/content';
 import { CatalogService, GigTemplateService, createCatalogScopeReferenceValidator } from '@bananagig/catalog';
-import { ProviderRegistrationService, UnavailablePrerequisites } from '@bananagig/provider';
+import { ProviderRegistrationService } from '@bananagig/provider';
+import { DisabledEvidenceScanner, DisabledVerificationProvider, FakeEvidenceScanner, FakeVerificationProvider, TrustService } from '@bananagig/trust';
 import { AccountAreaService, AccountService, ConsentService, EmailVerificationService, PhoneVerificationService, SecurityService } from '@bananagig/accounts';
 import {
   AddressService,
@@ -33,6 +36,7 @@ import { buildApp } from './app';
 import { createContentSmsRenderer, createPhoneCountryDirectory, createPhonePolicyProvider } from './modules/account/phone-wiring';
 import { composeScopeReferenceValidators, createMarketGate } from './modules/catalog/wiring';
 import { createAccountPort, createCatalogPort, createConsentPort, createMarketPort, createProviderPolicyProvider } from './modules/provider/wiring';
+import { createProviderContextPort, createTrustPolicyProvider, createTrustPrerequisites } from './modules/trust/wiring';
 import { createConsentPolicyProvider, createDefaultLocaleResolver } from './modules/consent/wiring';
 import { createKeycloakSecurityIdentityProvider, createSecurityPolicyProvider, createUnavailableSecurityIdentityProvider } from './modules/security/wiring';
 import { createContentEmailRenderer, createVerificationLinkBuilder, createVerificationPolicyProvider } from './modules/account/email-wiring';
@@ -198,17 +202,33 @@ const consent = new ConsentService({
 const accountArea = new AccountAreaService({ database });
 
 // The provider registration (PRO-001): the registration of an account that wants to become a provider. A provider is the SAME account; the contact, consent, market and catalogue
-// state it composes are read through ports over their owning services (no package imports another), the policy from the configuration registry, and the future prerequisites
-// (verification, subscription, profile, Gigs) report NOT_AVAILABLE until their checkpoints exist. It shares the `database` of the account service, so the role request joins its transaction.
-const providerRegistrations = new ProviderRegistrationService({
+// state it composes are read through ports over their owning services (no package imports another), the policy from the configuration registry, and its `verification` step is
+// answered by the verification domain (TRUST-001); subscription, profile and Gigs report NOT_AVAILABLE until their checkpoints exist. It shares the `database` of the account
+// service, so the role request joins its transaction.
+const providerAccountPort = createAccountPort(accounts);
+const providerPolicy = createProviderPolicyProvider(configuration);
+const registrations: { current?: ProviderRegistrationService } = {};
+
+// Provider verification (TRUST-001): a case of requirements derived from the registration's market and service types. Evidence lives in the PRIVATE bucket (presigned, one object,
+// short-lived); scanning and external verification are ports whose production default fails closed (no scanner and no vendor exist yet). It reads the registration through the
+// registration's own ports (a lazy getter: the registration is constructed with the verification prerequisite below).
+const trust = new TrustService({
   database,
-  accounts: createAccountPort(accounts),
+  context: createProviderContextPort({ accounts: providerAccountPort, policy: providerPolicy, registrations: () => registrations.current! }),
+  policy: createTrustPolicyProvider(configuration),
+  store: new S3PrivateObjectStore({ client: s3, presignClient: createS3Presigner(cfg), bucket: cfg.s3.bucket }),
+  scanner: cfg.trust.scanner === 'fake' ? new FakeEvidenceScanner() : new DisabledEvidenceScanner(),
+  external: cfg.trust.externalProvider === 'fake' ? new FakeVerificationProvider() : new DisabledVerificationProvider(),
+});
+const providerRegistrations = (registrations.current = new ProviderRegistrationService({
+  database,
+  accounts: providerAccountPort,
   consent: createConsentPort(consent),
   markets: createMarketPort(geography),
   catalog: createCatalogPort(catalog),
-  policy: createProviderPolicyProvider(configuration),
-  prerequisites: UnavailablePrerequisites,
-});
+  policy: providerPolicy,
+  prerequisites: createTrustPrerequisites(trust),
+}));
 
 const app = await buildApp({
   cfg,
@@ -226,6 +246,7 @@ const app = await buildApp({
   catalog,
   gigTemplates,
   providerRegistrations,
+  trust,
   // Critical for serving requests: Postgres only. Valkey/NATS/OpenSearch/flagd outages must not take the API down.
   readiness: async () => ({ postgres: (await database.health()).ok ? 'up' : 'down' }),
   diagnostics: () => runDiagnostics(adapters),

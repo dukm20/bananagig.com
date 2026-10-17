@@ -63,3 +63,15 @@ export function createS3(cfg: AppConfig): S3Client {
     credentials: { accessKeyId: cfg.s3.accessKey, secretAccessKey: cfg.s3.secretKey },
   });
 }
+
+/** The client that SIGNS object-store URLs (TRUST-001): the same bucket and credentials, but the endpoint the holder of the URL can reach (S3_PUBLIC_ENDPOINT). */
+export function createS3Presigner(cfg: AppConfig): S3Client {
+  return new S3Client({
+    // no checksum of an (unknown, empty) body is hoisted into the signed URL: a presigned PUT carries the file the uploader sends, whatever its bytes
+    requestChecksumCalculation: 'WHEN_REQUIRED',
+    endpoint: cfg.s3.publicEndpoint,
+    region: cfg.s3.region,
+    forcePathStyle: true,
+    credentials: { accessKeyId: cfg.s3.accessKey, secretAccessKey: cfg.s3.secretKey },
+  });
+}

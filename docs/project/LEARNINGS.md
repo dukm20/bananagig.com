@@ -1385,3 +1385,53 @@ Write guard triggers with intermediate variables (`stem := ...; IF a <> stem || 
 
 ### Evidence
 `db/migrations/0016_gig_templates.sql` (`catalog.guard_gig_template_fields`, the `stem` variable).
+
+## LRN-0056 — A presigned PUT stays valid after you verified the object: upload to a key nothing reads, and promote the bytes you hashed
+
+Date: 2026-10-18
+Checkpoint: TRUST-001
+Domain: security / storage
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0044
+Related skill: skills/trust/SKILL.md
+
+### Context
+Verification evidence is uploaded with a presigned PUT, then the server checks it (size, content type, file signature, SHA-256, malware scan) and records it. The independent security review showed that the same URL still accepts a PUT until it expires, so a provider could overwrite an object after it was hashed, scanned and even submitted: the stored hash and scan verdict then describe other bytes, and the reviewer's download returns the swapped file. Nothing in the test suite replayed a PUT.
+
+### Learning
+A presigned URL is a capability, not a one-time token: nothing makes it single use or binds it to the bytes you inspected. Verification of an object you do not exclusively control proves nothing about the object a later reader gets. The fix is structural: the uploader writes to an UPLOAD key that no reader ever uses; finalize reads that object once (remembering its version/ETag), hashes and scans exactly those bytes, copies them to the FINAL key with a conditional copy (only while the version is unchanged), re-reads and re-hashes what landed (some stores ignore the condition), and stops reading the upload key. A replay can then only write an object nothing reads.
+
+### Why it matters
+It is invisible in functional tests and smoke runs (the happy path works), it silently voids the integrity guarantee (and a real scanner's verdict), and it comes back whenever someone "simplifies" the two keys into one.
+
+### Reuse rule
+For any user-supplied file that is verified server-side: never serve, hash-trust or scan-trust the key the client can still write to. Promote to a server-owned key, verify the promoted copy, delete the source, and add a test that replays the PUT after finalize and after submit. Never sign a PUT for the final key.
+
+### Evidence
+`packages/trust/src/service.ts` (`uploadKeyOf`, `finalizeDocument`: versioned read, conditional copy, re-hash of the promoted copy), `packages/platform/src/object-store.ts` (`readVersioned`, `copyIfVersion`), the `Provider verification` smoke scenario (replays the PUT after finalize and compares the reviewers' download with the hashed bytes), `packages/trust/src/trust.itest.ts` (replayed PUT tests).
+
+## LRN-0057 — A `pnpm dev` worker on the host shares the pg-boss queue with the container worker and makes the "Worker runtime" smoke check flaky
+
+Date: 2026-10-18
+Checkpoint: TRUST-001
+Domain: infrastructure / testing
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/infrastructure/SKILL.md
+
+### Context
+After the user's `pnpm dev` shells were started, the smoke started failing intermittently: `Worker runtime` reported a failed pg-boss job, and when it did, the worker diagnostics call took the full 8 s self-test timeout, aborted the smoke's own 8 s request, and 13 of 42 checks failed with "worker: no result" (a cascade from one cause). The host process (`tsx watch` of `apps/worker`, `.env.host`) uses the SAME Postgres, and pg-boss delivers each job to one of the workers that poll the queue, so about half of the `infra.ping` jobs were handled by the host worker, whose in-memory "seen" map is not the container's.
+
+### Learning
+Two workers on one database are a competing-consumers setup: any check that sends a job and waits for THAT process to handle it is a lottery while both run. The failure looks like a platform regression (many unrelated checks fail at once) but is environmental.
+
+### Why it matters
+It costs a re-run per occurrence and tempts people to "fix" the worker or to weaken the check. CI runs one worker and is unaffected.
+
+### Reuse rule
+When `Worker runtime` fails and nothing about the worker changed, look for a host-run worker (`ps`, `lsof -i :3102`, the pnpm dev shells) before touching code; re-run (it passes about half of the time) or stop the host worker, but never terminate a shell you do not own without asking. Any new job-based check must be written so that it does not depend on WHICH worker handles the job.
+
+### Evidence
+The `Worker runtime` check in `apps/smoke/src/index.ts` and `apps/worker/src/worker.ts` (`selfTest`); a host `tsx watch` worker (`pnpm dev`) next to the container `worker-service` on the same database; the TRUST-001 smoke runs that failed 13 of 42 checks and then passed on re-run without a code change.

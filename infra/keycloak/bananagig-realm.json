@@ -114,6 +114,18 @@
         {
           "name": "catalog-write",
           "description": "TEMPORARY infrastructure permission: create categories, service types and prohibited services, change their status and set their availability and order per market. To be mapped to application permissions."
+        },
+        {
+          "name": "trust-read",
+          "description": "TEMPORARY infrastructure permission: list verification cases and read their requirements, reviews and document METADATA (never the files). To be mapped to application permissions."
+        },
+        {
+          "name": "trust-review",
+          "description": "TEMPORARY infrastructure permission: start reviews, approve, reject or request action on verification requirements and download evidence through an audited short-lived link; implies trust-read. To be mapped to application permissions."
+        },
+        {
+          "name": "trust-admin",
+          "description": "TEMPORARY infrastructure permission: turn verification requirement definitions on or off and set where each applies (market, service type). Sees no evidence and decides nothing. To be mapped to application permissions."
         }
       ]
     }
@@ -150,7 +162,10 @@
           "geography-read",
           "geography-write",
           "catalog-read",
-          "catalog-write"
+          "catalog-write",
+          "trust-read",
+          "trust-review",
+          "trust-admin"
         ]
       }
     ],
@@ -848,7 +863,10 @@
           "geography-read",
           "geography-write",
           "catalog-read",
-          "catalog-write"
+          "catalog-write",
+          "trust-read",
+          "trust-review",
+          "trust-admin"
         ]
       },
       "credentials": [
@@ -884,7 +902,10 @@
           "geography-read",
           "geography-write",
           "catalog-read",
-          "catalog-write"
+          "catalog-write",
+          "trust-read",
+          "trust-review",
+          "trust-admin"
         ]
       },
       "credentials": [

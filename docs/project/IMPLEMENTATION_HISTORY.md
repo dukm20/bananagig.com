@@ -1020,3 +1020,36 @@ ADR-0042.
 
 ### Known follow-up
 DEBT-0085 (PLANNED-market pre-registration, the service type ceiling, one market per registration) and DEBT-0086 (verification, subscription, profile, Gigs, Go-Live, business providers, the polished UI and the accepted limits). Next: TRUST-001 Provider Verification and Documents.
+
+## TRUST-001 — 2026-10-18
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(TRUST-001)"`.
+Summary: Provider Verification and Documents. Verification is multi-dimensional: a verification CASE holds one requirement instance per thing policy asks of the provider (definition, rule and instance are separate; re-verification is a new cycle that keeps the old approval; evidence submissions are counted in rounds), evidenced by documents in the PRIVATE object store (metadata only in PostgreSQL, server-verified size, content type, file signature and SHA-256, a malware-scan port that fails closed, immutable history) or by an external verification behind a provider-neutral port, and decided by reviewers with structured reasons. There is no `verified` flag; the overall state is derived and is never Go-Live.
+
+### Housekeeping at the start (requested)
+`PROJECT_STATE` records PRO-001 (`a4d99c1`, GitHub Actions run 39055006188 SUCCESS in 20m 48s, as reported by the repository owner). `checkpoint:start` ran first. A peer interactive Claude session exists and was idle; the user-owned `pnpm dev` shells were not touched (their host worker shares the pg-boss queue with the container worker, which made the `Worker runtime` smoke check flaky: LRN-0057). `la-oc` stays PLANNED; DEBT-0030, 0064, 0065, 0070 and 0076 to 0086 stay OPEN.
+
+### Delivered
+- Migration `0019_trust_verification.sql` (one transaction): schema `trust` with ten tables (`requirement_definitions`, `document_types`, `reason_codes`, `requirement_rules`, `verification_cases`, `case_requirements`, `documents`, `reviews`, `external_verifications`, `audit_events`), ten functions and 21 triggers (guard rules `trust_rule:<KEY>`, 39 keys), 28 indexes, 6 `trust.*` configuration parameters through the real change-request lifecycle, 97 content entries through the real content lifecycle, and the reference seeds (4 definitions of which only identity verification is ACTIVE and required, 7 document types, 7 reason codes, one rule).
+- Contracts `trust.ts`; package `@bananagig/trust` (`TrustService`, the pure evaluator, the ports, the DEV/TEST adapters); `PrivateObjectStore` in `@bananagig/platform` (S3 and in-memory adapters, versioned read and conditional copy; `@aws-sdk/s3-request-presigner` added, pinned to the client version); settings `S3_PUBLIC_ENDPOINT`, `TRUST_SCANNER`, `TRUST_EXTERNAL_PROVIDER`; Keycloak realm roles `trust-read`, `trust-review`, `trust-admin` (dev administrators); the provider API (11 operations) and the staff API (10); seven outbox events; PRO-001's VERIFICATION step answered by this domain; the minimal web flow; smoke scenario `Provider verification` (41 checks).
+- Docs: `TRUST_VERIFICATION.md`, ADR-0043 to ADR-0045, the data model documents, `skills/trust` (new), DEBT-0087 and DEBT-0088, LRN-0056 and LRN-0057.
+- Quality process: independent authors for the database model, the service, the pure and platform units, the contracts and API, and the web, each with mutation checks (about 50 on the SQL, 48 on the service, 50 on the units, 60 on the contracts and API, 40 on the web, 25 on the review fixes); two independent read-only reviews. Defects found and fixed before the commit, by the test authors: starting an external verification violated its own guard; a rejected external verification could never be restarted; the stored case status ignored an approval past its end; `matchesSignature` threw on an inherited key; a duplicated configuration read. By the reviews: **a presigned PUT stayed valid after finalize and could overwrite evidence after it was hashed and scanned** (now a separate upload key and a conditional promote that re-hashes the result); the web upload would have put the signed URL in a Next.js trace span (now `node:http(s)`); abandoned uploads piled up; a reviewer could approve an external requirement without the provider's result; replaying an approve with another end date was a silent no-op; a case with approvals could be cancelled; a stuck EXPIRED case for a requirement policy dropped; a document could be inserted for a cancelled case (database guard); reviews were read without an index; timestamps could be caller-supplied; and several smaller ones. Accepted limits are in DEBT-0087 and DEBT-0088.
+
+### Schema
+Migration 0019: ten tables, ten functions, 21 triggers, 28 indexes, seeds. NORMALIZATION_LOG, DATA_MODEL, DATA_DICTIONARY, ERD, DATA_MODEL_CHANGELOG and SCHEMA_SNAPSHOT updated; Data Model Review Gate passed (definition, rule and instance separated; the case status derived but stored; cycles and rounds; metadata only in the database; no account id on requirements or documents; structured reasons and no free text; no `verified` boolean).
+
+### Contracts
+`packages/contracts/src/trust.ts`; 25 error codes `TRUST_*`; seven `bananagig.trust.verification-*.v1` events; OpenAPI and AsyncAPI regenerated and valid.
+
+### Tests
+Unit 12282 and 164 root script tests, integration 7458 in 55 files (trust data model rules 620, trust service 131, API trust 110), smoke 41 checks (41/41 locally).
+
+### Skills updated
+`skills/trust` (new), `skills/provider`, `skills/infrastructure`.
+
+### ADRs
+ADR-0043, ADR-0044, ADR-0045.
+
+### Known follow-up
+DEBT-0087 (a real scanner, a vendor adapter, retention, per-market document acceptance, reviewer notes, a trust console, the policy that can fail open, no audit of reads, no rate limit) and DEBT-0088 (the unscheduled expiry sweep and cleanup, the minimal web flow, accepted limits). Next: CAT-003 Provider GigMenu and Gig Versioning.

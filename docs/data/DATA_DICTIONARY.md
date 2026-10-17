@@ -1255,3 +1255,208 @@ Append-only audit trail of the registration (PRO-001): who (`account:<id>` or `s
 
 Indexes: the primary key only. The audit trail is not read by any API yet; an index (for example on `provider_registration_id`) is added through its own review when a query path appears.
 Triggers: `trg_audit_events__immutable` (BEFORE UPDATE OR DELETE, per row) and `trg_audit_events__no_truncate` (BEFORE TRUNCATE) call `provider.forbid_mutation`: UPDATE, DELETE and TRUNCATE are refused (`ROW_IMMUTABLE`).
+
+
+### trust.requirement_definitions
+
+WHAT a provider can be asked to prove (TRUST-001; PRD SV-09.01): a stable identity, a type from a controlled vocabulary and the way it is evidenced. WHERE it is required is a rule (`trust.requirement_rules`); what a case holds is an instance (`trust.case_requirements`). Platform-owned reference data, never deleted or truncated: `INACTIVE` (required nowhere) and `ACTIVE` can switch either way, either can go to `RETIRED` (terminal). The name and the provider instructions are content (CFG-002) found through generated content keys. No personal data.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `requirement_definition_id` | uuid | no | `gen_random_uuid()` | Primary key `pk_requirement_definitions`; the stable identity that an instance, a rule and an audit row reference (the policy snapshot of an instance is this id plus its cycle) | yes |
+| `code` | text | no | none | Lower-case snake_case, 2 to 48 characters (`ck_requirement_definitions__code`); unique (`uq_requirement_definitions__code`). Never reused, never a display name | yes |
+| `requirement_type` | text | no | none | `IDENTITY`, `BACKGROUND_CHECK`, `LICENSE`, `INSURANCE`, `CERTIFICATION`, `BUSINESS_REGISTRATION` or `OTHER_DOCUMENT` (`ck_requirement_definitions__type`). The document types accepted as evidence are those of the same requirement type | yes |
+| `evidence_kind` | text | no | none | `DOCUMENT` (the provider uploads documents that staff review) or `EXTERNAL` (an external verification provider runs the check through the adapter boundary) (`ck_requirement_definitions__evidence_kind`) | yes |
+| `expiry_required` | boolean | no | `false` | `true` = an approval must carry an expiry date taken by the reviewer from the evidence (a licence, an insurance policy, a background check validity window). Deliberately not a global validity period. Frozen once the definition is `RETIRED` | no (frozen once RETIRED) |
+| `status` | text | no | `'INACTIVE'` | `INACTIVE`, `ACTIVE` or `RETIRED` (`ck_requirement_definitions__status`). Initial: `INACTIVE` or `ACTIVE` (`INITIAL_STATUS`). Allowed moves: `INACTIVE` to `ACTIVE` and back, either to `RETIRED` (`STATUS_TRANSITION`) | no |
+| `name_content_key` | text | no | generated | `trust.requirement.<code>.name`, `GENERATED ALWAYS AS ... STORED`; foreign key `fk_requirement_definitions__name_content_key` to `content.entries (key)` (restrict): the name must exist as content | derived |
+| `instructions_content_key` | text | no | generated | `trust.requirement.<code>.instructions`, `GENERATED ALWAYS AS ... STORED`; foreign key `fk_requirement_definitions__instructions_content_key` to `content.entries (key)` (restrict): what the provider must submit, as content | derived |
+| `created_at` | timestamptz | no | `now()` | Creation time, kept by the guard | yes |
+| `updated_at` | timestamptz | no | `now()` | Last change, maintained by the guard | no |
+
+Indexes: the primary key and `uq_requirement_definitions__code` (the lookup by code). No index on the two content-key columns (never-deleted targets; the unique key of `content.entries` serves the check).
+Triggers: `trg_requirement_definitions__guard` (`trust.guard_requirement_definitions`, BEFORE INSERT OR UPDATE OR DELETE, per row): never deletes (`NOT_DELETABLE`); inserts only `INACTIVE` or `ACTIVE` (`INITIAL_STATUS`); id, code, type, evidence kind and `created_at` immutable (`IMMUTABLE_IDENTITY`); the status machine (`STATUS_TRANSITION`, also for a change of `expiry_required` on a RETIRED row); maintains `updated_at`. `trg_requirement_definitions__no_truncate` (`trust.forbid_mutation`, BEFORE TRUNCATE) refuses TRUNCATE (`ROW_IMMUTABLE`).
+
+### trust.document_types
+
+The kinds of document a provider can submit as evidence (TRUST-001): a driver's licence, a passport, an insurance certificate and so on. Reference data. Each type can evidence the requirements of ONE requirement type, so no join table exists; which types a given market accepts is not modelled yet (DEBT-0087). Never deleted or truncated. The name is content (CFG-002). No personal data.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `document_type_id` | uuid | no | `gen_random_uuid()` | Primary key `pk_document_types` | yes |
+| `code` | text | no | none | Lower-case snake_case, 2 to 48 characters (`ck_document_types__code`); unique (`uq_document_types__code`) | yes |
+| `requirement_type` | text | no | none | The requirement type this document type can evidence; the same vocabulary as `requirement_definitions.requirement_type` (`ck_document_types__requirement_type`). A document is accepted for a requirement only when the types are equal (`DOCUMENT_TYPE_MISMATCH`) | yes |
+| `status` | text | no | `'ACTIVE'` | `ACTIVE` or `INACTIVE` (`ck_document_types__status`); a document can be added only with an `ACTIVE` type | no |
+| `name_content_key` | text | no | generated | `trust.document_type.<code>.name`, `GENERATED ALWAYS AS ... STORED`; foreign key `fk_document_types__name_content_key` to `content.entries (key)` (restrict) | derived |
+| `created_at` | timestamptz | no | `now()` | Creation time, kept by the guard | yes |
+| `updated_at` | timestamptz | no | `now()` | Last change, maintained by the guard | no |
+
+Indexes: the primary key and `uq_document_types__code`. No index on `name_content_key` or `requirement_type` (a handful of rows, read whole).
+Triggers: `trg_document_types__guard` (`trust.guard_document_types`, BEFORE INSERT OR UPDATE OR DELETE, per row): never deletes (`NOT_DELETABLE`); id, code, requirement type and `created_at` immutable (`IMMUTABLE_IDENTITY`); maintains `updated_at`. `trg_document_types__no_truncate` refuses TRUNCATE (`ROW_IMMUTABLE`).
+
+### trust.reason_codes
+
+Structured, generic OPERATIONAL reasons for a rejection or an action-required decision (TRUST-001): document unreadable, name mismatch and so on. No legal conclusion and no free text: the wording is content (the provider reads it), the code is what is stored and audited. Never deleted or truncated. No personal data.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `reason_code_id` | uuid | no | `gen_random_uuid()` | Primary key `pk_reason_codes` | yes |
+| `code` | text | no | none | UPPER_SNAKE, 3 to 48 characters (`ck_reason_codes__code`); unique (`uq_reason_codes__code`) and the target of `trust.reviews.reason_code` (`fk_reviews__reason_code`) | yes |
+| `applies_to` | text | no | none | `REJECT`, `ACTION_REQUIRED` or `BOTH` (`ck_reason_codes__applies_to`): the decisions the reason can be given with (`REASON_NOT_APPLICABLE`) | yes |
+| `status` | text | no | `'ACTIVE'` | `ACTIVE` or `INACTIVE` (`ck_reason_codes__status`); a review can use only an `ACTIVE` reason (`REASON_INACTIVE`) | no |
+| `name_content_key` | text | no | generated | `trust.reason.<lower-case code>.name`, `GENERATED ALWAYS AS ... STORED`; foreign key `fk_reason_codes__name_content_key` to `content.entries (key)` (restrict): the provider-facing message | derived |
+| `created_at` | timestamptz | no | `now()` | Creation time, kept by the guard | yes |
+| `updated_at` | timestamptz | no | `now()` | Last change, maintained by the guard | no |
+
+Indexes: the primary key and `uq_reason_codes__code` (the lookup by code and the target of the foreign key from reviews).
+Triggers: `trg_reason_codes__guard` (`trust.guard_reason_codes`, BEFORE INSERT OR UPDATE OR DELETE, per row): never deletes (`NOT_DELETABLE`); id, code, scope and `created_at` immutable (`IMMUTABLE_IDENTITY`); maintains `updated_at`. `trg_reason_codes__no_truncate` refuses TRUNCATE (`ROW_IMMUTABLE`).
+
+### trust.requirement_rules
+
+WHERE a requirement applies (TRUST-001; SV-09.01: configurable by category and market): an ENABLED rule requires its definition from a provider whose registration is in the rule's market (NULL = every market) and offers the rule's service type (NULL = every service type). Required = at least one enabled rule matches and the definition is `ACTIVE`. A rule is switched off, never deleted or truncated. A policy change never edits an existing instance. No personal data.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `requirement_rule_id` | uuid | no | `gen_random_uuid()` | Primary key `pk_requirement_rules` | yes |
+| `requirement_definition_id` | uuid | no | none | Foreign key `fk_requirement_rules__definition_id` to `trust.requirement_definitions` (restrict); part of the unique scope `uq_requirement_rules__scope`. Enabling a rule needs a definition that is not `RETIRED` (`RULE_DEFINITION_RETIRED`) | yes |
+| `market_id` | uuid | yes | none | Foreign key `fk_requirement_rules__market_id` to `geography.markets` (restrict). NULL = every market | yes |
+| `service_type_id` | uuid | yes | none | Foreign key `fk_requirement_rules__service_type_id` to `catalog.service_types` (restrict). NULL = every service type; the service type is the policy key (template hooks of CAT-002 will map onto it with the Gig builder, CAT-003) | yes |
+| `enabled` | boolean | no | none | Whether the rule is in force; the only field that changes. No default: a rule states its intent | no |
+| `created_at` | timestamptz | no | `now()` | Creation time, kept by the guard | yes |
+| `updated_at` | timestamptz | no | `now()` | Last change, maintained by the guard | no |
+
+Indexes: the primary key and `uq_requirement_rules__scope (requirement_definition_id, market_id, service_type_id)` UNIQUE NULLS NOT DISTINCT (one rule per scope, so two "all markets" rules for a definition cannot coexist; it is also the lookup of a definition's rules and supports the foreign key to the definition). No index on `market_id` or `service_type_id` (never-deleted targets).
+Triggers: `trg_requirement_rules__guard` (`trust.guard_requirement_rules`, BEFORE INSERT OR UPDATE OR DELETE, per row): never deletes (`NOT_DELETABLE`); definition, market, service type and `created_at` immutable (`IMMUTABLE_IDENTITY`); an enabled rule needs a definition that is not RETIRED, read FOR SHARE (`RULE_DEFINITION_RETIRED`); maintains `updated_at`. `trg_requirement_rules__no_truncate` refuses TRUNCATE (`ROW_IMMUTABLE`).
+
+### trust.verification_cases
+
+The verification case of ONE account (TRUST-001): the container of the requirements policy asks of that provider. The account is the existing identity account (a provider is not a second account) and the case holds no copy of its contacts, name or profile. At most one non-cancelled case per account; a cancelled case is history and a new case is the next case number. The status is the workflow position DERIVED from the requirement instances by the service and stored for the reviewers' queue; `APPROVED` here is NOT Go-Live (PRO-003). Never deleted or truncated. No personal data.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `verification_case_id` | uuid | no | `gen_random_uuid()` | Primary key `pk_verification_cases` | yes |
+| `account_id` | uuid | no | none | Foreign key `fk_verification_cases__account_id` to `identity.accounts` (restrict): the identity account, referenced by id only. Taken from the authenticated request, never from a client. A case is opened only for an `ACTIVE` account (`ACCOUNT_NOT_ACTIVE`) | yes |
+| `case_number` | integer | no | none | At least 1 (`ck_verification_cases__number`); unique per account (`uq_verification_cases__number`) and CONTIGUOUS: the guard accepts only the highest plus one (`CASE_NUMBER_SEQUENCE`) | yes |
+| `status` | text | no | `'OPEN'` | `OPEN` (never submitted), `IN_REVIEW`, `ACTION_REQUIRED`, `APPROVED`, `EXPIRED` or `CANCELLED` (terminal) (`ck_verification_cases__status`). DERIVED by the service from the instances in the same transaction as every change of an instance (`deriveStatus`); the guard fixes the initial state `OPEN` (`CASE_MUST_START_OPEN`), refuses a return to `OPEN` and a cancellation of an `APPROVED` or `EXPIRED` case (`STATUS_TRANSITION`) and freezes a cancelled case (`CASE_FROZEN`). Not Go-Live | no (CANCELLED is final) |
+| `revision` | integer | no | `1` | Concurrency token of the case (`ck_verification_cases__revision`: at least 1; `REVISION_ONLY_GROWS`): the service bumps it on every change of the case or of any of its requirements, and a submit that names a revision is refused when it differs (`STALE_CASE`) | no |
+| `submitted_at` | timestamptz | yes | none | When the provider first submitted evidence; set once by the guard when the case leaves `OPEN`, never cleared (`ck_verification_cases__lifecycle` makes it NULL exactly for a never-submitted `OPEN` case, and non-NULL for the submitted statuses) | yes (once set) |
+| `decided_at` | timestamptz | yes | none | When the case last became `APPROVED` (set by the guard on each transition into `APPROVED`); kept after a later expiry as the time of the last approval; required by `APPROVED`, NULL while `OPEN` | no (set on approval) |
+| `cancelled_at` | timestamptz | yes | none | When the case was cancelled, set by the guard; NULL for every other status (`ck_verification_cases__lifecycle`) | yes (once set) |
+| `created_at` | timestamptz | no | `now()` | Creation time, kept by the guard | yes |
+| `updated_at` | timestamptz | no | `now()` | Last change, maintained by the guard | no |
+
+Indexes: the primary key; `uq_verification_cases__number (account_id, case_number)` (the cases of ONE account, the contiguity rule and the support of the foreign key to the account); `uq_verification_cases__live (account_id) WHERE status <> 'CANCELLED'` (THE lookup of the current case of an account and the rule that there is at most one live case); `idx_verification_cases__queue (submitted_at, verification_case_id) WHERE status = 'IN_REVIEW'` (the reviewers' queue, oldest submission first).
+Constraints: `ck_verification_cases__lifecycle`: `OPEN` has none of the three timestamps; `IN_REVIEW`, `ACTION_REQUIRED` and `EXPIRED` have `submitted_at` and no `cancelled_at`; `APPROVED` has `submitted_at` and `decided_at` and no `cancelled_at`; `CANCELLED` has `cancelled_at`.
+Triggers: `trg_verification_cases__guard` (`trust.guard_verification_cases`, BEFORE INSERT OR UPDATE OR DELETE, per row): never deletes (`NOT_DELETABLE`); inserts only `OPEN` at revision 1 without timestamps (`CASE_MUST_START_OPEN`), for an ACTIVE account read FOR SHARE (`ACCOUNT_NOT_ACTIVE`) and with the next case number (`CASE_NUMBER_SEQUENCE`); id, account, number and `created_at` immutable (`IMMUTABLE_IDENTITY`); a cancelled case is frozen (`CASE_FROZEN`); the revision only grows (`REVISION_ONLY_GROWS`); a submitted case never returns to `OPEN` and only `OPEN`, `IN_REVIEW` or `ACTION_REQUIRED` can be cancelled (`STATUS_TRANSITION`); sets `submitted_at`, `decided_at` and `cancelled_at` and maintains `updated_at`. `trg_verification_cases__no_truncate` refuses TRUNCATE (`ROW_IMMUTABLE`).
+
+### trust.case_requirements
+
+ONE CYCLE of one requirement of one case: what a provider has to prove and where it stands (TRUST-001). The definition id is the policy snapshot (a stable, immutable identity; a policy change never edits an instance). A requirement that expired is re-verified by a NEW cycle (`cycle + 1`) in the same case; the superseded instance and its approval stay as history. Within a cycle every provider evidence submission increments ROUND, and every document, review and external verification names its round. No account id is stored: ownership is read through the case. Never deleted or truncated. No personal data.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `case_requirement_id` | uuid | no | `gen_random_uuid()` | Primary key `pk_case_requirements` | yes |
+| `verification_case_id` | uuid | no | none | Foreign key `fk_case_requirements__case_id` to `trust.verification_cases` (restrict). Ownership of the requirement is read through the case. A cancelled case accepts no new instance (`CASE_FROZEN`) | yes |
+| `requirement_definition_id` | uuid | no | none | Foreign key `fk_case_requirements__definition_id` to `trust.requirement_definitions` (restrict): the policy snapshot. An instance is created only for an `ACTIVE` definition (`REQUIREMENT_NOT_ACTIVE`) | yes |
+| `cycle` | integer | no | `1` | At least 1 (`ck_case_requirements__cycle`); unique with the case and definition (`uq_case_requirements__cycle`) and contiguous: the highest plus one (`CYCLE_SEQUENCE`), allowed only after the highest cycle is `EXPIRED` and superseded (`CYCLE_NEEDS_EXPIRED`) | yes |
+| `status` | text | no | `'NOT_STARTED'` | `NOT_STARTED`, `PENDING` (evidence submitted), `IN_REVIEW`, `ACTION_REQUIRED`, `REJECTED` (both let the provider resubmit: PR-02.03), `APPROVED`, `EXPIRED` (terminal for the cycle) or `NOT_REQUIRED` (policy no longer asks) (`ck_case_requirements__status`). A new instance starts `NOT_STARTED` (`MUST_START_NOT_STARTED`); the 17 allowed transitions are fixed by the guard (`STATUS_TRANSITION`) | no |
+| `round` | integer | no | `0` | Number of evidence submissions in this cycle (`ck_case_requirements__round`: at least 0; 0 until the first). Incremented by exactly one by the guard on every move to `PENDING` from `NOT_STARTED`, `ACTION_REQUIRED` or `REJECTED` (`ROUND_SEQUENCE`) and otherwise unchanged | no (only with a submission) |
+| `revision` | integer | no | `1` | Concurrency token (`ck_case_requirements__revision`: at least 1; `REVISION_ONLY_GROWS`), bumped by the service on every change | no |
+| `required_at` | timestamptz | no | `now()` | When policy first required this instance | yes |
+| `submitted_at` | timestamptz | yes | none | When the evidence of the current round was submitted, set by the guard on the move to `PENDING`; required by every evidence status (`ck_case_requirements__evidence`) | no (only with a submission) |
+| `decided_at` | timestamptz | yes | none | When the requirement was last approved, rejected or marked action required, set by the guard; kept afterwards | no (only with a decision) |
+| `approved_at` | timestamptz | yes | none | When the approval was given, set by the guard on `APPROVED` and kept on `EXPIRED`; NULL in every other status (`ck_case_requirements__approval`) | yes (once set) |
+| `expires_at` | timestamptz | yes | none | End of the approval's validity, supplied by the reviewer from the evidence and required when the definition says `expiry_required` (`EXPIRY_REQUIRED`); later than `approved_at`, never in the past at approval (`EXPIRY_IN_PAST`). NULL = does not expire. `EXPIRED` requires it and is recorded only once the time has passed (`EXPIRY_NOT_REACHED`); expiry is also DERIVED from this timestamp (an `APPROVED` instance past it reads `EXPIRED` before the sweep records it) | yes (once set) |
+| `superseded_at` | timestamptz | yes | none | Set when a newer cycle replaced this one; only an `EXPIRED` instance can be superseded (`ck_case_requirements__superseded`, `SUPERSEDE_STATE`) and a superseded instance is frozen (`SUPERSEDED_FROZEN`). The current instance of a requirement is the one with NULL here | yes (once set) |
+| `created_at` | timestamptz | no | `now()` | Creation time, kept by the guard | yes |
+| `updated_at` | timestamptz | no | `now()` | Last change, maintained by the guard | no |
+
+Indexes: the primary key; `uq_case_requirements__cycle (verification_case_id, requirement_definition_id, cycle)` (the cycles of one requirement, the contiguity rule and the support of the foreign key to the case); `uq_case_requirements__current (verification_case_id, requirement_definition_id) WHERE superseded_at IS NULL` (THE lookup of the current instances of a case and the rule that a requirement has one current instance); `idx_case_requirements__queue (updated_at, case_requirement_id) WHERE status IN ('PENDING', 'IN_REVIEW') AND superseded_at IS NULL` (the evidence waiting for a reviewer, oldest first); `idx_case_requirements__expiry (expires_at, case_requirement_id) WHERE status = 'APPROVED' AND expires_at IS NOT NULL AND superseded_at IS NULL` (the expiry sweep: approvals whose end has come). No index on `requirement_definition_id` (never-deleted target; no filtered query).
+Constraints: `ck_case_requirements__evidence`: an evidence status (`PENDING`, `IN_REVIEW`, `ACTION_REQUIRED`, `REJECTED`, `APPROVED`, `EXPIRED`) needs `round >= 1` and `submitted_at`; `ck_case_requirements__approval`: `APPROVED` and `EXPIRED` need `approved_at` and, when `expires_at` is set, a later `expires_at` (and `EXPIRED` needs one), every other status has neither; `ck_case_requirements__superseded`: only an `EXPIRED` instance is superseded.
+Triggers: `trg_case_requirements__guard` (`trust.guard_case_requirements`, BEFORE INSERT OR UPDATE OR DELETE, per row): never deletes (`NOT_DELETABLE`); on insert the case is not cancelled (`CASE_FROZEN`), the definition is ACTIVE (`REQUIREMENT_NOT_ACTIVE`), the instance starts `NOT_STARTED` at round 0 without timestamps (`MUST_START_NOT_STARTED`) and the cycle is the next one, replacing an EXPIRED superseded one (`CYCLE_SEQUENCE`, `CYCLE_NEEDS_EXPIRED`); identity columns and `required_at` immutable (`IMMUTABLE_IDENTITY`); a superseded instance is frozen (`SUPERSEDED_FROZEN`); the revision only grows (`REVISION_ONLY_GROWS`); a cancelled case freezes its instances (`CASE_FROZEN`); superseding changes nothing else (`SUPERSEDE_STATE`); the status machine, the round rule and the approval and expiry rules above (`STATUS_TRANSITION`, `ROUND_SEQUENCE`, `EXPIRY_REQUIRED`, `EXPIRY_IN_PAST`, `EXPIRY_NOT_REACHED`); the evidence and decision fields change only with the status (`FIELDS_FROZEN`); parents are read FOR SHARE; maintains `updated_at`. `trg_case_requirements__no_truncate` refuses TRUNCATE (`ROW_IMMUTABLE`).
+
+### trust.documents
+
+METADATA of a document submitted as evidence (TRUST-001; SV-09.02: sensitive documents are access-controlled and audited). The file bytes are NEVER in PostgreSQL: they live in private object storage under an unguessable key that exposes no account, name or content. The size and content type are verified against the stored object and the SHA-256 is computed by the server from the stored bytes when the upload is finalized. A document is a draft (`UPLOAD_PENDING`, `ATTACHED`) until the provider submits, then `SUBMITTED` in a round and frozen; a resubmission is a NEW document in a later round, never an overwrite. Identical content uploaded twice is two documents: the hash never approves anything. Never deleted or truncated. No account id (ownership is read through the requirement and the case) and no document expiry (the reviewer sets the approval's expiry on the requirement). Sensitive: no API returns `object_key` or `sha256` to the provider.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `verification_document_id` | uuid | no | `gen_random_uuid()` | Primary key `pk_documents` | yes |
+| `case_requirement_id` | uuid | no | none | Foreign key `fk_documents__case_requirement_id` to `trust.case_requirements` (restrict). A document is added only while the requirement waits for evidence (`NOT_STARTED`, `ACTION_REQUIRED`, `REJECTED`; not superseded: `DOCUMENT_REQUIREMENT_STATE`) and only to a `DOCUMENT` requirement (`DOCUMENT_NOT_SUPPORTED`) | yes |
+| `document_type_id` | uuid | no | none | Foreign key `fk_documents__document_type_id` to `trust.document_types` (restrict); an `ACTIVE` type of the requirement's type (`DOCUMENT_TYPE_MISMATCH`) | yes |
+| `object_key` | text | no | none | Server-generated key in the private bucket, `trust/evidence/<case id>/<document id>` (`ck_documents__object_key`); unique (`uq_documents__object_key`). Never returned by an API, never logged, never in an event or an audit row | yes |
+| `mime_type` | text | no | none | The verified content type, `type/subtype` of at most 100 characters (`ck_documents__mime`); the allowed list is configuration (`trust.document.allowed_mime_types`) | yes |
+| `size_bytes` | bigint | no | none | The verified size, 1 to 52428800 (`ck_documents__size`); the tighter limit is configuration (`trust.document.max_size_bytes`) | yes |
+| `sha256` | text | yes | none | SHA-256 of the stored bytes, 64 lower-case hex (`ck_documents__sha256`), computed by the server at finalize and set once (`HASH_IMMUTABLE`); NULL only while `UPLOAD_PENDING` or `ABANDONED` without a hash. Integrity evidence for reviewers only; never exposed to the provider | no (set once) |
+| `status` | text | no | `'UPLOAD_PENDING'` | `UPLOAD_PENDING`, `ATTACHED`, `SUBMITTED`, `WITHDRAWN` or `ABANDONED` (`ck_documents__status`). Allowed moves: `UPLOAD_PENDING` to `ATTACHED` or `ABANDONED`, `ATTACHED` to `SUBMITTED` or `WITHDRAWN` (`STATUS_TRANSITION`); the other three are frozen (`DOCUMENT_FROZEN`). Starts `UPLOAD_PENDING` (`DOCUMENT_MUST_START_PENDING`) | no |
+| `scan_status` | text | no | `'PENDING'` | `PENDING`, `CLEAN`, `INFECTED` or `ERROR` (`ck_documents__scan`). Written by the scanning port only. Allowed moves: `PENDING` to `CLEAN`, `INFECTED` or `ERROR`; `ERROR` to `PENDING`, `CLEAN` or `INFECTED`; `CLEAN` to `INFECTED` (`SCAN_TRANSITION`). When clean scans are required (configuration, default true) a document that is not `CLEAN` cannot be attached, submitted, reviewed or downloaded (service rule) | no |
+| `round` | integer | yes | none | The evidence round of the requirement the document was submitted in; NULL while a draft, withdrawn or abandoned, at least 1 when `SUBMITTED` (`ck_documents__lifecycle`); the guard requires the requirement to be `PENDING` in the same round (`DOCUMENT_ROUND`) | no (set at submit) |
+| `upload_expires_at` | timestamptz | no | none | End of the upload authorization; a finalize after it is refused and the document is `ABANDONED` | yes |
+| `finalized_at` | timestamptz | yes | none | When the upload was verified and the document attached, set by the guard on `ATTACHED`; required by `ATTACHED`, `SUBMITTED` and `WITHDRAWN` (`ck_documents__lifecycle`) | yes (once set) |
+| `scanned_at` | timestamptz | yes | none | When the scan status last changed to a result, maintained by the guard; NULL while `PENDING` | no |
+| `submitted_at` | timestamptz | yes | none | When the document was submitted, set by the guard on `SUBMITTED`; NULL otherwise | yes (once set) |
+| `withdrawn_at` | timestamptz | yes | none | When the draft was withdrawn, set by the guard on `WITHDRAWN`; NULL otherwise | yes (once set) |
+| `created_at` | timestamptz | no | `now()` | When the upload was authorized, kept by the guard | yes |
+| `updated_at` | timestamptz | no | `now()` | Last change, maintained by the guard | no |
+
+Indexes: the primary key; `uq_documents__object_key` (one object, one document); `idx_documents__requirement (case_requirement_id, created_at)` (the documents of ONE requirement in order, and the support of the foreign key). No index on `document_type_id` (never-deleted target) and none on `sha256` (a hash is integrity evidence, not a lookup key, and duplicates are allowed).
+Constraints: `ck_documents__lifecycle`: `UPLOAD_PENDING` has no hash, `finalized_at`, round, `submitted_at` or `withdrawn_at`; `ATTACHED` has a hash and `finalized_at` and no round, `submitted_at` or `withdrawn_at`; `SUBMITTED` has a hash, `finalized_at`, a round of at least 1 and `submitted_at` and no `withdrawn_at`; `WITHDRAWN` has a hash, `finalized_at` and `withdrawn_at` and no round or `submitted_at`; `ABANDONED` has no round and no `submitted_at`.
+Triggers: `trg_documents__guard` (`trust.guard_documents`, BEFORE INSERT OR UPDATE OR DELETE, per row): never deletes (`NOT_DELETABLE`); on insert the requirement is read FOR SHARE and must be waiting for evidence (`DOCUMENT_REQUIREMENT_STATE`), a `DOCUMENT` requirement (`DOCUMENT_NOT_SUPPORTED`), the type ACTIVE and of the requirement's type (`DOCUMENT_TYPE_MISMATCH`) and the document starts `UPLOAD_PENDING` and unscanned (`DOCUMENT_MUST_START_PENDING`); id, requirement, type, key, content type, size, `upload_expires_at` and `created_at` immutable (`IMMUTABLE_IDENTITY`); the hash set once (`HASH_IMMUTABLE`); the scan machine (`SCAN_TRANSITION`); the status machine and the frozen terminal statuses (`STATUS_TRANSITION`, `DOCUMENT_FROZEN`); a submit names the round the requirement was just submitted in (`DOCUMENT_ROUND`); sets `finalized_at`, `scanned_at`, `submitted_at` and `withdrawn_at`; maintains `updated_at`. `trg_documents__no_truncate` refuses TRUNCATE (`ROW_IMMUTABLE`).
+
+### trust.reviews
+
+The immutable decisions on the evidence of a requirement (TRUST-001; AD-02: inspect evidence, choose an authorized action, record the reason). One `STARTED` and at most ONE terminal decision (`APPROVED`, `REJECTED`, `ACTION_REQUIRED`) per requirement and round, so two reviewers cannot both decide the same evidence and a decision on stale evidence is refused. STRUCTURED reason codes only: there is no free-text note column (a note would be sensitive text that can never be redacted). Append-only: UPDATE, DELETE and TRUNCATE are refused. No personal data (the reviewer is a Keycloak subject or an adapter name).
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `review_id` | uuid | no | `gen_random_uuid()` | Primary key `pk_reviews` | yes |
+| `case_requirement_id` | uuid | no | none | Foreign key `fk_reviews__case_requirement_id` to `trust.case_requirements` (restrict); the cycle must not be superseded (`REVIEW_SUPERSEDED`) | yes |
+| `round` | integer | no | none | The evidence round decided (`ck_reviews__round`: at least 1); must equal the requirement's current round (`REVIEW_ROUND`), so a decision on stale evidence is refused | yes |
+| `decision` | text | no | none | `STARTED`, `APPROVED`, `REJECTED` or `ACTION_REQUIRED` (`ck_reviews__decision`); it records the state the requirement was just moved to (`IN_REVIEW`, `APPROVED`, `REJECTED`, `ACTION_REQUIRED`: `REVIEW_STATE`) | yes |
+| `reason_code` | text | yes | none | Foreign key `fk_reviews__reason_code` to `trust.reason_codes (code)` (restrict). Required for `REJECTED` and `ACTION_REQUIRED`, NULL for `STARTED` and `APPROVED` (`ck_reviews__reason`); the reason must be `ACTIVE` (`REASON_INACTIVE`) and apply to the decision (`REASON_NOT_APPLICABLE`) | yes |
+| `reviewer` | text | no | none | `admin:<Keycloak subject>` (admin identities have no application account, DEBT-0046) or `external:<adapter>` for a decision relayed from an external verification provider (`ck_reviews__reviewer`: at most 160 characters of `A-Za-z0-9._:@-` after the prefix). No name | yes |
+| `expires_at` | timestamptz | yes | none | The expiry the approval was given with; only an `APPROVED` review can carry one (`ck_reviews__expires`) and it must equal the requirement's (`REVIEW_EXPIRY`) | yes |
+| `correlation_id` | text | no | none | The correlation id of the request | yes |
+| `reviewed_at` | timestamptz | no | `clock_timestamp()` | When the decision was recorded (database clock) | yes |
+
+Indexes: the primary key; `uq_reviews__decision (case_requirement_id, round) WHERE decision <> 'STARTED'` (at most one terminal decision per requirement and round, and the lookup of the decision of a round); `uq_reviews__started (case_requirement_id, round) WHERE decision = 'STARTED'` (at most one review start per round). Both are partial, so neither supports a lookup by `case_requirement_id` alone; the reviews of a case are listed by `case_requirement_id = ANY(...)` over a handful of requirements. No index on `reason_code` (never-deleted target).
+Triggers: `trg_reviews__guard` (`trust.guard_reviews`, BEFORE INSERT, per row): reads the requirement FOR SHARE and checks it is not superseded (`REVIEW_SUPERSEDED`), the round (`REVIEW_ROUND`), the state the decision records (`REVIEW_STATE`), the expiry of an approval (`REVIEW_EXPIRY`) and the reason code (`REASON_INACTIVE`, `REASON_NOT_APPLICABLE`). `trg_reviews__immutable` (BEFORE UPDATE OR DELETE, per row) and `trg_reviews__no_truncate` (BEFORE TRUNCATE) call `trust.forbid_mutation`: UPDATE, DELETE and TRUNCATE are refused (`ROW_IMMUTABLE`).
+
+### trust.external_verifications
+
+The reference to a verification run by an EXTERNAL provider through the adapter boundary (TRUST-001; ID.me may be one future adapter): the adapter name, the provider's own identifier and the last status the adapter reported. No vendor payload, no personal attribute and no evidence is stored (structured fields only); a decision relayed from the provider is recorded as a review by `external:<adapter>`. One per requirement and round, only for requirements whose definition has evidence kind `EXTERNAL`. Never deleted or truncated.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `external_verification_id` | uuid | no | `gen_random_uuid()` | Primary key `pk_external_verifications` | yes |
+| `case_requirement_id` | uuid | no | none | Foreign key `fk_external_verifications__case_requirement_id` to `trust.case_requirements` (restrict). The requirement must be `EXTERNAL` (`EXTERNAL_NOT_SUPPORTED`), not superseded and `PENDING` or `IN_REVIEW` (`EXTERNAL_STATE`) | yes |
+| `round` | integer | no | none | At least 1 (`ck_external_verifications__round`); unique with the requirement (`uq_external_verifications__round`) and equal to the requirement's current round at insert (`EXTERNAL_STATE`) | yes |
+| `adapter` | text | no | none | The adapter name, lower-case, 2 to 32 characters (`ck_external_verifications__adapter`) | yes |
+| `external_id` | text | no | none | The external provider's identifier of the verification, 1 to 128 characters of `A-Za-z0-9._:-` (`ck_external_verifications__external_id`): a reference, not a credential. Unique per adapter (`uq_external_verifications__external`) | yes |
+| `status` | text | no | `'CREATED'` | The last status the adapter reported: `CREATED`, `PENDING`, `APPROVED`, `REJECTED`, `ERROR` or `CANCELLED` (`ck_external_verifications__status`); inserted `CREATED` (`EXTERNAL_STATE`); once `APPROVED`, `REJECTED` or `CANCELLED` it cannot change (`EXTERNAL_FROZEN`) | no |
+| `last_checked_at` | timestamptz | yes | none | When the adapter was last polled; NULL until the first poll | no |
+| `created_at` | timestamptz | no | `now()` | Creation time, kept by the guard | yes |
+| `updated_at` | timestamptz | no | `now()` | Last change, maintained by the guard | no |
+
+Indexes: the primary key; `uq_external_verifications__external (adapter, external_id)` (one external verification, one row); `uq_external_verifications__round (case_requirement_id, round)` (one per requirement and round, the lookup of the verification of a round and the support of the foreign key).
+Triggers: `trg_external_verifications__guard` (`trust.guard_external_verifications`, BEFORE INSERT OR UPDATE OR DELETE, per row): never deletes (`NOT_DELETABLE`); on insert the requirement is read FOR SHARE and checked (`EXTERNAL_NOT_SUPPORTED`, `EXTERNAL_STATE`); id, requirement, round, adapter, external id and `created_at` immutable (`IMMUTABLE_IDENTITY`); a finished verification is frozen (`EXTERNAL_FROZEN`); maintains `updated_at`. `trg_external_verifications__no_truncate` refuses TRUNCATE (`ROW_IMMUTABLE`).
+
+### trust.audit_events
+
+Append-only audit trail of the verification domain (TRUST-001): who, what, when, the subject (a case, a requirement instance or a definition), a field-level object of identifiers, codes, statuses and counts, an optional reason code and the correlation id. Every read of evidence by a reviewer is recorded (`VERIFICATION_DOCUMENT_ACCESSED`), before the download link is created. Rows are immutable and never truncated. Configuration and content changes are audited by their own registries.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `audit_event_id` | uuid | no | `gen_random_uuid()` | Primary key `pk_audit_events` | yes |
+| `occurred_at` | timestamptz | no | `clock_timestamp()` | When the change was made (database clock) | yes |
+| `actor` | text | no | none | Who acted: `account:<id>` (the provider), `admin:<subject>` (staff), `external:<adapter>` or `system:<job>` (`ck_audit_events__actor`: not blank, at most 200 characters) | yes |
+| `action` | text | no | none | One of 19 actions (`ck_audit_events__action`): `VERIFICATION_CASE_OPENED`, `VERIFICATION_REQUIREMENTS_SYNCED`, `VERIFICATION_DOCUMENT_UPLOAD_AUTHORIZED`, `VERIFICATION_DOCUMENT_SUBMITTED`, `VERIFICATION_DOCUMENT_REPLACED`, `VERIFICATION_DOCUMENT_UPLOAD_REFUSED`, `VERIFICATION_DOCUMENT_ACCESSED`, `VERIFICATION_SUBMITTED`, `VERIFICATION_REVIEW_STARTED`, `VERIFICATION_APPROVED`, `VERIFICATION_REJECTED`, `VERIFICATION_ACTION_REQUIRED`, `VERIFICATION_EXPIRED`, `VERIFICATION_REVERIFICATION_REQUESTED`, `VERIFICATION_CASE_CANCELLED`, `VERIFICATION_EXTERNAL_STARTED`, `VERIFICATION_EXTERNAL_UPDATED`, `TRUST_REQUIREMENT_STATUS_CHANGED`, `TRUST_RULE_CHANGED` | yes |
+| `verification_case_id` | uuid | yes | none | Subject: foreign key `fk_audit_events__case_id` to `trust.verification_cases` (restrict). At least one of the three subject columns is set (`ck_audit_events__subject`) | yes |
+| `case_requirement_id` | uuid | yes | none | Subject: foreign key `fk_audit_events__case_requirement_id` to `trust.case_requirements` (restrict) | yes |
+| `requirement_definition_id` | uuid | yes | none | Subject: foreign key `fk_audit_events__definition_id` to `trust.requirement_definitions` (restrict); the subject of a policy change (`TRUST_REQUIREMENT_STATUS_CHANGED`, `TRUST_RULE_CHANGED`) | yes |
+| `changes` | jsonb | yes | none | A JSON object of identifiers, codes, statuses and counts, or NULL (`ck_audit_events__changes_object`). Never document content, an object key, a hash, a signed URL, a vendor payload or personal data | yes |
+| `reason_code` | text | yes | none | The structured reason of a rejection or an action-required decision (a `trust.reason_codes.code` value). No foreign key and no check on this column: the audit row repeats the code of the review and is never joined | yes |
+| `correlation_id` | text | no | none | The correlation id of the request | yes |
+
+Indexes: the primary key only. The three subject foreign keys have no index of their own: the table is written once and read only for investigation; an index is added through its own review when a query path appears.
+Triggers: `trg_audit_events__immutable` (BEFORE UPDATE OR DELETE, per row) and `trg_audit_events__no_truncate` (BEFORE TRUNCATE) call `trust.forbid_mutation`: UPDATE, DELETE and TRUNCATE are refused (`ROW_IMMUTABLE`).

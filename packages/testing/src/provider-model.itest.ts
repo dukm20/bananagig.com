@@ -181,10 +181,13 @@ async function isolated(prep: string[], text: string, params: unknown[] = [], fr
   }
 }
 const noTriggers = (...tables: string[]): string[] => tables.map((t) => `ALTER TABLE ${t} DISABLE TRIGGER USER`);
-/** Disables the user triggers of every table outside the provider schema (so that only the provider guards can answer), for the rolled-back transaction that follows. */
+/**
+ * Disables the user triggers of every table outside the provider schema (so that only the provider guards can answer), for the rolled-back transaction that follows.
+ * Since 0019 the trust schema references accounts, markets and service types as well, so a CASCADE from those roots reaches the trust tables: its guards are switched off too.
+ */
 const NO_FOREIGN_TRIGGERS = `DO $$ DECLARE r record; BEGIN
   FOR r IN SELECT n.nspname, c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE c.relkind = 'r' AND n.nspname IN ('identity', 'geography', 'catalog', 'content', 'configuration', 'integration') LOOP
+            WHERE c.relkind = 'r' AND n.nspname IN ('identity', 'geography', 'catalog', 'content', 'configuration', 'integration', 'trust') LOOP
     EXECUTE format('ALTER TABLE %I.%I DISABLE TRIGGER USER', r.nspname, r.relname);
   END LOOP; END $$`;
 

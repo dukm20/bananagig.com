@@ -24,6 +24,8 @@ const raw = z.object({
   S3_SECRET_KEY: z.string().optional(),
   S3_BUCKET: z.string().default('bananagig-dev'),
   S3_REGION: z.string().default('us-east-1'),
+  /** The address a BROWSER or another caller outside the container network can reach the object store at; only the host of presigned URLs uses it. Default: S3_ENDPOINT. */
+  S3_PUBLIC_ENDPOINT: url.optional(),
   OPENSEARCH_URL: url.optional(),
   FLAGD_HOST: z.string().optional(),
   FLAGD_PORT: port.default(8013),
@@ -80,6 +82,14 @@ const raw = z.object({
   /** Phone line-type / risk lookup (ID-003). `fake` is a deterministic offline classifier (DEV/TEST ONLY); `unknown` classifies every number UNKNOWN (no vendor). */
   PHONE_INTELLIGENCE: z.enum(['fake', 'unknown']).optional(),
   /**
+   * The malware scanner behind verification documents (TRUST-001). `fake` marks a document CLEAN unless it contains the harmless EICAR antivirus test string (DEV/TEST ONLY:
+   * it scans nothing, so it is refused in production); `disabled` scans nothing and reports an ERROR, so with clean scans required (the default) no document can be attached
+   * until a real scanner is chosen (fail closed). Default: fake outside production, disabled in production.
+   */
+  TRUST_SCANNER: z.enum(['fake', 'disabled']).optional(),
+  /** The external verification provider (TRUST-001). `fake` is an offline adapter for DEV/TEST (refused in production); `disabled` reports the provider unavailable. No vendor adapter exists yet. */
+  TRUST_EXTERNAL_PROVIDER: z.enum(['fake', 'disabled']).optional(),
+  /**
    * The exact number of reverse proxies in front of the API (DEBT-0055). `request.ip` is the address that many hops from the socket: with 1, the last
    * X-Forwarded-For entry (the one the proxy wrote); with 0, always the socket address. Production must set it explicitly; the API must not be reachable
    * except through those proxies.
@@ -117,7 +127,7 @@ export interface AppConfig {
   databaseUrl: string;
   valkeyUrl: string;
   natsUrl: string;
-  s3: { endpoint: string; accessKey: string; secretKey: string; bucket: string; region: string };
+  s3: { endpoint: string; publicEndpoint: string; accessKey: string; secretKey: string; bucket: string; region: string };
   opensearchUrl: string;
   flagd: { host: string; port: number };
   otlpEndpoint: string;
@@ -145,6 +155,8 @@ export interface AppConfig {
   keycloakAdmin: { baseUrl: string; realm: string; clientId: string; clientSecret: string };
   sms: { transport: 'fake' | 'disabled' };
   phoneIntelligence: 'fake' | 'unknown';
+  /** Verification evidence adapters (TRUST-001): the malware scanner and the external verification provider. */
+  trust: { scanner: 'fake' | 'disabled'; externalProvider: 'fake' | 'disabled' };
   /** Exact number of trusted reverse proxies in front of the API (0 = trust no forwarding header). */
   trustedProxyHops: number;
   verification: {
@@ -213,6 +225,7 @@ export function loadConfig(opts: LoadOptions): Readonly<AppConfig> {
     }
     return DEV_DEFAULTS[key];
   };
+  const s3Endpoint = need('S3_ENDPOINT');
   const cfg: AppConfig = {
     env: e.NODE_ENV,
     serviceName: e.SERVICE_NAME ?? opts.service,
@@ -222,7 +235,14 @@ export function loadConfig(opts: LoadOptions): Readonly<AppConfig> {
     databaseUrl: need('DATABASE_URL'),
     valkeyUrl: need('VALKEY_URL'),
     natsUrl: need('NATS_URL'),
-    s3: { endpoint: need('S3_ENDPOINT'), accessKey: need('S3_ACCESS_KEY'), secretKey: need('S3_SECRET_KEY'), bucket: e.S3_BUCKET, region: e.S3_REGION },
+    s3: {
+      endpoint: s3Endpoint,
+      publicEndpoint: e.S3_PUBLIC_ENDPOINT ?? s3Endpoint,
+      accessKey: need('S3_ACCESS_KEY'),
+      secretKey: need('S3_SECRET_KEY'),
+      bucket: e.S3_BUCKET,
+      region: e.S3_REGION,
+    },
     opensearchUrl: need('OPENSEARCH_URL'),
     flagd: { host: need('FLAGD_HOST'), port: e.FLAGD_PORT },
     otlpEndpoint: need('OTEL_EXPORTER_OTLP_ENDPOINT'),
@@ -252,6 +272,7 @@ export function loadConfig(opts: LoadOptions): Readonly<AppConfig> {
     },
     sms: { transport: e.SMS_TRANSPORT ?? (prod ? 'disabled' : 'fake') },
     phoneIntelligence: e.PHONE_INTELLIGENCE ?? (prod ? 'unknown' : 'fake'),
+    trust: { scanner: e.TRUST_SCANNER ?? (prod ? 'disabled' : 'fake'), externalProvider: e.TRUST_EXTERNAL_PROVIDER ?? (prod ? 'disabled' : 'fake') },
     trustedProxyHops: e.TRUSTED_PROXY_HOPS ?? 1,
     verification: { hashSecret: need('VERIFICATION_HASH_SECRET') },
     apiInternalUrl: need('API_INTERNAL_URL'),
@@ -274,6 +295,9 @@ export function loadConfig(opts: LoadOptions): Readonly<AppConfig> {
     },
   };
   if (prod && cfg.sms.transport === 'fake') missing.push('SMS_TRANSPORT: the fake SMS sink holds plaintext codes and is not allowed in production');
+  if (prod && cfg.trust.scanner === 'fake') missing.push('TRUST_SCANNER: the fake scanner scans nothing and is not allowed in production');
+  if (prod && cfg.trust.externalProvider === 'fake')
+    missing.push('TRUST_EXTERNAL_PROVIDER: the fake external verification provider is not allowed in production');
   if (prod && cfg.phoneIntelligence === 'fake') missing.push('PHONE_INTELLIGENCE: the fake classifier is not allowed in production');
   if (prod && e.TRUSTED_PROXY_HOPS === undefined && (!required || opts.role === 'api'))
     missing.push('TRUSTED_PROXY_HOPS: required in production (the exact number of reverse proxies in front of the API)');

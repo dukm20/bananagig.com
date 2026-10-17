@@ -43,7 +43,8 @@ stateDiagram-v2
 | `LEGAL` | ID-005 | The consent evaluator for the account's roles (provider purposes apply once the role is PENDING or ACTIVE) |
 | `MARKET` | PRO-001 | A chosen market that still accepts provider registration |
 | `SERVICES` | PRO-001 | A set within `[min, max]`, every code ACTIVE and offered in the market (`BLOCKED` with `notOffered` when a stored code no longer is) |
-| `VERIFICATION`, `SUBSCRIPTION`, `PROFILE`, `GIGS` | TRUST-001, SUB, PRO-002, CAT-003 | `NOT_AVAILABLE` through `PrerequisitePort`; no fake record exists for them |
+| `VERIFICATION` | TRUST-001 | Answered by the verification domain through `PrerequisitePort` (`NOT_REQUIRED`, `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED` when action is needed or an approval expired, `COMPLETE`); the registration owns no verification state and its lifecycle and submit do not depend on it ([TRUST_VERIFICATION.md](TRUST_VERIFICATION.md)) |
+| `SUBSCRIPTION`, `PROFILE`, `GIGS` | SUB, PRO-002, CAT-003 | `NOT_AVAILABLE` through `PrerequisitePort`; no fake record exists for them |
 
 Statuses: `NOT_STARTED`, `IN_PROGRESS`, `COMPLETE`, `BLOCKED`, `NOT_AVAILABLE`, `NOT_REQUIRED`. `registrationReady` means every step in `REGISTRATION_STEPS` (ACCOUNT, CONTACT, LEGAL, MARKET, SERVICES) is `COMPLETE` or `NOT_REQUIRED`; the future steps never block this checkpoint. **Contacts come first** (PR-01.03/.05): choosing a market or services before the configured contacts are verified is `409 PROVIDER_PREREQUISITE_NOT_MET`.
 

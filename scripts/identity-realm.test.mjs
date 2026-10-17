@@ -73,6 +73,9 @@ describe('identity realm (infra/keycloak/bananagig-realm.json)', () => {
       'content-write',
       'geography-read',
       'geography-write',
+      'trust-admin',
+      'trust-read',
+      'trust-review',
     ]);
     expect(r.roles.realm.map((x) => x.name).sort()).toEqual(['customer', 'provider']);
   });

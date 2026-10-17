@@ -27,6 +27,8 @@ describe('next.config', () => {
       '/auth/security/revoke-all',
       '/provider/registration',
       '/auth/provider/start',
+      '/provider/verification',
+      '/auth/provider/verification/open',
     ])
       expect(re.test(p), p).toBe(true);
     for (const p of [

@@ -180,6 +180,23 @@ export function requireCatalogPermission(action: keyof typeof CATALOG_PERMISSION
   };
 }
 
+/**
+ * TEMPORARY permission strategy for provider verification (TRUST-001), the same model as the other registries (DEBT-0021): admin-console identity context plus client roles on
+ * `bananagig-admin`. Three SEPARATE roles, least privilege: `trust-read` sees cases and document METADATA (never the files); `trust-review` decides requirements and downloads
+ * evidence, and implies read (a reviewer must see the case); `trust-admin` manages the requirement policy (definitions on or off, where each applies) and sees NO evidence and
+ * decides nothing (separation of duties). No other registry's role grants any of them, and a provider token never does.
+ */
+export const TRUST_PERMISSIONS = { read: 'trust-read', review: 'trust-review', admin: 'trust-admin' } as const;
+export const hasTrustPermission = (principal: Principal | undefined, action: keyof typeof TRUST_PERMISSIONS): boolean =>
+  hasAdminClientRole(principal, TRUST_PERMISSIONS[action]) || (action === 'read' && hasAdminClientRole(principal, TRUST_PERMISSIONS.review));
+export function requireTrustPermission(action: keyof typeof TRUST_PERMISSIONS): preHandlerAsyncHookHandler {
+  const authenticate = requireAuthenticated();
+  return async function guard(request, reply) {
+    await authenticate.call(request.server, request, reply);
+    if (!hasTrustPermission(request.principal, action)) throw forbidden();
+  };
+}
+
 /** Handler-level check for entries owned by LEGAL: the caller must also hold `content-legal` (AUTHORIZATION 403 otherwise). */
 export function assertContentLegal(principal: Principal | undefined): void {
   if (!hasAdminClientRole(principal, CONTENT_LEGAL_ROLE)) throw forbidden();

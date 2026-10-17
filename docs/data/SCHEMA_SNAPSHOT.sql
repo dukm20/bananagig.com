@@ -9,6 +9,7 @@ CREATE SCHEMA geography;
 CREATE SCHEMA identity;
 CREATE SCHEMA integration;
 CREATE SCHEMA provider;
+CREATE SCHEMA trust;
 
 CREATE TABLE catalog.audit_events (
   audit_event_id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -1336,3 +1337,221 @@ CREATE TABLE public.schema_migrations (
   CONSTRAINT ck_schema_migrations__filename_matches_version CHECK ((filename ~ (('^'::text || lpad((version)::text, 4, '0'::text)) || '_[a-z0-9_]+[.]sql$'::text))),
   CONSTRAINT ck_schema_migrations__version_positive CHECK ((version > 0))
 );
+
+CREATE TABLE trust.audit_events (
+  audit_event_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  occurred_at timestamp with time zone NOT NULL DEFAULT clock_timestamp(),
+  actor text NOT NULL,
+  action text NOT NULL,
+  verification_case_id uuid,
+  case_requirement_id uuid,
+  requirement_definition_id uuid,
+  changes jsonb,
+  reason_code text,
+  correlation_id text NOT NULL,
+  CONSTRAINT pk_audit_events PRIMARY KEY (audit_event_id),
+  CONSTRAINT fk_audit_events__case_id FOREIGN KEY (verification_case_id) REFERENCES trust.verification_cases(verification_case_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_audit_events__case_requirement_id FOREIGN KEY (case_requirement_id) REFERENCES trust.case_requirements(case_requirement_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_audit_events__definition_id FOREIGN KEY (requirement_definition_id) REFERENCES trust.requirement_definitions(requirement_definition_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_audit_events__action CHECK ((action = ANY (ARRAY['VERIFICATION_CASE_OPENED'::text, 'VERIFICATION_REQUIREMENTS_SYNCED'::text, 'VERIFICATION_DOCUMENT_UPLOAD_AUTHORIZED'::text, 'VERIFICATION_DOCUMENT_SUBMITTED'::text, 'VERIFICATION_DOCUMENT_REPLACED'::text, 'VERIFICATION_DOCUMENT_UPLOAD_REFUSED'::text, 'VERIFICATION_DOCUMENT_ACCESSED'::text, 'VERIFICATION_SUBMITTED'::text, 'VERIFICATION_REVIEW_STARTED'::text, 'VERIFICATION_APPROVED'::text, 'VERIFICATION_REJECTED'::text, 'VERIFICATION_ACTION_REQUIRED'::text, 'VERIFICATION_EXPIRED'::text, 'VERIFICATION_REVERIFICATION_REQUESTED'::text, 'VERIFICATION_CASE_CANCELLED'::text, 'VERIFICATION_EXTERNAL_STARTED'::text, 'VERIFICATION_EXTERNAL_UPDATED'::text, 'TRUST_REQUIREMENT_STATUS_CHANGED'::text, 'TRUST_RULE_CHANGED'::text]))),
+  CONSTRAINT ck_audit_events__actor CHECK (((length(btrim(actor)) > 0) AND (length(actor) <= 200))),
+  CONSTRAINT ck_audit_events__changes_object CHECK (((changes IS NULL) OR (jsonb_typeof(changes) = 'object'::text))),
+  CONSTRAINT ck_audit_events__subject CHECK (((verification_case_id IS NOT NULL) OR (case_requirement_id IS NOT NULL) OR (requirement_definition_id IS NOT NULL)))
+);
+
+CREATE TABLE trust.case_requirements (
+  case_requirement_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  verification_case_id uuid NOT NULL,
+  requirement_definition_id uuid NOT NULL,
+  cycle integer NOT NULL DEFAULT 1,
+  status text NOT NULL DEFAULT 'NOT_STARTED'::text,
+  round integer NOT NULL DEFAULT 0,
+  revision integer NOT NULL DEFAULT 1,
+  required_at timestamp with time zone NOT NULL DEFAULT now(),
+  submitted_at timestamp with time zone,
+  decided_at timestamp with time zone,
+  approved_at timestamp with time zone,
+  expires_at timestamp with time zone,
+  superseded_at timestamp with time zone,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_case_requirements PRIMARY KEY (case_requirement_id),
+  CONSTRAINT uq_case_requirements__cycle UNIQUE (verification_case_id, requirement_definition_id, cycle),
+  CONSTRAINT fk_case_requirements__case_id FOREIGN KEY (verification_case_id) REFERENCES trust.verification_cases(verification_case_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_case_requirements__definition_id FOREIGN KEY (requirement_definition_id) REFERENCES trust.requirement_definitions(requirement_definition_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_case_requirements__approval CHECK ((((status = ANY (ARRAY['APPROVED'::text, 'EXPIRED'::text])) AND (approved_at IS NOT NULL) AND ((expires_at IS NULL) OR (expires_at > approved_at)) AND ((status = 'APPROVED'::text) OR (expires_at IS NOT NULL))) OR ((status <> ALL (ARRAY['APPROVED'::text, 'EXPIRED'::text])) AND (approved_at IS NULL) AND (expires_at IS NULL)))),
+  CONSTRAINT ck_case_requirements__cycle CHECK ((cycle >= 1)),
+  CONSTRAINT ck_case_requirements__evidence CHECK (((status <> ALL (ARRAY['PENDING'::text, 'IN_REVIEW'::text, 'ACTION_REQUIRED'::text, 'REJECTED'::text, 'APPROVED'::text, 'EXPIRED'::text])) OR ((round >= 1) AND (submitted_at IS NOT NULL)))),
+  CONSTRAINT ck_case_requirements__revision CHECK ((revision >= 1)),
+  CONSTRAINT ck_case_requirements__round CHECK ((round >= 0)),
+  CONSTRAINT ck_case_requirements__status CHECK ((status = ANY (ARRAY['NOT_STARTED'::text, 'PENDING'::text, 'IN_REVIEW'::text, 'ACTION_REQUIRED'::text, 'APPROVED'::text, 'REJECTED'::text, 'EXPIRED'::text, 'NOT_REQUIRED'::text]))),
+  CONSTRAINT ck_case_requirements__superseded CHECK (((superseded_at IS NULL) OR (status = 'EXPIRED'::text)))
+);
+CREATE INDEX idx_case_requirements__expiry ON trust.case_requirements USING btree (expires_at, case_requirement_id) WHERE ((status = 'APPROVED'::text) AND (expires_at IS NOT NULL) AND (superseded_at IS NULL));
+CREATE INDEX idx_case_requirements__queue ON trust.case_requirements USING btree (updated_at, case_requirement_id) WHERE ((status = ANY (ARRAY['PENDING'::text, 'IN_REVIEW'::text])) AND (superseded_at IS NULL));
+CREATE UNIQUE INDEX uq_case_requirements__current ON trust.case_requirements USING btree (verification_case_id, requirement_definition_id) WHERE (superseded_at IS NULL);
+
+CREATE TABLE trust.document_types (
+  document_type_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  code text NOT NULL,
+  requirement_type text NOT NULL,
+  status text NOT NULL DEFAULT 'ACTIVE'::text,
+  name_content_key text NOT NULL GENERATED ALWAYS AS ((('trust.document_type.'::text || code) || '.name'::text)) STORED,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_document_types PRIMARY KEY (document_type_id),
+  CONSTRAINT uq_document_types__code UNIQUE (code),
+  CONSTRAINT fk_document_types__name_content_key FOREIGN KEY (name_content_key) REFERENCES content.entries(key) ON DELETE RESTRICT,
+  CONSTRAINT ck_document_types__code CHECK (((code ~ '^[a-z][a-z0-9]*(_[a-z0-9]+)*$'::text) AND ((length(code) >= 2) AND (length(code) <= 48)))),
+  CONSTRAINT ck_document_types__requirement_type CHECK ((requirement_type = ANY (ARRAY['IDENTITY'::text, 'BACKGROUND_CHECK'::text, 'LICENSE'::text, 'INSURANCE'::text, 'CERTIFICATION'::text, 'BUSINESS_REGISTRATION'::text, 'OTHER_DOCUMENT'::text]))),
+  CONSTRAINT ck_document_types__status CHECK ((status = ANY (ARRAY['ACTIVE'::text, 'INACTIVE'::text])))
+);
+
+CREATE TABLE trust.documents (
+  verification_document_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  case_requirement_id uuid NOT NULL,
+  document_type_id uuid NOT NULL,
+  object_key text NOT NULL,
+  mime_type text NOT NULL,
+  size_bytes bigint NOT NULL,
+  sha256 text,
+  status text NOT NULL DEFAULT 'UPLOAD_PENDING'::text,
+  scan_status text NOT NULL DEFAULT 'PENDING'::text,
+  round integer,
+  upload_expires_at timestamp with time zone NOT NULL,
+  finalized_at timestamp with time zone,
+  scanned_at timestamp with time zone,
+  submitted_at timestamp with time zone,
+  withdrawn_at timestamp with time zone,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_documents PRIMARY KEY (verification_document_id),
+  CONSTRAINT uq_documents__object_key UNIQUE (object_key),
+  CONSTRAINT fk_documents__case_requirement_id FOREIGN KEY (case_requirement_id) REFERENCES trust.case_requirements(case_requirement_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_documents__document_type_id FOREIGN KEY (document_type_id) REFERENCES trust.document_types(document_type_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_documents__lifecycle CHECK ((((status = 'UPLOAD_PENDING'::text) AND (sha256 IS NULL) AND (finalized_at IS NULL) AND (round IS NULL) AND (submitted_at IS NULL) AND (withdrawn_at IS NULL)) OR ((status = 'ATTACHED'::text) AND (sha256 IS NOT NULL) AND (finalized_at IS NOT NULL) AND (round IS NULL) AND (submitted_at IS NULL) AND (withdrawn_at IS NULL)) OR ((status = 'SUBMITTED'::text) AND (sha256 IS NOT NULL) AND (finalized_at IS NOT NULL) AND (round IS NOT NULL) AND (round >= 1) AND (submitted_at IS NOT NULL) AND (withdrawn_at IS NULL)) OR ((status = 'WITHDRAWN'::text) AND (sha256 IS NOT NULL) AND (finalized_at IS NOT NULL) AND (round IS NULL) AND (submitted_at IS NULL) AND (withdrawn_at IS NOT NULL)) OR ((status = 'ABANDONED'::text) AND (round IS NULL) AND (submitted_at IS NULL)))),
+  CONSTRAINT ck_documents__mime CHECK (((mime_type ~ '^[a-z]+/[a-z0-9.+-]+$'::text) AND (length(mime_type) <= 100))),
+  CONSTRAINT ck_documents__object_key CHECK ((object_key ~ '^trust/evidence/[0-9a-f-]{36}/[0-9a-f-]{36}$'::text)),
+  CONSTRAINT ck_documents__scan CHECK ((scan_status = ANY (ARRAY['PENDING'::text, 'CLEAN'::text, 'INFECTED'::text, 'ERROR'::text]))),
+  CONSTRAINT ck_documents__sha256 CHECK (((sha256 IS NULL) OR (sha256 ~ '^[0-9a-f]{64}$'::text))),
+  CONSTRAINT ck_documents__size CHECK (((size_bytes >= 1) AND (size_bytes <= 52428800))),
+  CONSTRAINT ck_documents__status CHECK ((status = ANY (ARRAY['UPLOAD_PENDING'::text, 'ATTACHED'::text, 'SUBMITTED'::text, 'WITHDRAWN'::text, 'ABANDONED'::text])))
+);
+CREATE INDEX idx_documents__requirement ON trust.documents USING btree (case_requirement_id, created_at);
+
+CREATE TABLE trust.external_verifications (
+  external_verification_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  case_requirement_id uuid NOT NULL,
+  round integer NOT NULL,
+  adapter text NOT NULL,
+  external_id text NOT NULL,
+  status text NOT NULL DEFAULT 'CREATED'::text,
+  last_checked_at timestamp with time zone,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_external_verifications PRIMARY KEY (external_verification_id),
+  CONSTRAINT uq_external_verifications__external UNIQUE (adapter, external_id),
+  CONSTRAINT uq_external_verifications__round UNIQUE (case_requirement_id, round),
+  CONSTRAINT fk_external_verifications__case_requirement_id FOREIGN KEY (case_requirement_id) REFERENCES trust.case_requirements(case_requirement_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_external_verifications__adapter CHECK ((adapter ~ '^[a-z][a-z0-9_]{1,31}$'::text)),
+  CONSTRAINT ck_external_verifications__external_id CHECK ((external_id ~ '^[A-Za-z0-9._:-]{1,128}$'::text)),
+  CONSTRAINT ck_external_verifications__round CHECK ((round >= 1)),
+  CONSTRAINT ck_external_verifications__status CHECK ((status = ANY (ARRAY['CREATED'::text, 'PENDING'::text, 'APPROVED'::text, 'REJECTED'::text, 'ERROR'::text, 'CANCELLED'::text])))
+);
+
+CREATE TABLE trust.reason_codes (
+  reason_code_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  code text NOT NULL,
+  applies_to text NOT NULL,
+  status text NOT NULL DEFAULT 'ACTIVE'::text,
+  name_content_key text NOT NULL GENERATED ALWAYS AS ((('trust.reason.'::text || lower(code)) || '.name'::text)) STORED,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_reason_codes PRIMARY KEY (reason_code_id),
+  CONSTRAINT uq_reason_codes__code UNIQUE (code),
+  CONSTRAINT fk_reason_codes__name_content_key FOREIGN KEY (name_content_key) REFERENCES content.entries(key) ON DELETE RESTRICT,
+  CONSTRAINT ck_reason_codes__applies_to CHECK ((applies_to = ANY (ARRAY['REJECT'::text, 'ACTION_REQUIRED'::text, 'BOTH'::text]))),
+  CONSTRAINT ck_reason_codes__code CHECK (((code ~ '^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*$'::text) AND ((length(code) >= 3) AND (length(code) <= 48)))),
+  CONSTRAINT ck_reason_codes__status CHECK ((status = ANY (ARRAY['ACTIVE'::text, 'INACTIVE'::text])))
+);
+
+CREATE TABLE trust.requirement_definitions (
+  requirement_definition_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  code text NOT NULL,
+  requirement_type text NOT NULL,
+  evidence_kind text NOT NULL,
+  expiry_required boolean NOT NULL DEFAULT false,
+  status text NOT NULL DEFAULT 'INACTIVE'::text,
+  name_content_key text NOT NULL GENERATED ALWAYS AS ((('trust.requirement.'::text || code) || '.name'::text)) STORED,
+  instructions_content_key text NOT NULL GENERATED ALWAYS AS ((('trust.requirement.'::text || code) || '.instructions'::text)) STORED,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_requirement_definitions PRIMARY KEY (requirement_definition_id),
+  CONSTRAINT uq_requirement_definitions__code UNIQUE (code),
+  CONSTRAINT fk_requirement_definitions__instructions_content_key FOREIGN KEY (instructions_content_key) REFERENCES content.entries(key) ON DELETE RESTRICT,
+  CONSTRAINT fk_requirement_definitions__name_content_key FOREIGN KEY (name_content_key) REFERENCES content.entries(key) ON DELETE RESTRICT,
+  CONSTRAINT ck_requirement_definitions__code CHECK (((code ~ '^[a-z][a-z0-9]*(_[a-z0-9]+)*$'::text) AND ((length(code) >= 2) AND (length(code) <= 48)))),
+  CONSTRAINT ck_requirement_definitions__evidence_kind CHECK ((evidence_kind = ANY (ARRAY['DOCUMENT'::text, 'EXTERNAL'::text]))),
+  CONSTRAINT ck_requirement_definitions__status CHECK ((status = ANY (ARRAY['INACTIVE'::text, 'ACTIVE'::text, 'RETIRED'::text]))),
+  CONSTRAINT ck_requirement_definitions__type CHECK ((requirement_type = ANY (ARRAY['IDENTITY'::text, 'BACKGROUND_CHECK'::text, 'LICENSE'::text, 'INSURANCE'::text, 'CERTIFICATION'::text, 'BUSINESS_REGISTRATION'::text, 'OTHER_DOCUMENT'::text])))
+);
+
+CREATE TABLE trust.requirement_rules (
+  requirement_rule_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  requirement_definition_id uuid NOT NULL,
+  market_id uuid,
+  service_type_id uuid,
+  enabled boolean NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_requirement_rules PRIMARY KEY (requirement_rule_id),
+  CONSTRAINT uq_requirement_rules__scope UNIQUE NULLS NOT DISTINCT (requirement_definition_id, market_id, service_type_id),
+  CONSTRAINT fk_requirement_rules__definition_id FOREIGN KEY (requirement_definition_id) REFERENCES trust.requirement_definitions(requirement_definition_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_requirement_rules__market_id FOREIGN KEY (market_id) REFERENCES geography.markets(market_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_requirement_rules__service_type_id FOREIGN KEY (service_type_id) REFERENCES catalog.service_types(service_type_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE trust.reviews (
+  review_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  case_requirement_id uuid NOT NULL,
+  round integer NOT NULL,
+  decision text NOT NULL,
+  reason_code text,
+  reviewer text NOT NULL,
+  expires_at timestamp with time zone,
+  correlation_id text NOT NULL,
+  reviewed_at timestamp with time zone NOT NULL DEFAULT clock_timestamp(),
+  CONSTRAINT pk_reviews PRIMARY KEY (review_id),
+  CONSTRAINT fk_reviews__case_requirement_id FOREIGN KEY (case_requirement_id) REFERENCES trust.case_requirements(case_requirement_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_reviews__reason_code FOREIGN KEY (reason_code) REFERENCES trust.reason_codes(code) ON DELETE RESTRICT,
+  CONSTRAINT ck_reviews__decision CHECK ((decision = ANY (ARRAY['STARTED'::text, 'APPROVED'::text, 'REJECTED'::text, 'ACTION_REQUIRED'::text]))),
+  CONSTRAINT ck_reviews__expires CHECK (((expires_at IS NULL) OR (decision = 'APPROVED'::text))),
+  CONSTRAINT ck_reviews__reason CHECK ((((decision = ANY (ARRAY['STARTED'::text, 'APPROVED'::text])) AND (reason_code IS NULL)) OR ((decision = ANY (ARRAY['REJECTED'::text, 'ACTION_REQUIRED'::text])) AND (reason_code IS NOT NULL)))),
+  CONSTRAINT ck_reviews__reviewer CHECK ((reviewer ~ '^(admin|external):[A-Za-z0-9._:@-]{1,160}$'::text)),
+  CONSTRAINT ck_reviews__round CHECK ((round >= 1))
+);
+CREATE INDEX idx_reviews__requirement ON trust.reviews USING btree (case_requirement_id, reviewed_at);
+CREATE UNIQUE INDEX uq_reviews__decision ON trust.reviews USING btree (case_requirement_id, round) WHERE (decision <> 'STARTED'::text);
+CREATE UNIQUE INDEX uq_reviews__started ON trust.reviews USING btree (case_requirement_id, round) WHERE (decision = 'STARTED'::text);
+
+CREATE TABLE trust.verification_cases (
+  verification_case_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  account_id uuid NOT NULL,
+  case_number integer NOT NULL,
+  status text NOT NULL DEFAULT 'OPEN'::text,
+  revision integer NOT NULL DEFAULT 1,
+  submitted_at timestamp with time zone,
+  decided_at timestamp with time zone,
+  cancelled_at timestamp with time zone,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_verification_cases PRIMARY KEY (verification_case_id),
+  CONSTRAINT uq_verification_cases__number UNIQUE (account_id, case_number),
+  CONSTRAINT fk_verification_cases__account_id FOREIGN KEY (account_id) REFERENCES identity.accounts(account_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_verification_cases__lifecycle CHECK ((((status = 'OPEN'::text) AND (submitted_at IS NULL) AND (decided_at IS NULL) AND (cancelled_at IS NULL)) OR ((status = ANY (ARRAY['IN_REVIEW'::text, 'ACTION_REQUIRED'::text, 'EXPIRED'::text])) AND (submitted_at IS NOT NULL) AND (cancelled_at IS NULL)) OR ((status = 'APPROVED'::text) AND (submitted_at IS NOT NULL) AND (decided_at IS NOT NULL) AND (cancelled_at IS NULL)) OR ((status = 'CANCELLED'::text) AND (cancelled_at IS NOT NULL)))),
+  CONSTRAINT ck_verification_cases__number CHECK ((case_number >= 1)),
+  CONSTRAINT ck_verification_cases__revision CHECK ((revision >= 1)),
+  CONSTRAINT ck_verification_cases__status CHECK ((status = ANY (ARRAY['OPEN'::text, 'IN_REVIEW'::text, 'ACTION_REQUIRED'::text, 'APPROVED'::text, 'EXPIRED'::text, 'CANCELLED'::text])))
+);
+CREATE INDEX idx_verification_cases__queue ON trust.verification_cases USING btree (submitted_at, verification_case_id) WHERE (status = 'IN_REVIEW'::text);
+CREATE UNIQUE INDEX uq_verification_cases__live ON trust.verification_cases USING btree (account_id) WHERE (status <> 'CANCELLED'::text);

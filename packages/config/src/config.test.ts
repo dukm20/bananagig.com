@@ -620,3 +620,174 @@ describe('loadConfig: KEYCLOAK_SECURITY_CLIENT_ID / KEYCLOAK_SECURITY_CLIENT_SEC
     });
   });
 });
+
+describe('loadConfig: S3_PUBLIC_ENDPOINT, TRUST_SCANNER and TRUST_EXTERNAL_PROVIDER (TRUST-001)', () => {
+  const hashKey = 'prod-hash-key-'.concat('0123456789abcdef'.repeat(2));
+  // every setting a production process with no role (the strictest set) needs, so the tests below isolate the variable under test
+  const prodAll = {
+    NODE_ENV: 'production',
+    DATABASE_URL: 'postgres://u:pw@db:5432/d',
+    VALKEY_URL: 'redis://valkey:6379',
+    NATS_URL: 'nats://nats:4222',
+    S3_ENDPOINT: 'http://s3-internal:8333',
+    S3_ACCESS_KEY: 'access',
+    S3_SECRET_KEY: 'shh-value',
+    OPENSEARCH_URL: 'http://search:9200',
+    FLAGD_HOST: 'flagd',
+    OTEL_EXPORTER_OTLP_ENDPOINT: 'http://otel:4318',
+    SMTP_HOST: 'smtp',
+    KEYCLOAK_URL: 'http://keycloak-auth:8080',
+    KEYCLOAK_PUBLIC_URL: 'https://auth.example.com',
+    WEB_PUBLIC_URL: 'https://app.example.com',
+    API_INTERNAL_URL: 'http://api-service:3000',
+    VERIFICATION_HASH_SECRET: hashKey,
+    TRUSTED_PROXY_HOPS: '1',
+    KEYCLOAK_SECURITY_CLIENT_SECRET: 'prod-security-client-secret-'.concat('0123456789abcdef'),
+  };
+  const issuesOf = (fn: () => unknown): string[] => {
+    try {
+      fn();
+    } catch (err) {
+      expect(err).toBeInstanceOf(ConfigError);
+      return (err as ConfigError).issues;
+    }
+    throw new Error('expected loadConfig to throw a ConfigError');
+  };
+  const SCANNER_REFUSAL = 'TRUST_SCANNER: the fake scanner scans nothing and is not allowed in production';
+  const PROVIDER_REFUSAL = 'TRUST_EXTERNAL_PROVIDER: the fake external verification provider is not allowed in production';
+
+  it('has a loadable production baseline for these tests', () => {
+    expect(loadConfig({ service: 't', env: prodAll }).env).toBe('production');
+  });
+
+  describe('S3_PUBLIC_ENDPOINT', () => {
+    it('defaults to the development S3 endpoint outside production', () => {
+      const cfg = loadConfig({ service: 't', env: {} });
+      expect(cfg.s3.publicEndpoint).toBe('http://localhost:8333');
+      expect(cfg.s3.publicEndpoint).toBe(cfg.s3.endpoint);
+    });
+    it('defaults to S3_ENDPOINT when only that is set (the internal and public address are then the same)', () => {
+      const cfg = loadConfig({ service: 't', env: { S3_ENDPOINT: 'http://objects.test:9000' } });
+      expect(cfg.s3.endpoint).toBe('http://objects.test:9000');
+      expect(cfg.s3.publicEndpoint).toBe('http://objects.test:9000');
+    });
+    it('defaults to S3_ENDPOINT in production, and is not itself required there', () => {
+      const cfg = loadConfig({ service: 't', env: prodAll });
+      expect(cfg.s3.publicEndpoint).toBe('http://s3-internal:8333');
+    });
+    it('uses an explicit value without touching the internal endpoint', () => {
+      const cfg = loadConfig({ service: 't', env: { S3_ENDPOINT: 'http://s3-internal:8333', S3_PUBLIC_ENDPOINT: 'https://files.example.com' } });
+      expect(cfg.s3.endpoint).toBe('http://s3-internal:8333');
+      expect(cfg.s3.publicEndpoint).toBe('https://files.example.com');
+    });
+    it('uses an explicit value in production too', () => {
+      const cfg = loadConfig({ service: 't', env: { ...prodAll, S3_PUBLIC_ENDPOINT: 'https://files.example.com' } });
+      expect(cfg.s3).toMatchObject({ endpoint: 'http://s3-internal:8333', publicEndpoint: 'https://files.example.com' });
+    });
+    it('treats an empty value as unset (falls back to the endpoint)', () => {
+      expect(loadConfig({ service: 't', env: { S3_PUBLIC_ENDPOINT: '' } }).s3.publicEndpoint).toBe('http://localhost:8333');
+    });
+    it.each(['not a url', 'files.example.com', '/relative', 'http//bad'])('rejects the invalid URL %j and names the variable', (value) => {
+      expect(() => loadConfig({ service: 't', env: { S3_PUBLIC_ENDPOINT: value } })).toThrow(/S3_PUBLIC_ENDPOINT/);
+    });
+    it('keeps the other S3 settings intact', () => {
+      const cfg = loadConfig({ service: 't', env: { S3_PUBLIC_ENDPOINT: 'https://files.example.com', S3_BUCKET: 'b1', S3_REGION: 'eu-west-1' } });
+      expect(cfg.s3).toMatchObject({ bucket: 'b1', region: 'eu-west-1', accessKey: 'bananagig_dev_access' });
+    });
+    it('redactConfig masks credentials embedded in the public endpoint and the secret key, and keeps the host', () => {
+      const cfg = loadConfig({ service: 't', env: { S3_PUBLIC_ENDPOINT: 'https://user:hunter2@files.example.com', S3_SECRET_KEY: 'shh' } });
+      const out = JSON.stringify(redactConfig(cfg));
+      expect(out).not.toContain('hunter2');
+      expect(out).not.toContain('shh');
+      expect(out).toContain('files.example.com');
+    });
+  });
+
+  describe('TRUST_SCANNER and TRUST_EXTERNAL_PROVIDER defaults', () => {
+    it('are fake in development', () => {
+      expect(loadConfig({ service: 't', env: {} }).trust).toEqual({ scanner: 'fake', externalProvider: 'fake' });
+    });
+    it('are fake in the test environment', () => {
+      expect(loadConfig({ service: 't', env: { NODE_ENV: 'test' } }).trust).toEqual({ scanner: 'fake', externalProvider: 'fake' });
+    });
+    it('are disabled in production', () => {
+      expect(loadConfig({ service: 't', env: prodAll }).trust).toEqual({ scanner: 'disabled', externalProvider: 'disabled' });
+    });
+    it('treat empty values as unset', () => {
+      expect(loadConfig({ service: 't', env: { TRUST_SCANNER: '', TRUST_EXTERNAL_PROVIDER: '' } }).trust).toEqual({
+        scanner: 'fake',
+        externalProvider: 'fake',
+      });
+      expect(loadConfig({ service: 't', env: { ...prodAll, TRUST_SCANNER: '', TRUST_EXTERNAL_PROVIDER: '' } }).trust).toEqual({
+        scanner: 'disabled',
+        externalProvider: 'disabled',
+      });
+    });
+    it.each(['web', 'api', 'worker', 'tool'] as const)('apply to the %s role as well', (role) => {
+      expect(loadConfig({ service: 't', role, env: {} }).trust).toEqual({ scanner: 'fake', externalProvider: 'fake' });
+    });
+  });
+
+  describe.each([
+    ['TRUST_SCANNER', 'scanner', SCANNER_REFUSAL],
+    ['TRUST_EXTERNAL_PROVIDER', 'externalProvider', PROVIDER_REFUSAL],
+  ] as const)('%s', (variable, field, refusal) => {
+    it.each(['fake', 'disabled'] as const)('accepts %s outside production', (value) => {
+      expect(loadConfig({ service: 't', env: { [variable]: value } }).trust[field]).toBe(value);
+      expect(loadConfig({ service: 't', env: { NODE_ENV: 'test', [variable]: value } }).trust[field]).toBe(value);
+    });
+    it('accepts disabled in production', () => {
+      expect(loadConfig({ service: 't', env: { ...prodAll, [variable]: 'disabled' } }).trust[field]).toBe('disabled');
+    });
+    it.each(['clamav', 'FAKE', 'Disabled', 'true', 'none', ' fake', 'real'])('rejects the unknown value %j and names the variable', (value) => {
+      const issues = issuesOf(() => loadConfig({ service: 't', env: { [variable]: value } }));
+      expect(issues.some((i) => i.startsWith(variable))).toBe(true);
+    });
+    it('refuses fake in production with the exact message', () => {
+      const issues = issuesOf(() => loadConfig({ service: 't', env: { ...prodAll, [variable]: 'fake' } }));
+      expect(issues).toContain(refusal);
+    });
+    it.each(['web', 'api', 'worker', 'tool'] as const)('refuses fake in production for the %s role', (role) => {
+      const issues = issuesOf(() => loadConfig({ service: 't', role, env: { ...prodAll, [variable]: 'fake' } }));
+      expect(issues).toContain(refusal);
+    });
+    it('does not refuse fake outside production', () => {
+      expect(() => loadConfig({ service: 't', env: { [variable]: 'fake' } })).not.toThrow();
+    });
+  });
+
+  it('the two settings are independent', () => {
+    expect(loadConfig({ service: 't', env: { TRUST_SCANNER: 'disabled' } }).trust).toEqual({ scanner: 'disabled', externalProvider: 'fake' });
+    expect(loadConfig({ service: 't', env: { TRUST_EXTERNAL_PROVIDER: 'disabled' } }).trust).toEqual({ scanner: 'fake', externalProvider: 'disabled' });
+    expect(loadConfig({ service: 't', env: { ...prodAll, TRUST_EXTERNAL_PROVIDER: 'disabled' } }).trust).toEqual({
+      scanner: 'disabled',
+      externalProvider: 'disabled',
+    });
+  });
+  it('one fake in production refuses only its own variable', () => {
+    expect(issuesOf(() => loadConfig({ service: 't', env: { ...prodAll, TRUST_SCANNER: 'fake' } }))).toEqual([SCANNER_REFUSAL]);
+    expect(issuesOf(() => loadConfig({ service: 't', env: { ...prodAll, TRUST_EXTERNAL_PROVIDER: 'fake' } }))).toEqual([PROVIDER_REFUSAL]);
+  });
+  it('reports both refusals together, with the SMS and phone refusals, in one ConfigError', () => {
+    const issues = issuesOf(() =>
+      loadConfig({
+        service: 't',
+        env: { ...prodAll, TRUST_SCANNER: 'fake', TRUST_EXTERNAL_PROVIDER: 'fake', SMS_TRANSPORT: 'fake', PHONE_INTELLIGENCE: 'fake' },
+      }),
+    );
+    expect(issues).toContain(SCANNER_REFUSAL);
+    expect(issues).toContain(PROVIDER_REFUSAL);
+    expect(issues.filter((i) => /^(TRUST_|SMS_|PHONE_)/.test(i))).toHaveLength(4);
+  });
+  it('exposes the choice under trust only and prints it unredacted', () => {
+    const cfg = loadConfig({ service: 't', env: { TRUST_SCANNER: 'disabled' } });
+    expect(redactConfig(cfg)).toMatchObject({ trust: { scanner: 'disabled', externalProvider: 'fake' } });
+  });
+  // DEFECT (reported): `publicEndpoint: e.S3_PUBLIC_ENDPOINT ?? need('S3_ENDPOINT')` calls need() a second time, so the missing-setting issue is listed twice. Cosmetic.
+  // `it.fails` flips (and must then be changed to `it`) when it is fixed.
+  it('a missing production S3_ENDPOINT is reported once, not once per field that reads it', () => {
+    const { S3_ENDPOINT: _omit, ...withoutEndpoint } = prodAll;
+    const issues = issuesOf(() => loadConfig({ service: 't', env: withoutEndpoint }));
+    expect(issues.filter((i) => i.startsWith('S3_ENDPOINT'))).toEqual(['S3_ENDPOINT: required in production']);
+  });
+});

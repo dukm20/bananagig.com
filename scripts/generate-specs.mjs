@@ -12,6 +12,9 @@ import {
   CATALOG_EVENTS,
   GIG_TEMPLATE_EVENTS,
   PROVIDER_EVENTS,
+  TRUST_EVENTS,
+  TrustCaseEventPayload,
+  TrustRequirementEventPayload,
   ProviderRegistrationCompletedPayload,
   ProviderRegistrationEventPayload,
   GigTemplateAvailabilityEventPayload,
@@ -87,6 +90,7 @@ const app = await buildApp({
   catalog: {},
   gigTemplates: {},
   providerRegistrations: {},
+  trust: {},
   readiness: async () => ({}),
 });
 await app.ready();
@@ -363,6 +367,50 @@ const GIG_TEMPLATE_MESSAGES = {
     'catalog_market_availability',
   ],
 };
+const TRUST_MESSAGES = {
+  caseOpened: [
+    'ProviderVerificationCaseOpened',
+    'A verification case was opened for a provider account (the requirements policy derived from the registration). Verification is multi-dimensional and an approved case is NOT Go-Live.',
+    TrustCaseEventPayload,
+    'verification_case',
+  ],
+  submitted: [
+    'ProviderVerificationSubmitted',
+    'A provider submitted evidence for review (documents in private storage, or an external verification started). Identifiers and the case status only; never a document.',
+    TrustCaseEventPayload,
+    'verification_case',
+  ],
+  requirementApproved: [
+    'ProviderVerificationRequirementApproved',
+    'One verification requirement was approved (by a reviewer or by an external provider through the adapter). Identifiers, the requirement code and statuses only.',
+    TrustRequirementEventPayload,
+    'verification_case',
+  ],
+  requirementRejected: [
+    'ProviderVerificationRequirementRejected',
+    'One verification requirement was rejected with a structured reason code; the provider may resubmit.',
+    TrustRequirementEventPayload,
+    'verification_case',
+  ],
+  actionRequired: [
+    'ProviderVerificationActionRequired',
+    'A reviewer asked the provider for more evidence for one requirement, with a structured reason code.',
+    TrustRequirementEventPayload,
+    'verification_case',
+  ],
+  expired: [
+    'ProviderVerificationExpired',
+    'An approved requirement reached the end of its validity (the original approval stays as history; a new cycle re-verifies it).',
+    TrustRequirementEventPayload,
+    'verification_case',
+  ],
+  completed: [
+    'ProviderVerificationCompleted',
+    'Every required requirement of a case is approved. This is a SIGNAL for the later Go-Live decision (PRO-003) and does not make the provider live or change any role.',
+    TrustCaseEventPayload,
+    'verification_case',
+  ],
+};
 const PROVIDER_MESSAGES = {
   registrationStarted: [
     'ProviderRegistrationStarted',
@@ -568,6 +616,22 @@ for (const [k, [name, summary, payload, aggregate]] of Object.entries(PROVIDER_M
     messages: { [name]: { $ref: `#/components/messages/${name}` } },
   };
   operations[`send${name}`] = { action: 'send', channel: { $ref: `#/channels/provider_${k}` }, summary };
+  messages[name] = {
+    name,
+    title: summary,
+    headers: { type: 'object', properties: { 'x-correlation-id': { type: 'string' } } },
+    payload: { $ref: `#/components/schemas/${name}` },
+  };
+  schemas[name] = typedEnvelope(type, payload);
+}
+for (const [k, [name, summary, payload, aggregate]] of Object.entries(TRUST_MESSAGES)) {
+  const type = TRUST_EVENTS[k];
+  channels[`trust_${k}`] = {
+    address: type,
+    description: `${summary} Published through the transactional outbox (aggregate ${aggregate}); the payload carries identifiers and codes only, never a contact, a name or a text.`,
+    messages: { [name]: { $ref: `#/components/messages/${name}` } },
+  };
+  operations[`send${name}`] = { action: 'send', channel: { $ref: `#/channels/trust_${k}` }, summary };
   messages[name] = {
     name,
     title: summary,
