@@ -853,3 +853,31 @@ None required.
 ### Known follow-up
 None. No schema, API or behaviour change. The same commit also carries the uncommitted ID-004 session-watermark follow-up that was in the working tree (`SecurityService` login check against the identity provider's session start; ADR-0034, `SESSIONS_AND_MFA.md`, identity and web skills, smoke), committed at the user's request.
 
+## ID-005 (CI smoke follow-up) — 2026-10-16
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(ID-005)"` (the second `fix(ID-005)` commit).
+Summary: CI run 38982170853 for `3cf0064` passed `verify` and failed `compose-smoke`: `Sessions and security` (7a) got 401 SESSION_REVOKED for a new login made about a second after a sign-out-everywhere, and `Consent` failed as a cascade of the same refusal. The cause is the first-sight rule committed in `3cf0064` (a never-seen session within 2 s of the watermark must be confirmed by the identity provider), not the consent code. Reproduced locally after really rebuilding the API container (my first local smoke pass ran against stale containers because I named the services wrongly).
+
+### Delivered
+- The smoke waits 2.6 s before the new logins E (7a) and k (7b), with the reason in a comment.
+- LRN-0052 and a rule in `skills/testing/SKILL.md`.
+
+### Schema
+No change.
+
+### Contracts
+No change.
+
+### Tests
+Smoke against rebuilt containers: without the waits `Sessions and security` and `Consent` fail exactly as in CI; with them both pass. The `Email verification` and `Phone verification` scenarios failed locally only on the per-account hourly send caps of the dev database (known, DEBT-recorded behaviour, filled by today's repeated runs); a fresh CI database does not have them.
+
+### Skills updated
+`skills/testing`.
+
+### ADRs
+None required.
+
+### Known follow-up
+A person who signs in again within about 2 s of a sign-out-everywhere would also be refused; in practice a login takes longer, and the rule fails closed. Not recorded as debt unless it is seen in use.
+

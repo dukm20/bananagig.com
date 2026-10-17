@@ -2145,6 +2145,9 @@ await check('Sessions and security', async () => {
   assert(Date.now() - revokeOthersAt < 2000, '(7a) C must be refused at once');
   assert((await call('GET', '/account/me', caller.token)).status === 200, '(7a) the current session must be kept');
   revoked(await call('GET', '/account/me', f.token), '(7a) F, a Keycloak session the API had not seen yet, authenticated before the revocation');
+  // a login within 2 s of the watermark is ambiguous (auth_time has one-second resolution) and is accepted only when the identity provider confirms it started later:
+  // a real login takes longer than that, an automated one must wait
+  await sleep(2600);
   const e = await signIn('customer'); // the watermark must not block a NEW login
   const idE = await seenBy(e, '(7a) a new login after the revocation');
   assert(idE !== idA, '(7a) a new login is a new session');
@@ -2184,6 +2187,7 @@ await check('Sessions and security', async () => {
     ['E', e],
   ] as const)
     revoked(await call('GET', '/account/me', s.token), `(7b) ${what} after sign out everywhere`);
+  await sleep(2600); // same reason as for E: the new login must be clearly later than the watermark
   const k = await signIn('customer');
   assert(
     (await call('GET', '/account/me', k.token)).status === 200,

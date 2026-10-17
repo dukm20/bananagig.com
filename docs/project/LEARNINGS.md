@@ -1285,3 +1285,28 @@ Create every `pg.Pool` in a test with `createTestPool(url, max)` from `@bananagi
 ### Evidence
 `packages/testing/src/index.ts` (`createTestPool`, the drain loop in `drop`), `node_modules/pg-pool/index.js` (`makeIdleListener`, `end`), CI run 38977469935.
 
+## LRN-0052 — An automated login within 2 s of a sign-out-everywhere is refused: the smoke must wait, and a local pass proves nothing about CI timing
+
+Date: 2026-10-16
+Checkpoint: ID-005
+Domain: testing / identity
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0034
+Related skill: skills/testing/SKILL.md
+
+### Context
+CI run 38982170853 (compose-smoke) failed in `Sessions and security` (7a: "a new login after the revocation" got 401 SESSION_REVOKED) and then in `Consent`, which logs in as the same user right after the aborted scenario. The scenario had passed locally.
+
+### Learning
+`SecurityService.firstSight` refuses a never-seen session whose `auth_time` is within 2 s of the account's `sessions_not_before` unless the identity provider confirms that it started later (whole-second start times, one second reserved). A person needs far longer than that to log in again; the smoke signs in again within about a second of the revocation, which a slow local stack hid and a fast runner did not. The failed scenario also leaves the account with a fresh watermark, so the next scenario failed for the same reason (a cascade, not a second defect). Reproduced locally only after the API container was really rebuilt: `docker compose up -d --build` takes the SERVICE names (`api-service`, `worker-service`, `web-app`), and `api` fails with "no such service".
+
+### Why it matters
+A green local smoke against stale containers, or on a slower machine, says nothing about a window that is measured in seconds.
+
+### Reuse rule
+In a smoke or integration scenario, wait about 2.6 s after any sign-out-everywhere before signing in again (and before it for the logins that must count as older). When reproducing a CI failure, check the container creation time (`docker inspect <name> --format '{{.Created}}'`) before trusting a local result.
+
+### Evidence
+`apps/smoke/src/index.ts` (the two waits in (7a) and (7b)), `packages/accounts/src/security-service.ts` (`firstSight`), CI run 38982170853.
+
