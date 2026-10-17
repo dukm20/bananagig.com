@@ -2,11 +2,122 @@
 -- Scope: application-owned objects only (excludes pgboss, PostGIS and other extension-owned objects, system catalogs).
 -- Regenerate: pnpm schema:snapshot --write
 
+CREATE SCHEMA catalog;
 CREATE SCHEMA configuration;
 CREATE SCHEMA content;
 CREATE SCHEMA geography;
 CREATE SCHEMA identity;
 CREATE SCHEMA integration;
+
+CREATE TABLE catalog.audit_events (
+  audit_event_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  occurred_at timestamp with time zone NOT NULL DEFAULT clock_timestamp(),
+  actor text NOT NULL,
+  action text NOT NULL,
+  category_id uuid,
+  service_type_id uuid,
+  prohibited_service_id uuid,
+  market_id uuid,
+  changes jsonb,
+  reason text NOT NULL,
+  correlation_id text NOT NULL,
+  CONSTRAINT pk_audit_events PRIMARY KEY (audit_event_id),
+  CONSTRAINT fk_audit_events__category_id FOREIGN KEY (category_id) REFERENCES catalog.categories(category_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_audit_events__market_id FOREIGN KEY (market_id) REFERENCES geography.markets(market_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_audit_events__prohibited_service_id FOREIGN KEY (prohibited_service_id) REFERENCES catalog.prohibited_services(prohibited_service_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_audit_events__service_type_id FOREIGN KEY (service_type_id) REFERENCES catalog.service_types(service_type_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_audit_events__action CHECK ((action = ANY (ARRAY['CATEGORY_CREATED'::text, 'CATEGORY_UPDATED'::text, 'CATEGORY_STATUS_CHANGED'::text, 'SERVICE_TYPE_CREATED'::text, 'SERVICE_TYPE_UPDATED'::text, 'SERVICE_TYPE_STATUS_CHANGED'::text, 'PROHIBITED_SERVICE_CREATED'::text, 'PROHIBITED_SERVICE_STATUS_CHANGED'::text, 'MARKET_CATALOG_AVAILABILITY_CHANGED'::text]))),
+  CONSTRAINT ck_audit_events__actor CHECK (((length(btrim(actor)) > 0) AND (length(actor) <= 200))),
+  CONSTRAINT ck_audit_events__changes_object CHECK (((changes IS NULL) OR (jsonb_typeof(changes) = 'object'::text))),
+  CONSTRAINT ck_audit_events__reason CHECK (((length(btrim(reason)) > 0) AND (length(reason) <= 1000))),
+  CONSTRAINT ck_audit_events__subject CHECK ((((action ~~ 'CATEGORY\_%'::text) AND (category_id IS NOT NULL) AND (service_type_id IS NULL) AND (prohibited_service_id IS NULL) AND (market_id IS NULL)) OR ((action ~~ 'SERVICE\_TYPE\_%'::text) AND (service_type_id IS NOT NULL) AND (category_id IS NULL) AND (prohibited_service_id IS NULL) AND (market_id IS NULL)) OR ((action ~~ 'PROHIBITED\_SERVICE\_%'::text) AND (prohibited_service_id IS NOT NULL) AND (category_id IS NULL) AND (service_type_id IS NULL) AND (market_id IS NULL)) OR ((action = 'MARKET_CATALOG_AVAILABILITY_CHANGED'::text) AND (market_id IS NOT NULL) AND (prohibited_service_id IS NULL) AND ((category_id IS NULL) <> (service_type_id IS NULL)))))
+);
+
+CREATE TABLE catalog.categories (
+  category_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  code text NOT NULL,
+  name_content_key text NOT NULL GENERATED ALWAYS AS ((('catalog.category.'::text || code) || '.name'::text)) STORED,
+  description_content_key text,
+  icon_key text,
+  status text NOT NULL DEFAULT 'DRAFT'::text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_categories PRIMARY KEY (category_id),
+  CONSTRAINT uq_categories__code UNIQUE (code),
+  CONSTRAINT fk_categories__description_content_key FOREIGN KEY (description_content_key) REFERENCES content.entries(key) ON DELETE RESTRICT,
+  CONSTRAINT fk_categories__name_content_key FOREIGN KEY (name_content_key) REFERENCES content.entries(key) ON DELETE RESTRICT,
+  CONSTRAINT ck_categories__code CHECK (((code ~ '^[a-z][a-z0-9]*(_[a-z0-9]+)*$'::text) AND ((length(code) >= 2) AND (length(code) <= 48)))),
+  CONSTRAINT ck_categories__description_content_key CHECK (((description_content_key IS NULL) OR (description_content_key = (('catalog.category.'::text || code) || '.description'::text)))),
+  CONSTRAINT ck_categories__icon_key CHECK (((icon_key IS NULL) OR ((icon_key ~ '^[a-z][a-z0-9]*(-[a-z0-9]+)*$'::text) AND (length(icon_key) <= 48)))),
+  CONSTRAINT ck_categories__status CHECK ((status = ANY (ARRAY['DRAFT'::text, 'ACTIVE'::text, 'INACTIVE'::text, 'RETIRED'::text])))
+);
+
+CREATE TABLE catalog.market_categories (
+  market_id uuid NOT NULL,
+  category_id uuid NOT NULL,
+  enabled boolean NOT NULL DEFAULT false,
+  display_order integer NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_market_categories PRIMARY KEY (market_id, category_id),
+  CONSTRAINT uq_market_categories__market_order UNIQUE (market_id, display_order),
+  CONSTRAINT fk_market_categories__category_id FOREIGN KEY (category_id) REFERENCES catalog.categories(category_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_market_categories__market_id FOREIGN KEY (market_id) REFERENCES geography.markets(market_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_market_categories__display_order CHECK (((display_order >= 1) AND (display_order <= 9999)))
+);
+
+CREATE TABLE catalog.market_service_types (
+  market_id uuid NOT NULL,
+  service_type_id uuid NOT NULL,
+  enabled boolean NOT NULL DEFAULT false,
+  display_order integer NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_market_service_types PRIMARY KEY (market_id, service_type_id),
+  CONSTRAINT uq_market_service_types__market_order UNIQUE (market_id, display_order),
+  CONSTRAINT fk_market_service_types__market_id FOREIGN KEY (market_id) REFERENCES geography.markets(market_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_market_service_types__service_type_id FOREIGN KEY (service_type_id) REFERENCES catalog.service_types(service_type_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_market_service_types__display_order CHECK (((display_order >= 1) AND (display_order <= 9999)))
+);
+
+CREATE TABLE catalog.prohibited_services (
+  prohibited_service_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  category_id uuid,
+  code text NOT NULL,
+  name_content_key text NOT NULL GENERATED ALWAYS AS ((('catalog.prohibited_service.'::text || code) || '.name'::text)) STORED,
+  description_content_key text,
+  status text NOT NULL DEFAULT 'DRAFT'::text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_prohibited_services PRIMARY KEY (prohibited_service_id),
+  CONSTRAINT uq_prohibited_services__code UNIQUE (code),
+  CONSTRAINT fk_prohibited_services__category_id FOREIGN KEY (category_id) REFERENCES catalog.categories(category_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_prohibited_services__description_content_key FOREIGN KEY (description_content_key) REFERENCES content.entries(key) ON DELETE RESTRICT,
+  CONSTRAINT fk_prohibited_services__name_content_key FOREIGN KEY (name_content_key) REFERENCES content.entries(key) ON DELETE RESTRICT,
+  CONSTRAINT ck_prohibited_services__code CHECK (((code ~ '^[a-z][a-z0-9]*(_[a-z0-9]+)*$'::text) AND ((length(code) >= 2) AND (length(code) <= 48)))),
+  CONSTRAINT ck_prohibited_services__description_content_key CHECK (((description_content_key IS NULL) OR (description_content_key = (('catalog.prohibited_service.'::text || code) || '.description'::text)))),
+  CONSTRAINT ck_prohibited_services__status CHECK ((status = ANY (ARRAY['DRAFT'::text, 'ACTIVE'::text, 'INACTIVE'::text, 'RETIRED'::text])))
+);
+
+CREATE TABLE catalog.service_types (
+  service_type_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  category_id uuid NOT NULL,
+  code text NOT NULL,
+  name_content_key text NOT NULL GENERATED ALWAYS AS ((('catalog.service_type.'::text || code) || '.name'::text)) STORED,
+  description_content_key text,
+  status text NOT NULL DEFAULT 'DRAFT'::text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_service_types PRIMARY KEY (service_type_id),
+  CONSTRAINT uq_service_types__code UNIQUE (code),
+  CONSTRAINT fk_service_types__category_id FOREIGN KEY (category_id) REFERENCES catalog.categories(category_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_service_types__description_content_key FOREIGN KEY (description_content_key) REFERENCES content.entries(key) ON DELETE RESTRICT,
+  CONSTRAINT fk_service_types__name_content_key FOREIGN KEY (name_content_key) REFERENCES content.entries(key) ON DELETE RESTRICT,
+  CONSTRAINT ck_service_types__code CHECK (((code ~ '^[a-z][a-z0-9]*(_[a-z0-9]+)*$'::text) AND ((length(code) >= 2) AND (length(code) <= 48)))),
+  CONSTRAINT ck_service_types__description_content_key CHECK (((description_content_key IS NULL) OR (description_content_key = (('catalog.service_type.'::text || code) || '.description'::text)))),
+  CONSTRAINT ck_service_types__status CHECK ((status = ANY (ARRAY['DRAFT'::text, 'ACTIVE'::text, 'INACTIVE'::text, 'RETIRED'::text])))
+);
+CREATE INDEX idx_service_types__category ON catalog.service_types USING btree (category_id);
 
 CREATE TABLE configuration.audit_events (
   audit_event_id uuid NOT NULL DEFAULT gen_random_uuid(),

@@ -106,6 +106,14 @@
         {
           "name": "geography-write",
           "description": "TEMPORARY infrastructure permission: create and update countries and markets and activate or deactivate them. To be mapped to application permissions."
+        },
+        {
+          "name": "catalog-read",
+          "description": "TEMPORARY infrastructure permission: read the catalogue taxonomy with all statuses, the disabled market availability rows and the prohibited-service list (internal API). To be mapped to application permissions."
+        },
+        {
+          "name": "catalog-write",
+          "description": "TEMPORARY infrastructure permission: create categories, service types and prohibited services, change their status and set their availability and order per market. To be mapped to application permissions."
         }
       ]
     }
@@ -140,7 +148,9 @@
           "content-approve",
           "content-legal",
           "geography-read",
-          "geography-write"
+          "geography-write",
+          "catalog-read",
+          "catalog-write"
         ]
       }
     ],
@@ -836,7 +846,9 @@
           "content-approve",
           "content-legal",
           "geography-read",
-          "geography-write"
+          "geography-write",
+          "catalog-read",
+          "catalog-write"
         ]
       },
       "credentials": [
@@ -870,7 +882,9 @@
           "content-approve",
           "content-legal",
           "geography-read",
-          "geography-write"
+          "geography-write",
+          "catalog-read",
+          "catalog-write"
         ]
       },
       "credentials": [

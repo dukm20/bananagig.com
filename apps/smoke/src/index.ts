@@ -3961,6 +3961,456 @@ await check('Account area', async () => {
   }
 });
 
+await check('Catalog', async () => {
+  // The platform-owned catalogue taxonomy (CAT-001) end to end with a REAL Keycloak admin token (admin.dev holds catalog-write), real HTTP, the content registry and the
+  // database (read-only SELECTs on the audit trail and the outbox). The SEEDED taxonomy (home_cleaning, auto_services and their service types, all DRAFT) is only read: the
+  // activation flow runs on DEV/TEST codes (devtest_*) in a DEV/TEST market (ZZ), and everything it creates is left RETIRED or INACTIVE (entities are never deleted).
+  // The seeded market la-oc is NEVER activated here: its status is owner data and the proof adapts (PLANNED: nothing public).
+  const assert = (ok: boolean, what: string): void => {
+    if (!ok) throw new Error(what);
+  };
+  type Reply = { status: number; json: any; headers: Headers }; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const call = async (
+    module: 'catalog' | 'geography' | 'content' | 'configuration',
+    token: string | null,
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH',
+    path: string,
+    body?: unknown,
+  ): Promise<Reply> => {
+    const r = await get(`${api}/api/v1/${module}${path}`, {
+      method,
+      headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    const json = (await r.json().catch(() => ({}))) as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    return { status: r.status, json, headers: r.headers };
+  };
+  const expectStatus = (r: Reply, statuses: number[], what: string): Reply => {
+    assert(statuses.includes(r.status), `${what} -> ${r.status} ${r.json?.error?.code ?? ''} ${r.json?.error?.details?.reason ?? ''}`);
+    return r;
+  };
+  const login = await authorizationCodeLogin(kc, { clientId: 'bananagig-admin', redirectUri: ADMIN_REDIRECT_URI, ...DEV_USERS.admin });
+  const admin = (
+    await exchangeAuthorizationCode({
+      tokenEndpoint: ep.token,
+      clientId: 'bananagig-admin',
+      redirectUri: ADMIN_REDIRECT_URI,
+      code: login.code,
+      codeVerifier: login.verifier,
+    })
+  ).accessToken;
+  const runId = Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+  const marketCode = `devtest-cat-${runId}`;
+  const categoryCode = `devtest_cat_${runId}`;
+  const stA = `devtest_st_${runId}_a`;
+  const stB = `devtest_st_${runId}_b`;
+
+  // (1) the SEEDED taxonomy is management data: DRAFT, resolved text, and the public view cannot see it
+  const seeded = expectStatus(await call('catalog', admin, 'GET', '/categories'), [200], '(1) management category list').json.data as {
+    code: string;
+    status: string;
+    name: string;
+    description: string | null;
+    nameContentKey: string;
+  }[];
+  for (const [code, name] of [
+    ['home_cleaning', 'Home Cleaning'],
+    ['auto_services', 'Auto Services'],
+  ] as const) {
+    const c = seeded.find((x) => x.code === code);
+    assert(
+      c !== undefined && c.name === name && c.nameContentKey === `catalog.category.${code}.name` && c.description !== null,
+      `(1) seeded category ${code} missing or wrong (${JSON.stringify(c)})`,
+    );
+  }
+  const seededTypes = expectStatus(await call('catalog', admin, 'GET', '/service-types'), [200], '(1) management service type list').json.data as {
+    code: string;
+    categoryCode: string;
+    name: string;
+  }[];
+  for (const [code, category, name] of [
+    ['regular_cleaning', 'home_cleaning', 'Regular Cleaning'],
+    ['deep_cleaning', 'home_cleaning', 'Deep Cleaning'],
+    ['car_detailing', 'auto_services', 'Car Detailing'],
+    ['mobile_car_wash', 'auto_services', 'Mobile Car Wash'],
+  ] as const) {
+    const t = seededTypes.find((x) => x.code === code);
+    assert(t !== undefined && t.categoryCode === category && t.name === name, `(1) seeded service type ${code} missing or wrong (${JSON.stringify(t)})`);
+  }
+  const one = expectStatus(await call('catalog', admin, 'GET', '/service-types/deep_cleaning'), [200], '(1) one seeded service type').json.data;
+  assert(one.name === 'Deep Cleaning' && one.categoryCode === 'home_cleaning', '(1) the seeded service type resolves its name and category');
+  const noMarket = expectStatus(await call('catalog', null, 'GET', '/categories'), [400], '(1) the public view needs a market');
+  assert(noMarket.json.error?.details?.reason === 'MARKET_REQUIRED', '(1) the missing market must be named MARKET_REQUIRED');
+  const anonMgmt = await call('catalog', null, 'POST', '/categories', { code: 'x_y', reason: 'nope' });
+  assert(anonMgmt.status === 401, `(1) a mutation without a token must be 401 (${anonMgmt.status})`);
+  const anonProhibited = await call('catalog', null, 'GET', '/prohibited-services');
+  assert(anonProhibited.status === 401, `(1) the prohibited-service list is never public (${anonProhibited.status})`);
+
+  // (2) the seeded market la-oc: nothing of the catalogue is public through a market that is not public (la-oc is PLANNED unless its owner launched it)
+  const laoc = (await call('geography', admin, 'GET', '/markets/la-oc')).json.data as { status: string };
+  const laocPublic = (await call('geography', null, 'GET', '/markets/la-oc')).status === 200;
+  const laocList = await call('catalog', null, 'GET', '/categories?market=la-oc');
+  if (laocPublic) {
+    assert(
+      laocList.status === 200 && !(laocList.json.data as { code: string }[]).some((c) => ['home_cleaning', 'auto_services'].includes(c.code)),
+      '(2) a public la-oc must not list DRAFT seeded categories',
+    );
+  } else {
+    assert(
+      laocList.status === 404 && laocList.json.error?.code === 'CATALOG_MARKET_NOT_FOUND',
+      `(2) la-oc (${laoc.status}) is not public: the catalogue must answer 404 CATALOG_MARKET_NOT_FOUND (${laocList.status})`,
+    );
+    assert((await call('catalog', null, 'GET', '/service-types?market=la-oc')).status === 404, '(2) service types of a non-public market are 404 too');
+  }
+  assert((await call('catalog', null, 'GET', '/categories?market=no-such-market')).status === 404, '(2) an unknown market is 404');
+
+  // (3) a DEV/TEST market: preparing availability while PLANNED exposes nothing
+  await ensureDevtestGeography(admin);
+  expectStatus(
+    await call('geography', admin, 'POST', '/markets', {
+      code: marketCode,
+      name: `DEV/TEST catalog smoke ${runId}`,
+      countryCode: 'ZZ',
+      defaultLocale: 'qaa',
+      currencyCode: 'USD',
+      defaultTimeZone: 'America/Los_Angeles',
+      reason: 'DEV/TEST ONLY smoke market',
+    }),
+    [201],
+    '(3) create the test market',
+  );
+
+  // the managed copy of the test category and service types (the name entries must exist first: the key is derived from the code)
+  const publish = async (key: string, texts: Record<string, string>): Promise<void> => {
+    expectStatus(
+      await call('content', admin, 'POST', '/entries', {
+        key,
+        contentType: 'UI_LABEL',
+        ownerRole: 'CONTENT',
+        description: 'DEV/TEST ONLY catalogue smoke entry',
+        approvalPolicy: 'NONE',
+      }),
+      [201],
+      `(3) entry ${key}`,
+    );
+    for (const [locale, body] of Object.entries(texts)) {
+      const v = expectStatus(
+        await call('content', admin, 'POST', `/entries/${key}/versions`, { locale, body, reason: 'smoke test' }),
+        [201],
+        `(3) version ${key} ${locale}`,
+      ).json.data;
+      expectStatus(await call('content', admin, 'POST', `/versions/${v.versionId}/submit`, {}), [200, 201], `(3) submit ${key}`);
+      assert(
+        expectStatus(await call('content', admin, 'POST', `/versions/${v.versionId}/publish`, {}), [200, 201], `(3) publish ${key}`).json.data.status ===
+          'PUBLISHED',
+        `(3) ${key} ${locale} must be PUBLISHED`,
+      );
+    }
+  };
+  const names = { cat: `Smoke Category ${runId}`, catQaa: `qaa Smoke Category ${runId}`, a: `Smoke Service A ${runId}`, b: `Smoke Service B ${runId}` };
+  await publish(`catalog.category.${categoryCode}.name`, { 'en-US': names.cat, qaa: names.catQaa });
+  await publish(`catalog.category.${categoryCode}.description`, { 'en-US': `Description of ${categoryCode}` });
+  await publish(`catalog.service_type.${stA}.name`, { 'en-US': names.a });
+  await publish(`catalog.service_type.${stB}.name`, { 'en-US': names.b });
+
+  // a name without content is refused with a precise reason (nothing is created)
+  const noCopy = expectStatus(
+    await call('catalog', admin, 'POST', '/categories', { code: `devtest_nocopy_${runId}`, reason: 'smoke' }),
+    [400],
+    '(3) a category without its name content',
+  );
+  assert(noCopy.json.error?.details?.reason === 'NAME_CONTENT_MISSING', '(3) the missing name entry must be named NAME_CONTENT_MISSING');
+  const created = expectStatus(
+    await call('catalog', admin, 'POST', '/categories', {
+      code: categoryCode,
+      iconKey: 'wrench',
+      withDescription: true,
+      reason: 'DEV/TEST ONLY smoke category',
+    }),
+    [201],
+    '(3) create the category',
+  ).json.data;
+  assert(
+    created.status === 'DRAFT' && created.code === categoryCode && created.name === names.cat && /^[0-9a-f-]{36}$/.test(created.categoryId),
+    `(3) the new category is DRAFT with its resolved name (${JSON.stringify(created)})`,
+  );
+  const categoryId = created.categoryId as string;
+  expectStatus(await call('catalog', admin, 'POST', '/categories', { code: categoryCode, reason: 'duplicate' }), [409], '(3) a duplicate code');
+  const typeA = expectStatus(
+    await call('catalog', admin, 'POST', '/service-types', { code: stA, categoryCode, reason: 'DEV/TEST ONLY smoke service type' }),
+    [201],
+    '(3) create service type A',
+  ).json.data;
+  const typeB = expectStatus(
+    await call('catalog', admin, 'POST', '/service-types', { code: stB, categoryCode, reason: 'DEV/TEST ONLY smoke service type' }),
+    [201],
+    '(3) create service type B',
+  ).json.data;
+  assert(typeA.status === 'DRAFT' && typeB.status === 'DRAFT' && typeA.categoryCode === categoryCode, '(3) a service type is created DRAFT under its category');
+  // hierarchy rules through the API: nothing is ACTIVE under a DRAFT category
+  const early = expectStatus(
+    await call('catalog', admin, 'PUT', `/service-types/${stA}/status`, { status: 'ACTIVE', reason: 'too early' }),
+    [409],
+    '(3) a service type under a DRAFT category',
+  );
+  assert(early.json.error?.details?.reason === 'CATEGORY_NOT_ACTIVE', '(3) CATEGORY_NOT_ACTIVE expected');
+  // prepare the availability in the PLANNED market (allowed), then check the public view says nothing
+  expectStatus(
+    await call('catalog', admin, 'PUT', `/markets/${marketCode}/categories/${categoryCode}`, {
+      enabled: true,
+      displayOrder: 10,
+      reason: 'prepare before launch',
+    }),
+    [200],
+    '(3) prepare the category in the PLANNED market',
+  );
+  assert(
+    (await call('catalog', null, 'GET', `/categories?market=${marketCode}`)).status === 404,
+    '(3) a PLANNED market exposes no catalogue, even with prepared rows',
+  );
+
+  // (4) launch: market ACTIVE, category ACTIVE, service types: A visible, B hidden (still DRAFT although enabled)
+  expectStatus(
+    await call('geography', admin, 'POST', `/markets/${marketCode}/activation`, { active: true, reason: 'smoke test' }),
+    [200],
+    '(4) activate the test market',
+  );
+  assert(
+    (await call('catalog', null, 'GET', `/categories?market=${marketCode}`)).json.data.length === 0,
+    '(4) an ACTIVE market with a DRAFT category lists nothing',
+  );
+  expectStatus(
+    await call('catalog', admin, 'PUT', `/categories/${categoryCode}/status`, { status: 'ACTIVE', reason: 'launch' }),
+    [200],
+    '(4) activate the category',
+  );
+  expectStatus(
+    await call('catalog', admin, 'PUT', `/service-types/${stA}/status`, { status: 'ACTIVE', reason: 'launch' }),
+    [200],
+    '(4) activate service type A',
+  );
+  expectStatus(
+    await call('catalog', admin, 'PUT', `/markets/${marketCode}/service-types/${stB}`, { enabled: true, displayOrder: 20, reason: 'prepare' }),
+    [200],
+    '(4) enable B (still DRAFT)',
+  );
+  expectStatus(
+    await call('catalog', admin, 'PUT', `/markets/${marketCode}/service-types/${stA}`, { enabled: true, displayOrder: 10, reason: 'launch' }),
+    [200],
+    '(4) enable A',
+  );
+  const dupOrder = expectStatus(
+    await call('catalog', admin, 'PUT', `/markets/${marketCode}/service-types/${stA}`, { enabled: true, displayOrder: 20, reason: 'clash' }),
+    [409],
+    '(4) a display order already used in the market',
+  );
+  assert(dupOrder.json.error?.details?.reason === 'DISPLAY_ORDER_TAKEN', '(4) DISPLAY_ORDER_TAKEN expected');
+  const publicCategories = expectStatus(await call('catalog', null, 'GET', `/categories?market=${marketCode}&locale=en-US`), [200], '(4) public categories')
+    .json.data as Record<string, unknown>[];
+  assert(
+    publicCategories.length === 1 &&
+      publicCategories[0]!.code === categoryCode &&
+      publicCategories[0]!.name === names.cat &&
+      publicCategories[0]!.displayOrder === 10,
+    `(4) the public view lists exactly the launched category (${JSON.stringify(publicCategories)})`,
+  );
+  assert(
+    Object.keys(publicCategories[0]!).sort().join() === 'categoryId,code,description,displayOrder,iconKey,name',
+    `(4) the public category has public fields only (${Object.keys(publicCategories[0]!).join()})`,
+  );
+  const publicTypes = expectStatus(await call('catalog', null, 'GET', `/service-types?market=${marketCode}&locale=en-US`), [200], '(4) public service types')
+    .json.data as Record<string, unknown>[];
+  assert(
+    publicTypes.length === 1 && publicTypes[0]!.code === stA && publicTypes[0]!.name === names.a && publicTypes[0]!.categoryCode === categoryCode,
+    `(4) only the ACTIVE service type A is public (${JSON.stringify(publicTypes)})`,
+  );
+  assert(
+    (await call('catalog', null, 'GET', `/service-types/${stB}?market=${marketCode}`)).status === 404,
+    '(4) the DRAFT service type B is not public even though it is enabled',
+  );
+  assert(
+    (await call('catalog', null, 'GET', `/categories?market=${marketCode}&locale=qaa`)).json.data[0].name === names.catQaa,
+    '(4) the requested locale is honoured',
+  );
+  assert(
+    (await call('catalog', null, 'GET', `/categories?market=${marketCode}`)).json.data[0].name === names.catQaa,
+    '(4) without a locale the default locale of the market (qaa) is used',
+  );
+  const filtered = (await call('catalog', null, 'GET', `/service-types?market=${marketCode}&category=home_cleaning`)).json.data as unknown[];
+  assert(filtered.length === 0, '(4) the category filter applies');
+  const mgmtMarket = expectStatus(
+    await call('catalog', admin, 'GET', `/service-types?market=${marketCode}`),
+    [200],
+    '(4) management service types in the market',
+  ).json.data as { code: string; status: string; enabled: boolean }[];
+  assert(
+    mgmtMarket.some((t) => t.code === stB && t.status === 'DRAFT' && t.enabled === true),
+    '(4) the management view shows B as a DRAFT enabled row',
+  );
+
+  // (5) inactive items are hidden and come back; the hierarchy refuses unsafe moves
+  expectStatus(await call('catalog', admin, 'PUT', `/service-types/${stA}/status`, { status: 'INACTIVE', reason: 'pause' }), [200], '(5) pause A');
+  assert((await call('catalog', null, 'GET', `/service-types?market=${marketCode}`)).json.data.length === 0, '(5) an INACTIVE service type disappears');
+  expectStatus(await call('catalog', admin, 'PUT', `/service-types/${stA}/status`, { status: 'ACTIVE', reason: 'resume' }), [200], '(5) resume A');
+  const refused = expectStatus(
+    await call('catalog', admin, 'PUT', `/categories/${categoryCode}/status`, { status: 'INACTIVE', reason: 'unsafe' }),
+    [409],
+    '(5) pause a category with an ACTIVE service type',
+  );
+  assert(refused.json.error?.details?.reason === 'CATEGORY_HAS_ACTIVE_SERVICE_TYPES', '(5) CATEGORY_HAS_ACTIVE_SERVICE_TYPES expected');
+  const sameStatus = expectStatus(
+    await call('catalog', admin, 'PUT', `/service-types/${stA}/status`, { status: 'ACTIVE', reason: 'again' }),
+    [200],
+    '(5) idempotent status',
+  );
+  assert(sameStatus.json.data.status === 'ACTIVE', '(5) a repeated status is accepted');
+
+  // (6) rename = a content change: the identity, the order and the availability do not move
+  const nameKey = `catalog.category.${categoryCode}.name`;
+  const renamed = `Renamed ${names.cat}`;
+  const v2 = expectStatus(
+    await call('content', admin, 'POST', `/entries/${nameKey}/versions`, { locale: 'en-US', body: renamed, reason: 'smoke rename' }),
+    [201],
+    '(6) draft the new name',
+  ).json.data;
+  expectStatus(await call('content', admin, 'POST', `/versions/${v2.versionId}/submit`, {}), [200, 201], '(6) submit the new name');
+  expectStatus(await call('content', admin, 'POST', `/versions/${v2.versionId}/publish`, {}), [200, 201], '(6) publish the new name');
+  let after: Record<string, unknown> | undefined;
+  for (let n = 0; n < 40 && after?.name !== renamed; n++) {
+    after = (await call('catalog', null, 'GET', `/categories/${categoryCode}?market=${marketCode}&locale=en-US`)).json.data;
+    if (after?.name !== renamed) await sleep(250);
+  }
+  assert(after?.name === renamed, `(6) the public category must show the new name (got ${String(after?.name)})`);
+  assert(
+    after?.categoryId === categoryId && after?.code === categoryCode && after?.displayOrder === 10,
+    '(6) a rename must not change the id, the code or the order',
+  );
+  const typeAfter = (await call('catalog', null, 'GET', `/service-types/${stA}?market=${marketCode}`)).json.data;
+  assert(typeAfter.serviceTypeId === typeA.serviceTypeId && typeAfter.code === stA, '(6) the service type identity is unchanged');
+
+  // (7) switching a category off in the market also switches off its service types; the CATEGORY configuration scope is validated by the catalogue
+  const off = expectStatus(
+    await call('catalog', admin, 'PUT', `/markets/${marketCode}/categories/${categoryCode}`, { enabled: false, reason: 'withdraw' }),
+    [200],
+    '(7) withdraw the category',
+  ).json.data;
+  assert(
+    JSON.stringify(off.alsoDisabled.sort()) === JSON.stringify([stA, stB].sort()),
+    `(7) the service types of the category are switched off with it (${JSON.stringify(off.alsoDisabled)})`,
+  );
+  assert((await call('catalog', null, 'GET', `/categories?market=${marketCode}`)).json.data.length === 0, '(7) nothing is public after the withdrawal');
+  const paramKey = 'devtest.smoke.catalog_window_hours';
+  await call('configuration', admin, 'POST', '/parameters', {
+    key: paramKey,
+    dataType: 'INTEGER',
+    description: 'DEV/TEST ONLY catalogue smoke parameter',
+    ownerRole: 'platform',
+    approvalPolicy: 'SECOND_APPROVER',
+    validationRules: { min: 1, max: 1000 },
+    allowedOverrideScopes: ['CATEGORY'],
+  });
+  const goodScope = await call('configuration', admin, 'POST', '/change-requests', {
+    parameterKey: paramKey,
+    scopeType: 'CATEGORY',
+    scopeRef: 'home_cleaning',
+    value: 10 + (Date.now() % 500),
+    reason: 'smoke test',
+  });
+  assert(
+    [200, 201].includes(goodScope.status),
+    `(7) a real category is a valid CATEGORY scope reference (${goodScope.status} ${JSON.stringify(goodScope.json?.error)})`,
+  );
+  const badScope = await call('configuration', admin, 'POST', '/change-requests', {
+    parameterKey: paramKey,
+    scopeType: 'CATEGORY',
+    scopeRef: 'no_such_category',
+    value: 12,
+    reason: 'smoke test',
+  });
+  assert(
+    badScope.status === 400 && badScope.json?.error?.details?.reason === 'SCOPE_REFERENCE_INVALID',
+    `(7) an unknown category must be refused as a scope reference (${badScope.status} ${JSON.stringify(badScope.json?.error)})`,
+  );
+
+  // (8) retirement keeps the record and the code; the audit trail and the outbox hold every change
+  for (const code of [stA, stB])
+    expectStatus(
+      await call('catalog', admin, 'PUT', `/service-types/${code}/status`, { status: 'RETIRED', reason: 'smoke cleanup' }),
+      [200],
+      `(8) retire ${code}`,
+    );
+  const retired = expectStatus(
+    await call('catalog', admin, 'PUT', `/categories/${categoryCode}/status`, { status: 'RETIRED', reason: 'smoke cleanup' }),
+    [200],
+    '(8) retire the category',
+  ).json.data;
+  assert(retired.status === 'RETIRED' && retired.categoryId === categoryId, '(8) a retired category keeps its row and id');
+  expectStatus(
+    await call('catalog', admin, 'PUT', `/categories/${categoryCode}/status`, { status: 'ACTIVE', reason: 'back' }),
+    [409],
+    '(8) RETIRED is terminal',
+  );
+  expectStatus(await call('catalog', admin, 'POST', '/categories', { code: categoryCode, reason: 'reuse' }), [409], '(8) a retired code is never reused');
+  expectStatus(
+    await call('catalog', admin, 'PUT', `/markets/${marketCode}/categories/${categoryCode}`, { enabled: true, reason: 'late' }),
+    [409],
+    '(8) a retired category is never enabled again',
+  );
+  const databaseUrl = env('DATABASE_URL', '');
+  assert(databaseUrl !== '', 'DATABASE_URL is not set in the smoke environment');
+  const database = createDatabase(databaseUrl, { role: 'tests' });
+  try {
+    const audit = await database.query<{ action: string; n: number }>(
+      `SELECT a.action, count(*)::int AS n FROM catalog.audit_events a
+        LEFT JOIN catalog.categories c ON c.category_id = a.category_id LEFT JOIN catalog.service_types st ON st.service_type_id = a.service_type_id
+       WHERE c.code = $1 OR st.code = ANY($2::text[]) GROUP BY a.action ORDER BY a.action`,
+      [categoryCode, [stA, stB]],
+    );
+    const byAction = Object.fromEntries(audit.map((r) => [r.action, r.n]));
+    assert(
+      byAction.CATEGORY_CREATED === 1 &&
+        byAction.CATEGORY_STATUS_CHANGED === 2 &&
+        byAction.SERVICE_TYPE_CREATED === 2 &&
+        (byAction.SERVICE_TYPE_STATUS_CHANGED ?? 0) >= 5 &&
+        (byAction.MARKET_CATALOG_AVAILABILITY_CHANGED ?? 0) >= 5,
+      `(8) the audit trail must hold every mutation (${JSON.stringify(byAction)})`,
+    );
+    const events = await database.query<{ event_type: string; n: number }>(
+      `SELECT event_type, count(*)::int AS n FROM integration.outbox_events WHERE event_type LIKE 'bananagig.catalog.%' AND payload_json::text LIKE '%' || $1 || '%' GROUP BY event_type`,
+      [runId],
+    );
+    const ev = Object.fromEntries(events.map((r) => [r.event_type, r.n]));
+    assert(
+      (ev['bananagig.catalog.category-activated.v1'] ?? 0) === 1 &&
+        (ev['bananagig.catalog.service-type-activated.v1'] ?? 0) >= 2 &&
+        (ev['bananagig.catalog.availability-changed.v1'] ?? 0) >= 5,
+      `(8) the outbox must hold the activation and availability events (${JSON.stringify(ev)})`,
+    );
+    const seededUntouched = await database.query<{ code: string; status: string }>(
+      `SELECT code, status FROM catalog.categories WHERE code IN ('home_cleaning', 'auto_services') ORDER BY code`,
+    );
+    assert(
+      seededUntouched.every((c) => c.status === 'DRAFT'),
+      '(8) the smoke must leave the seeded taxonomy as it found it (DRAFT)',
+    );
+  } finally {
+    await database.close();
+  }
+
+  // (9) cleanup of the DEV/TEST market (the retired test taxonomy stays, entities are never deleted)
+  expectStatus(
+    await call('geography', admin, 'POST', `/markets/${marketCode}/activation`, { active: false, reason: 'smoke cleanup' }),
+    [200],
+    '(9) deactivate the test market',
+  );
+  assert((await call('catalog', null, 'GET', `/categories?market=${marketCode}`)).status === 404, '(9) a deactivated market exposes no catalogue');
+  return (
+    `seeded taxonomy DRAFT with resolved names (2 categories, 4 service types); la-oc ${laoc.status} ${laocPublic ? '(public: nothing seeded listed)' : '=> 404 CATALOG_MARKET_NOT_FOUND'}; ${marketCode}: PLANNED with prepared rows => 404, ACTIVE => only the ACTIVE category and service type ` +
+    `(DRAFT B hidden although enabled), locale and market default honoured, public fields only; INACTIVE hidden and restored; rename kept id/code/order; withdrawal cascaded to ${off.alsoDisabled.length} service types; ` +
+    `CATEGORY scope validated; retirement terminal with the code reserved; audit and outbox complete; seeded rows untouched`
+  );
+});
+
 await check('Caddy Proxy auth routes', async () => {
   const expectStatus = async (host: string, path: string, ok: (s: number) => boolean, what: string) => {
     const r = await proxy(host, path);

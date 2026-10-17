@@ -140,6 +140,8 @@ describe('Authorization Code + PKCE end to end', () => {
     expect(p).toMatchObject({ clientId: 'bananagig-admin', authContext: 'admin', realmRoles: [] });
     expect([...p.clientRoles['bananagig-admin']!].sort()).toEqual([
       'admin-console-access',
+      'catalog-read',
+      'catalog-write',
       'configuration-approve',
       'configuration-read',
       'configuration-write',

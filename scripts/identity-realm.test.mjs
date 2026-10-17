@@ -62,6 +62,8 @@ describe('identity realm (infra/keycloak/bananagig-realm.json)', () => {
     expect(Number(admin.attributes['access.token.lifespan'])).toBeLessThan(Number(web.attributes['access.token.lifespan']));
     expect(r.roles.client['bananagig-admin'].map((x) => x.name).sort()).toEqual([
       'admin-console-access',
+      'catalog-read',
+      'catalog-write',
       'configuration-approve',
       'configuration-read',
       'configuration-write',
@@ -184,6 +186,19 @@ describe('production realm build', () => {
     }
     const prod = buildProductionRealm(r, ORIGINS);
     expect(prod.roles.client['bananagig-admin'].map((x) => x.name)).toEqual(expect.arrayContaining(['geography-read', 'geography-write']));
+    expect(humans(prod)).toEqual([]);
+  });
+  it('defines the catalog-* roles as client roles of bananagig-admin only (never realm roles), gives them to the dev administrators and keeps them out of production users (CAT-001)', () => {
+    const r = dev();
+    const adminRoles = r.roles.client['bananagig-admin'].map((x) => x.name);
+    for (const n of ['catalog-read', 'catalog-write']) {
+      expect(adminRoles).toContain(n);
+      expect(r.roles.realm.map((x) => x.name)).not.toContain(n);
+    }
+    const holders = r.users.filter((u) => (u.clientRoles?.['bananagig-admin'] ?? []).includes('catalog-write')).map((u) => u.username);
+    expect(holders.sort()).toEqual(['admin.dev', 'admin2.dev']);
+    const prod = buildProductionRealm(r, ORIGINS);
+    expect(prod.roles.client['bananagig-admin'].map((x) => x.name)).toEqual(expect.arrayContaining(['catalog-read', 'catalog-write']));
     expect(humans(prod)).toEqual([]);
   });
   it('keeps the content-* role definitions in production but creates no users to hold them', () => {

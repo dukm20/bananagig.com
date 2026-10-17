@@ -918,3 +918,37 @@ ADR-0039.
 ### Known follow-up
 DEBT-0082 (later role-specific sections, notifications, closure, privacy export, registry admin editor, visual polish, phone action, registry cache, profile event). CUSTOMER and PROVIDER share one section set until a role-specific capability ships. Next approved checkpoint: CAT-001 (Categories and Service Types).
 
+
+## CAT-001 — 2026-10-16
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(CAT-001)"`.
+Summary: Categories and service types as the PLATFORM-OWNED taxonomy: Category > Service Type (exactly one, immutable category) > Gig (provider-owned, CAT-002 and later; nothing provider-specific exists here). Reference data, not configuration values and not Gig content. Stable immutable snake_case codes, a four-state status machine (DRAFT, ACTIVE, INACTIVE, RETIRED) enforced in one SQL function, no hard delete, per-market availability with a display order unique per market, names and descriptions as content keys (CFG-002) derived from the code by a generated column with a foreign key to the content registry. The public view shows only ACTIVE items enabled under an enabled ACTIVE category in a market geography calls public; the management view (admin context plus `catalog-read`/`catalog-write`) shows everything. The seed is deliberately minimal and all DRAFT (2 categories, 4 service types), so nothing is public until an administrator activates and enables it; la-oc stays PLANNED.
+
+### Housekeeping at the start (requested)
+`PROJECT_STATE` records ACC-001 (`d86f5d4`, GitHub Actions run 38995740997 SUCCESS: `verify` PASS, `compose-smoke` PASS, fresh-database smoke 37/37; the Email and Phone local failures were the developer database's send caps only). `checkpoint:start` ran first. A second interactive Claude session exists on this machine and could not be closed from here; the finalize "working tree unchanged" check was the guard.
+
+### Delivered
+- Migration `0015_catalog.sql`: schema `catalog` with six tables (`categories`, `service_types`, `prohibited_services`, `market_categories`, `market_service_types`, `audit_events`), a shared status-transition function, five guard functions and the immutability function with triggers (rules reported as `catalog_rule:<KEY>`, TRUNCATE refused on every table), the seed (12 content entries through the lifecycle, 2 categories, 4 service types, 6 audit rows).
+- Contracts `catalog.ts`; package `@bananagig/catalog` (`CatalogService`, generation cache, the CATEGORY scope-reference validator); API module under `/api/v1/catalog` (16 operations) with a market gate port over the geography registry; temporary admin client roles `catalog-read`/`catalog-write` in the realm (DEBT-0021 model); outbox events for activation, deactivation and availability; smoke scenario `Catalog` (38 checks).
+- DEBT-0024 for the CATEGORY scope: references are validated against the catalogue when a change request is created and published (RETIRED, unknown and non-canonical references get one generic reason).
+- Docs: `CATALOG.md`, ADR-0040, `skills/catalog`, the data model documents, DEBT-0083.
+- Quality process: independent authors for the contracts and API, the service and the database model, each with mutation checks (52 whole-file mutations of the database rules, 18 of the service rules, 8 of the API fixes); two independent read-only reviews. Defects found and fixed before the commit: a shared mutable scope-validator result; a double first submission of an availability row reported as CODE_TAKEN (now a retryable conflict with one whole-transaction retry); collation-dependent ordering (`COLLATE "C"`); an error-details deny-list (now an allow-list); a public content outage that hid the catalogue as an empty list (now 503); a management preview in the wrong locale (now the market default); `mapDbError(null)` throwing a TypeError; management and mutation responses without `Cache-Control: no-store`; documentation that claimed instant cache invalidation and contradicted the content ownership rule.
+
+### Schema
+Migration 0015: six tables, seven functions, 12 triggers, seeds. NORMALIZATION_LOG, DATA_MODEL, DATA_DICTIONARY, ERD, DATA_MODEL_CHANGELOG and SCHEMA_SNAPSHOT updated; Data Model Review Gate passed (1NF to BCNF; no version tables and no requirement tables on purpose; one non-key index).
+
+### Contracts
+`packages/contracts/src/catalog.ts`; five events (`bananagig.catalog.*.v1`); OpenAPI and AsyncAPI regenerated and valid.
+
+### Tests
+Unit 9287 and 164 root script tests, integration 5132 in 46 files (catalog data model rules 386, service 104, API 46), smoke 38 checks (38/38 locally, including Email and Phone verification).
+
+### Skills updated
+`skills/catalog` (new), `skills/database`, `skills/content`.
+
+### ADRs
+ADR-0040.
+
+### Known follow-up
+DEBT-0083 (launch taxonomy, admin UI, synonyms and search, requirement policies, moderation, icon pipeline, effective-dated availability, and a few small gaps listed there). Next: CAT-002 Gig Templates.

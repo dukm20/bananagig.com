@@ -834,3 +834,60 @@ None. The one place where a value is repeated is the guard: `enabled` is only al
 ### Final decision
 Two new tables, no column, constraint or index added to any existing table (`identity.roles` gains one guard trigger), no new index beyond the keys, no denormalization. The navigation costs one registry read per request whatever the number of sections.
 
+## CAT-001
+
+Date: 2026-10-16
+
+Tables reviewed: new, in the new schema `catalog`: `categories`, `service_types`, `prohibited_services`, `market_categories`, `market_service_types`, `audit_events`. Reused WITHOUT change (referenced by foreign key only): `content.entries` (names and descriptions), `geography.markets` (availability).
+
+### 1NF
+PASS. Every column is an atomic scalar (`uuid`, `text`, `boolean`, `integer`, `timestamptz`) except `audit_events.changes`, a JSON object whose shape depends on the action (the same documented exception as the other audit tables). No array or delimited list: the markets of a category are rows of `market_categories`, the categories of a service type do not exist (exactly one), the service types of a category are rows of `service_types`.
+
+### 2NF
+PASS. `categories`, `service_types`, `prohibited_services` and `audit_events` have single-column keys. The two market tables have composite keys `(market_id, category_id)` and `(market_id, service_type_id)` and their non-key columns (`enabled`, `display_order`) depend on the WHOLE pair: whether and where an item is offered is a fact about the item IN the market, not about the item or the market alone. The item attributes (code, status, content keys, icon) are not repeated per market.
+
+### 3NF
+PASS with one documented derivation. The pairs checked:
+
+| Table | Pair checked | Verdict |
+|---|---|---|
+| `categories`, `service_types`, `prohibited_services` | `code` against `name_content_key` | a REAL functional dependency (the key is a function of the code), kept deliberately and NOT stored twice: the column is GENERATED ALWAYS ... STORED, so it cannot disagree with the code, and it carries the foreign key to `content.entries`. The alternative (no column) would lose the referential integrity of the name; the alternative (a plain column) would be the redundancy this review forbids |
+| same | `code` against `description_content_key` | the nullable column records only WHETHER a description entry is linked; when set it must equal the conventional key (`ck_*__description_content_key`), so it is a link, not an independent value |
+| `categories`, `service_types` | `status` against the status of the other level | independent columns of different tables; the rules that link them (an ACTIVE service type needs an ACTIVE category, a category cannot leave ACTIVE while one is ACTIVE) are guard triggers, not stored derivations |
+| `service_types` | `category_id` against the category's attributes | only the key is stored; the code, name and status of the category are read through the foreign key |
+| `market_categories`, `market_service_types` | `enabled` against `display_order` | independent: a disabled row keeps its position so an order is never ambiguous |
+| `market_service_types` | the service type's category against the market | not stored: derived through `service_types.category_id`; the rule "enabled needs the category enabled in the same market" is a guard trigger |
+| `audit_events` | subject columns against `action` | the action family determines which subject columns are set (`ck_audit_events__subject`); the rows are immutable, nothing is derived |
+
+No transitive dependency remains among stored columns other than the generated key above.
+
+### BCNF
+PASS. Determinants: `category_id` and `code` (two candidate keys) in `categories`; `service_type_id` and `code` in `service_types`; `prohibited_service_id` and `code` in `prohibited_services`; `(market_id, category_id)` and `(market_id, display_order)` in `market_categories`; `(market_id, service_type_id)` and `(market_id, display_order)` in `market_service_types`; `audit_event_id` in `audit_events`. Every determinant is a candidate key. The second key of the market tables means a position is given to one item only in a market, so the menu order of a market is a total order.
+
+### Duplicate concepts examined
+- Display text in the tables: NOT stored. Names and descriptions exist only in the content registry (CFG-002); the tables hold codes and derived keys.
+- Taxonomy as configuration (CFG-001): rejected. The configuration scopes are platform, country, market, category, plan, provider, gig and drop: a category is a scope, not a value, and a parameter per category would have no foreign keys to content or markets.
+- A category-service type join table: NOT created. A service type has exactly one category in the PRD (a tree; PR-03.03 lists collapsible categories each with its service types), and a Gig identifies one category through its one service type. A many-to-many would let one Gig pick two categories for one service type and would need a primary-category rule to resolve it. If the product ever needs a service type in two categories, that is a new join table with a data migration and a reviewed model change.
+- A market column on the taxonomy rows: NOT used; availability is its own pair of tables, because an item is offered in many markets with a different order in each.
+- A global `display_order` on the taxonomy rows: NOT stored. Order is market data; the administrative fallback for a list without a market is the code.
+- Version tables for categories and service types: NOT created. Stable ids, immutable codes, the status machine and the audit trail meet every requirement (a Gig keeps referencing the id, a rename is a content change, retirement keeps the row); a version table would copy facts that never change.
+- Requirement tables (verification, skills, equipment, licence, insurance) per category and market: NOT created. SV-09 and TRUST-001 own their shape and key them by these stable ids; a table now would guess it. The extension point is a foreign key to `categories` or `service_types`.
+- Prohibited services in the taxonomy status: NOT folded into `service_types.status`. A prohibited service is a rule about something that is NOT in the taxonomy; it is its own flat table (code, generated name key, optional category, status) with no consumer yet.
+- Provider data: none. No price, duration, radius, capacity, availability or media of a provider is stored.
+
+### Derived fields examined
+`name_content_key` is the only derived stored column (generated, see 3NF). Whether an item is PUBLIC is derived at read time from the market (geography), the item statuses and the two availability flags; nothing stores "visible". The number of service types of a category is not stored.
+
+### Intentional denormalization
+None beyond the generated key above, which is a derivation by the database and cannot drift.
+
+### Index review
+- `uq_categories__code`, `uq_service_types__code`, `uq_prohibited_services__code`: the identity lookup of every read and of the API path.
+- `idx_service_types__category (category_id)`: the service types of ONE category (listing by category and the guards that read a category's children). The only non-key index.
+- `uq_market_categories__market_order`, `uq_market_service_types__market_order (market_id, display_order)`: THE access path of a market's menu in order and the rule that an order is unique per market; the leading `market_id` also serves the foreign key to the market, so there is no second index.
+- `pk_market_categories`, `pk_market_service_types`: one row per pair.
+- No index on `category_id` of `market_categories`, `service_type_id` of `market_service_types`, `category_id` of `prohibited_services`, the content key columns or the audit subject columns: never-deleted reference targets, no filtered query, tables of tens of rows. The public read of a market is two statements through the unique keys above; its result is cached by market and a generation counter.
+
+### Final decision
+Six new tables in a new schema, no change to any existing table, one non-key index, one derivation (the generated content key), no denormalization.
+

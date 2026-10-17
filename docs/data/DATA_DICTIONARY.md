@@ -991,3 +991,106 @@ The section matrix of the account area (ACC-001, reference data): for an applica
 Indexes: the primary key `pk_account_section_roles (section_code, role_id)` and the unique `uq_account_section_roles__role_order (role_id, display_order)`, which is THE access path of the account navigation (the enabled sections of one role in menu order) and the rule that an order is unique per role. No separate index on `role_id` (it leads the unique key).
 Triggers: `trg_account_section_roles__guard` (`identity.guard_account_section_roles`) forbids delete (`SECTION_ROLE_NOT_DELETABLE`) and any change to `section_code` or `role_id` (`SECTION_ROLE_KEY_IMMUTABLE`), requires an ACTIVE section (`SECTION_NOT_ACTIVE`) and an ACTIVE role (`ROLE_NOT_ACTIVE`) when `enabled` is true (both read `FOR SHARE`), keeps `created_at` and maintains `updated_at`; `trg_account_section_roles__no_truncate` (`identity.forbid_mutation`) refuses TRUNCATE. `identity.roles` carries the matching trigger `trg_roles__account_sections` (`identity.guard_roles_account_sections`): a role cannot leave ACTIVE while a matrix row is enabled for it (`ROLE_HAS_SECTIONS`).
 
+### catalog.categories
+
+A category of the platform-owned taxonomy (CAT-001, reference data): a group of service types (Auto Services). The code is the identity; the display text is managed content. Never deleted or truncated. No provider-specific field, no personal data.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `category_id` | uuid | no | `gen_random_uuid()` | Primary key `pk_categories`: the stable id a Gig will reference through its service type | yes |
+| `code` | text | no | none | Unique (`uq_categories__code`) immutable lower-case snake_case identity, 2 to 48 characters (`ck_categories__code`: `^[a-z][a-z0-9]*(_[a-z0-9]+)*$`), never reused: the API path, the stem of the content keys, the `CATEGORY` configuration scope reference | yes |
+| `name_content_key` | text | no | generated | GENERATED ALWAYS AS (`'catalog.category.' || code || '.name'`) STORED and a foreign key `fk_categories__name_content_key` to `content.entries (key)` (restrict): the name must exist as content, and renaming it changes no identity. Not writable | yes |
+| `description_content_key` | text | yes | none | NULL = no description; otherwise exactly `catalog.category.<code>.description` (`ck_categories__description_content_key`) and a foreign key `fk_categories__description_content_key` to `content.entries (key)` | no |
+| `icon_key` | text | yes | none | A design-system icon NAME (`ck_categories__icon_key`: lower-case kebab, at most 48 characters), not a URL and not media | no |
+| `status` | text | no | `'DRAFT'` | `DRAFT` (initial only, never written back), `ACTIVE`, `INACTIVE` (a pause) or `RETIRED` (terminal) (`ck_categories__status`); the machine is `catalog.assert_status_transition` | no |
+| `created_at` | timestamptz | no | `now()` | Creation time, kept by the guard on every UPDATE | yes |
+| `updated_at` | timestamptz | no | `now()` | Last change, maintained by the guard trigger | no |
+
+Indexes: the primary key and `uq_categories__code (code)` (the identity lookup of every read and of the API path). No other index (a table of tens of rows).
+Triggers: `trg_categories__guard` (`catalog.guard_categories`) creates only DRAFT (`MUST_START_AS_DRAFT`), never deletes (`NOT_DELETABLE`), keeps id and code (`IMMUTABLE_IDENTITY`), applies the status machine (`DRAFT_IS_INITIAL`, `STATUS_TRANSITION`), refuses leaving ACTIVE while a service type is ACTIVE (`CATEGORY_HAS_ACTIVE_SERVICE_TYPES`) and retiring while one is not RETIRED (`CATEGORY_HAS_OPEN_SERVICE_TYPES`), keeps `created_at` and maintains `updated_at`; `trg_categories__no_truncate` (`catalog.forbid_mutation`) refuses TRUNCATE.
+
+### catalog.service_types
+
+A service type of the platform-owned taxonomy (CAT-001): what a provider can offer (Car Detailing), belonging to exactly ONE category. A Gig is a provider object that arrives later and will reference `service_type_id`. Same identity, content and status rules as categories. No provider-specific field.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `service_type_id` | uuid | no | `gen_random_uuid()` | Primary key `pk_service_types` | yes |
+| `category_id` | uuid | no | none | Foreign key `fk_service_types__category_id` to `catalog.categories` (restrict); the one category, immutable (moving would change what a Gig means: create a new service type) | yes |
+| `code` | text | no | none | Unique (`uq_service_types__code`) immutable lower-case snake_case identity, 2 to 48 characters (`ck_service_types__code`: `^[a-z][a-z0-9]*(_[a-z0-9]+)*$`), never reused: the API path, the stem of the content keys (unique across ALL service types, not only inside a category) | yes |
+| `name_content_key` | text | no | generated | GENERATED ALWAYS AS (`'catalog.service_type.' || code || '.name'`) STORED and a foreign key `fk_service_types__name_content_key` to `content.entries (key)` (restrict): the name must exist as content, and renaming it changes no identity. Not writable | yes |
+| `description_content_key` | text | yes | none | NULL = no description; otherwise exactly `catalog.service_type.<code>.description` (`ck_service_types__description_content_key`) and a foreign key `fk_service_types__description_content_key` to `content.entries (key)` | no |
+| `status` | text | no | `'DRAFT'` | `DRAFT` (initial only, never written back), `ACTIVE`, `INACTIVE` (a pause) or `RETIRED` (terminal) (`ck_service_types__status`); the machine is `catalog.assert_status_transition` | no |
+| `created_at` | timestamptz | no | `now()` | Creation time, kept by the guard on every UPDATE | yes |
+| `updated_at` | timestamptz | no | `now()` | Last change, maintained by the guard trigger | no |
+
+Indexes: the primary key, `uq_service_types__code (code)` and `idx_service_types__category (category_id)` (the service types of ONE category: listing by category and the guards that look at a category's children).
+Triggers: `trg_service_types__guard` (`catalog.guard_service_types`) creates only DRAFT under a non-RETIRED category (`MUST_START_AS_DRAFT`, `CATEGORY_RETIRED`), never deletes, keeps id, category and code, applies the status machine, allows ACTIVE only while the category is ACTIVE (`CATEGORY_NOT_ACTIVE`, read `FOR SHARE`), keeps `created_at`; `trg_service_types__no_truncate` refuses TRUNCATE.
+
+### catalog.prohibited_services
+
+A service the platform does not allow (CAT-001, AD-01.03), as flat platform-level reference data. A rule counts only while ACTIVE. No moderation workflow and no consumer yet; never exposed on the public catalogue API.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `prohibited_service_id` | uuid | no | `gen_random_uuid()` | Primary key `pk_prohibited_services` | yes |
+| `category_id` | uuid | yes | none | Optional administrative grouping, foreign key `fk_prohibited_services__category_id` to `catalog.categories` (restrict); NULL = not tied to a category; immutable | yes |
+| `code` | text | no | none | Unique (`uq_prohibited_services__code`) immutable lower-case snake_case identity, 2 to 48 characters (`ck_prohibited_services__code`: `^[a-z][a-z0-9]*(_[a-z0-9]+)*$`), never reused: the API path, the stem of the content keys | yes |
+| `name_content_key` | text | no | generated | GENERATED ALWAYS AS (`'catalog.prohibited_service.' || code || '.name'`) STORED and a foreign key `fk_prohibited_services__name_content_key` to `content.entries (key)` (restrict): the name must exist as content, and renaming it changes no identity. Not writable | yes |
+| `description_content_key` | text | yes | none | NULL = no description; otherwise exactly `catalog.prohibited_service.<code>.description` (`ck_prohibited_services__description_content_key`) and a foreign key `fk_prohibited_services__description_content_key` to `content.entries (key)` | no |
+| `status` | text | no | `'DRAFT'` | `DRAFT` (initial only, never written back), `ACTIVE`, `INACTIVE` (a pause) or `RETIRED` (terminal) (`ck_prohibited_services__status`); the machine is `catalog.assert_status_transition` | no |
+| `created_at` | timestamptz | no | `now()` | Creation time, kept by the guard on every UPDATE | yes |
+| `updated_at` | timestamptz | no | `now()` | Last change, maintained by the guard trigger | no |
+
+Indexes: the primary key and `uq_prohibited_services__code (code)`. No index on `category_id` (no filtered query).
+Triggers: `trg_prohibited_services__guard` (`catalog.guard_prohibited_services`): created as DRAFT, never deleted, id, code and category immutable, the status machine, `created_at` kept; `trg_prohibited_services__no_truncate` refuses TRUNCATE.
+
+### catalog.market_categories
+
+Whether a category is offered in a market (GEO-001) and where it sits in that market's menu (CAT-001). Public only while the market is ACTIVE and in effect, the category is ACTIVE and this row is enabled. Rows are never deleted or truncated. No personal data.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `market_id` | uuid | no | none | Part of the primary key `pk_market_categories (market_id, category_id)`; foreign key `fk_market_categories__market_id` to `geography.markets` (restrict); a market of any status | yes |
+| `category_id` | uuid | no | none | Part of the primary key; foreign key `fk_market_categories__category_id` to `catalog.categories` (restrict) | yes |
+| `enabled` | boolean | no | `false` | True = offered in the market. Never enabled for a RETIRED category (`ITEM_RETIRED`); not switched off while a service type of the category is enabled there (`CATEGORY_MARKET_HAS_ENABLED_SERVICE_TYPES`) | no |
+| `display_order` | integer | no | none | Position in the market's menu, 1 to 9999 (`ck_market_categories__display_order`); unique per market over ALL rows (`uq_market_categories__market_order (market_id, display_order)`, also THE access path of a market's menu); gaps of 10 by convention | no |
+| `created_at` | timestamptz | no | `now()` | Creation time, kept by the guard on every UPDATE | yes |
+| `updated_at` | timestamptz | no | `now()` | Last change, maintained by the guard trigger | no |
+
+Indexes: the primary key and `uq_market_categories__market_order`. No index on `category_id` (never-deleted reference target, no filtered query).
+Triggers: `trg_market_categories__guard` (`catalog.guard_market_categories`) never deletes, keeps the key, refuses enabling a RETIRED category, refuses the switch-off described above, keeps `created_at`; `trg_market_categories__no_truncate` refuses TRUNCATE.
+
+### catalog.market_service_types
+
+Whether a service type is offered in a market and its position among the market's service types (CAT-001). Public under the same conditions as a category plus an ACTIVE service type under an enabled ACTIVE category. Rows are never deleted or truncated.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `market_id` | uuid | no | none | Part of the primary key `pk_market_service_types (market_id, service_type_id)`; foreign key `fk_market_service_types__market_id` to `geography.markets` (restrict) | yes |
+| `service_type_id` | uuid | no | none | Part of the primary key; foreign key `fk_market_service_types__service_type_id` to `catalog.service_types` (restrict) | yes |
+| `enabled` | boolean | no | `false` | True = offered. Enabling needs the category enabled in the same market (`CATEGORY_NOT_ENABLED_IN_MARKET`, read `FOR SHARE`) and the service type not RETIRED (`ITEM_RETIRED`) | no |
+| `display_order` | integer | no | none | Position among the market's service types, 1 to 9999; unique per market over ALL rows (`uq_market_service_types__market_order`); the menu groups the service types by category | no |
+| `created_at` | timestamptz | no | `now()` | Creation time, kept by the guard on every UPDATE | yes |
+| `updated_at` | timestamptz | no | `now()` | Last change, maintained by the guard trigger | no |
+
+Indexes: the primary key and `uq_market_service_types__market_order`.
+Triggers: `trg_market_service_types__guard` (`catalog.guard_market_service_types`) never deletes, keeps the key, applies the two enabling rules, keeps `created_at`; `trg_market_service_types__no_truncate` refuses TRUNCATE.
+
+### catalog.audit_events
+
+The append-only audit trail of every catalogue management mutation (CAT-001). Reads are never audited. Rows are immutable and never truncated. It holds identifiers and codes only, never display text.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `audit_event_id` | uuid | no | `gen_random_uuid()` | Primary key `pk_audit_events` | yes |
+| `occurred_at` | timestamptz | no | `clock_timestamp()` | When the change was made (database clock) | yes |
+| `actor` | text | no | none | Who acted: the subject of the administrator, or `system:migration` (`ck_audit_events__actor`: 1 to 200 characters) | yes |
+| `action` | text | no | none | One of the nine actions (`ck_audit_events__action`) | yes |
+| `category_id`, `service_type_id`, `prohibited_service_id`, `market_id` | uuid | yes | none | The subject, foreign keys (restrict): exactly the columns the action family allows (`ck_audit_events__subject`); `MARKET_CATALOG_AVAILABILITY_CHANGED` names a market and exactly one of category or service type | yes |
+| `changes` | jsonb | yes | none | A JSON object `{field: [old, new]}` (`ck_audit_events__changes_object`) | yes |
+| `reason` | text | no | none | The mandatory reason (`ck_audit_events__reason`: not blank, at most 1000 characters) | yes |
+| `correlation_id` | text | no | none | The correlation id of the request | yes |
+
+Indexes: the primary key only. The audit trail is not read by any API yet; an index is added through its own review when a query path appears.
+Triggers: `trg_audit_events__immutable` and `trg_audit_events__no_truncate` (`catalog.forbid_mutation`): UPDATE, DELETE and TRUNCATE are refused (`ROW_IMMUTABLE`).

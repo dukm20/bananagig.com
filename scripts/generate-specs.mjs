@@ -9,8 +9,12 @@ import {
   AccountCreatedPayload,
   AccountRolePayload,
   AccountStatusChangedPayload,
+  CATALOG_EVENTS,
+  CatalogAvailabilityEventPayload,
+  CategoryEventPayload,
   CONSENT_EVENTS,
   ConsentEventPayload,
+  ServiceTypeEventPayload,
   ExternalIdentityLinkedPayload,
   EMAIL_EVENTS,
   MfaChangedPayload,
@@ -73,6 +77,7 @@ const app = await buildApp({
   security: {},
   consent: {},
   accountArea: {},
+  catalog: {},
   readiness: async () => ({}),
 });
 await app.ready();
@@ -295,6 +300,33 @@ const CONSENT_MESSAGES = {
     'identity_account',
   ],
 };
+const CATALOG_MESSAGES = {
+  categoryActivated: ['CatalogCategoryActivated', 'A category became ACTIVE (DRAFT or INACTIVE to ACTIVE).', CategoryEventPayload, 'catalog_category'],
+  categoryDeactivated: [
+    'CatalogCategoryDeactivated',
+    'An ACTIVE category left ACTIVE (paused as INACTIVE or retired). Moving a DRAFT or INACTIVE category to RETIRED emits no event.',
+    CategoryEventPayload,
+    'catalog_category',
+  ],
+  serviceTypeActivated: [
+    'CatalogServiceTypeActivated',
+    'A service type became ACTIVE (DRAFT or INACTIVE to ACTIVE).',
+    ServiceTypeEventPayload,
+    'catalog_service_type',
+  ],
+  serviceTypeDeactivated: [
+    'CatalogServiceTypeDeactivated',
+    'An ACTIVE service type left ACTIVE (paused as INACTIVE or retired).',
+    ServiceTypeEventPayload,
+    'catalog_service_type',
+  ],
+  availabilityChanged: [
+    'CatalogAvailabilityChanged',
+    'A category or a service type was offered, withdrawn or reordered in a market (a row of the market availability changed). Switching a category off in a market also emits one event per service type it switched off.',
+    CatalogAvailabilityEventPayload,
+    'catalog_market_availability',
+  ],
+};
 const channels = {
   infraPing: {
     address: INFRA_PING_EVENT_TYPE,
@@ -440,13 +472,29 @@ for (const [k, [name, summary, payload, aggregate]] of Object.entries(CONSENT_ME
   };
   schemas[name] = typedEnvelope(type, payload);
 }
+for (const [k, [name, summary, payload, aggregate]] of Object.entries(CATALOG_MESSAGES)) {
+  const type = CATALOG_EVENTS[k];
+  channels[`catalog_${k}`] = {
+    address: type,
+    description: `${summary} Published through the transactional outbox (aggregate ${aggregate}); the payload carries codes only, never display text.`,
+    messages: { [name]: { $ref: `#/components/messages/${name}` } },
+  };
+  operations[`send${name}`] = { action: 'send', channel: { $ref: `#/channels/catalog_${k}` }, summary };
+  messages[name] = {
+    name,
+    title: summary,
+    headers: { type: 'object', properties: { 'x-correlation-id': { type: 'string' } } },
+    payload: { $ref: `#/components/schemas/${name}` },
+  };
+  schemas[name] = typedEnvelope(type, payload);
+}
 const asyncapi = {
   asyncapi: '3.0.0',
   info: {
     title: 'BananaGig Events',
     version: '1.0.0',
     description:
-      'Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events, the identity account events, the email verification events, the phone verification events, the account security events (sessions, second factor, password reset) and the consent events (acceptance and withdrawal of a legal document version) exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.',
+      'Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events, the identity account events, the email verification events, the phone verification events, the account security events (sessions, second factor, password reset) the consent events (acceptance and withdrawal of a legal document version) and the catalogue events (category and service type activation, market availability) exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.',
   },
   defaultContentType: 'application/json',
   channels,

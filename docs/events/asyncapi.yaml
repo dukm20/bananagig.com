@@ -3,7 +3,7 @@ asyncapi: 3.0.0
 info:
   title: BananaGig Events
   version: 1.0.0
-  description: Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events, the identity account events, the email verification events, the phone verification events, the account security events (sessions, second factor, password reset) and the consent events (acceptance and withdrawal of a legal document version) exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.
+  description: Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events, the identity account events, the email verification events, the phone verification events, the account security events (sessions, second factor, password reset) the consent events (acceptance and withdrawal of a legal document version) and the catalogue events (category and service type activation, market availability) exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.
 defaultContentType: application/json
 channels:
   infraPing:
@@ -258,6 +258,36 @@ channels:
     messages:
       IdentityConsentWithdrawn:
         $ref: "#/components/messages/IdentityConsentWithdrawn"
+  catalog_categoryActivated:
+    address: bananagig.catalog.category-activated.v1
+    description: A category became ACTIVE (DRAFT or INACTIVE to ACTIVE). Published through the transactional outbox (aggregate catalog_category); the payload carries codes only, never display text.
+    messages:
+      CatalogCategoryActivated:
+        $ref: "#/components/messages/CatalogCategoryActivated"
+  catalog_categoryDeactivated:
+    address: bananagig.catalog.category-deactivated.v1
+    description: An ACTIVE category left ACTIVE (paused as INACTIVE or retired). Moving a DRAFT or INACTIVE category to RETIRED emits no event. Published through the transactional outbox (aggregate catalog_category); the payload carries codes only, never display text.
+    messages:
+      CatalogCategoryDeactivated:
+        $ref: "#/components/messages/CatalogCategoryDeactivated"
+  catalog_serviceTypeActivated:
+    address: bananagig.catalog.service-type-activated.v1
+    description: A service type became ACTIVE (DRAFT or INACTIVE to ACTIVE). Published through the transactional outbox (aggregate catalog_service_type); the payload carries codes only, never display text.
+    messages:
+      CatalogServiceTypeActivated:
+        $ref: "#/components/messages/CatalogServiceTypeActivated"
+  catalog_serviceTypeDeactivated:
+    address: bananagig.catalog.service-type-deactivated.v1
+    description: An ACTIVE service type left ACTIVE (paused as INACTIVE or retired). Published through the transactional outbox (aggregate catalog_service_type); the payload carries codes only, never display text.
+    messages:
+      CatalogServiceTypeDeactivated:
+        $ref: "#/components/messages/CatalogServiceTypeDeactivated"
+  catalog_availabilityChanged:
+    address: bananagig.catalog.availability-changed.v1
+    description: A category or a service type was offered, withdrawn or reordered in a market (a row of the market availability changed). Switching a category off in a market also emits one event per service type it switched off. Published through the transactional outbox (aggregate catalog_market_availability); the payload carries codes only, never display text.
+    messages:
+      CatalogAvailabilityChanged:
+        $ref: "#/components/messages/CatalogAvailabilityChanged"
 operations:
   receiveInfraPing:
     action: receive
@@ -469,6 +499,31 @@ operations:
     channel:
       $ref: "#/channels/identity_consent_withdrawn"
     summary: An account withdrew the consent it had given for a withdrawable purpose (a consent event WITHDRAWN was appended). The payload carries the same identifiers as the acceptance event, never legal text.
+  sendCatalogCategoryActivated:
+    action: send
+    channel:
+      $ref: "#/channels/catalog_categoryActivated"
+    summary: A category became ACTIVE (DRAFT or INACTIVE to ACTIVE).
+  sendCatalogCategoryDeactivated:
+    action: send
+    channel:
+      $ref: "#/channels/catalog_categoryDeactivated"
+    summary: An ACTIVE category left ACTIVE (paused as INACTIVE or retired). Moving a DRAFT or INACTIVE category to RETIRED emits no event.
+  sendCatalogServiceTypeActivated:
+    action: send
+    channel:
+      $ref: "#/channels/catalog_serviceTypeActivated"
+    summary: A service type became ACTIVE (DRAFT or INACTIVE to ACTIVE).
+  sendCatalogServiceTypeDeactivated:
+    action: send
+    channel:
+      $ref: "#/channels/catalog_serviceTypeDeactivated"
+    summary: An ACTIVE service type left ACTIVE (paused as INACTIVE or retired).
+  sendCatalogAvailabilityChanged:
+    action: send
+    channel:
+      $ref: "#/channels/catalog_availabilityChanged"
+    summary: A category or a service type was offered, withdrawn or reordered in a market (a row of the market availability changed). Switching a category off in a market also emits one event per service type it switched off.
 components:
   messages:
     EventEnvelope:
@@ -891,6 +946,56 @@ components:
             type: string
       payload:
         $ref: "#/components/schemas/IdentityConsentWithdrawn"
+    CatalogCategoryActivated:
+      name: CatalogCategoryActivated
+      title: A category became ACTIVE (DRAFT or INACTIVE to ACTIVE).
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/CatalogCategoryActivated"
+    CatalogCategoryDeactivated:
+      name: CatalogCategoryDeactivated
+      title: An ACTIVE category left ACTIVE (paused as INACTIVE or retired). Moving a DRAFT or INACTIVE category to RETIRED emits no event.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/CatalogCategoryDeactivated"
+    CatalogServiceTypeActivated:
+      name: CatalogServiceTypeActivated
+      title: A service type became ACTIVE (DRAFT or INACTIVE to ACTIVE).
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/CatalogServiceTypeActivated"
+    CatalogServiceTypeDeactivated:
+      name: CatalogServiceTypeDeactivated
+      title: An ACTIVE service type left ACTIVE (paused as INACTIVE or retired).
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/CatalogServiceTypeDeactivated"
+    CatalogAvailabilityChanged:
+      name: CatalogAvailabilityChanged
+      title: A category or a service type was offered, withdrawn or reordered in a market (a row of the market availability changed). Switching a category off in a market also emits one event per service type it switched off.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/CatalogAvailabilityChanged"
   schemas:
     EventEnvelope:
       type: object
@@ -4209,6 +4314,370 @@ components:
             - consentEventId
             - eventSeq
             - contentVersionId
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    CatalogCategoryActivated:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.catalog.category-activated.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            categoryCode:
+              type: string
+              minLength: 2
+              maxLength: 48
+              pattern: ^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$
+          required:
+            - categoryCode
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    CatalogCategoryDeactivated:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.catalog.category-deactivated.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            categoryCode:
+              type: string
+              minLength: 2
+              maxLength: 48
+              pattern: ^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$
+          required:
+            - categoryCode
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    CatalogServiceTypeActivated:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.catalog.service-type-activated.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            serviceTypeCode:
+              type: string
+              minLength: 2
+              maxLength: 48
+              pattern: ^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$
+            categoryCode:
+              type: string
+              minLength: 2
+              maxLength: 48
+              pattern: ^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$
+          required:
+            - serviceTypeCode
+            - categoryCode
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    CatalogServiceTypeDeactivated:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.catalog.service-type-deactivated.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            serviceTypeCode:
+              type: string
+              minLength: 2
+              maxLength: 48
+              pattern: ^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$
+            categoryCode:
+              type: string
+              minLength: 2
+              maxLength: 48
+              pattern: ^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$
+          required:
+            - serviceTypeCode
+            - categoryCode
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    CatalogAvailabilityChanged:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.catalog.availability-changed.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            marketCode:
+              type: string
+            kind:
+              type: string
+              enum:
+                - CATEGORY
+                - SERVICE_TYPE
+            code:
+              type: string
+              minLength: 2
+              maxLength: 48
+              pattern: ^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$
+            enabled:
+              type: boolean
+          required:
+            - marketCode
+            - kind
+            - code
+            - enabled
           additionalProperties: false
       required:
         - eventId

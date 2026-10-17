@@ -241,6 +241,9 @@ importers:
       '@bananagig/accounts':
         specifier: workspace:*
         version: link:../../packages/accounts
+      '@bananagig/catalog':
+        specifier: workspace:*
+        version: link:../../packages/catalog
       '@bananagig/config':
         specifier: workspace:*
         version: link:../../packages/config
@@ -404,6 +407,31 @@ importers:
       '@bananagig/testing':
         specifier: workspace:*
         version: link:../testing
+
+  packages/catalog:
+    dependencies:
+      '@bananagig/configuration':
+        specifier: workspace:*
+        version: link:../configuration
+      '@bananagig/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@bananagig/database':
+        specifier: workspace:*
+        version: link:../database
+      '@bananagig/observability':
+        specifier: workspace:*
+        version: link:../observability
+      '@bananagig/platform':
+        specifier: workspace:*
+        version: link:../platform
+    devDependencies:
+      '@bananagig/testing':
+        specifier: workspace:*
+        version: link:../testing
+      iovalkey:
+        specifier: ^0.4.0
+        version: 0.4.0(supports-color@8.1.1)
 
   packages/config:
     dependencies:

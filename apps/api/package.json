@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@bananagig/accounts": "workspace:*",
+    "@bananagig/catalog": "workspace:*",
     "@bananagig/config": "workspace:*",
     "@bananagig/configuration": "workspace:*",
     "@bananagig/content": "workspace:*",

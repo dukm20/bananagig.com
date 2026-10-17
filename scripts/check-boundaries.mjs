@@ -12,11 +12,13 @@ const ALLOWED = {
   '@bananagig/configuration': ['contracts', 'database', 'observability', 'platform', 'testing'],
   '@bananagig/content': ['contracts', 'database', 'observability', 'platform', 'configuration', 'testing'],
   '@bananagig/geography': ['contracts', 'database', 'observability', 'platform', 'configuration', 'testing'],
+  '@bananagig/catalog': ['contracts', 'database', 'observability', 'platform', 'configuration', 'testing'],
   '@bananagig/accounts': ['contracts', 'database', 'observability', 'platform', 'testing'],
   '@bananagig/testing': ['config', 'database'],
   '@bananagig/web': ['config', 'contracts', 'identity', 'observability', 'testing'],
   '@bananagig/api': [
     'accounts',
+    'catalog',
     'config',
     'contracts',
     'database',

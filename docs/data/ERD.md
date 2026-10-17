@@ -645,3 +645,92 @@ erDiagram
 **Consent purposes and consent events (ID-005).** Two tables and one new kind of relationship: identity now points at `content.versions` (shown as `ID_CONTENT_VERSIONS`, the same table as `CONTENT_VERSIONS` in the content diagram). `ID_CONSENT_PURPOSES` is reference data bound to exactly one `LEGAL` content entry by `document_entry_id` (UNIQUE, so the relationship entry to purpose is 1 to 0..1: a document has at most one purpose and the purpose adds only the structural withdrawal policy and the status). `ID_CONSENT_EVENTS` is the append-only history: an account has zero or more events, a purpose has zero or more events, and the events of one `(account_id, purpose_code)` pair are totally ordered by `event_seq` under the unique key `uq_consent_events__account_purpose_seq` (the ordering and optimistic-concurrency key, not a relationship). The binding to the text is the COMPOSITE foreign key `fk_consent_events__version (version_id, locale, body_sha256)` to `content.versions (version_id, locale, body_sha256)` (target `uq_versions__version_locale_hash`, an additive unique constraint on a CFG-002 table): the repeated `locale` and `body_sha256` are the one FK-verified denormalization of the table, so the database proves the stored pair equals the immutable version's, and no legal text is copied. The optional session is a COMPOSITE foreign key `fk_consent_events__account_session (account_id, application_session_id)` to `application_sessions` (target `uq_application_sessions__account_session`, MATCH SIMPLE, so it is not checked when NULL and a set session must belong to the same account). The audit rows point at the event by the COMPOSITE foreign key `fk_account_audit_events__account_consent_event (account_id, consent_event_id)` (target `uq_consent_events__account_event`, MATCH SIMPLE), set exactly for the `CONSENT_ACCEPTED` and `CONSENT_WITHDRAWN` actions (`ck_account_audit_events__consent_event`); `ID_ACCOUNT_AUDIT_EVENTS` now has six nullable subject keys (`role_id`, `email_contact_id`, `phone_contact_id`, `application_session_id`, `account_device_id` and `consent_event_id`) each set exactly for its own action prefix, so a row names at most one subject, and the repeated `account_id` is the accepted prefix-to-key denormalization of the audit table. What a diagram cannot show: the current consent of an account for a purpose is NOT a column or a relationship, it is the latest event (`ORDER BY event_seq DESC LIMIT 1`), so there is no `current_accepted` flag and no `ID_ACCOUNTS` column that points at an event; the role-dependent requirement (which role must accept which purpose) is configuration (`consent.<purpose>.required_for`), not a table; the in-force version is computed by the function `identity.consent_version_state`, not stored. All foreign keys are `ON DELETE RESTRICT` and no row is deleted. Dependency direction between schemas is unchanged (identity -> content, identity -> geography; nothing in `content` or `geography` references identity). Consent events (aggregate type `identity_account`) point at their aggregate by value, with no foreign key to `integration.outbox_events`.
 
 **Account area sections (ACC-001).** Two reference tables and no relationship to a person: `ID_ACCOUNT_SECTIONS` (what the shared account area can contain) and `ID_ACCOUNT_SECTION_ROLES` (the matrix of which `ID_ROLES` row sees which section, in which order). The label and description of a section are foreign keys to the content registry (`ID_CONTENT_ENTRIES.key`), so visible text is managed content and cannot dangle. Nothing links an account to a section: the section set is a function of the ACTIVE role of the request (request context, never stored), and the profile, contact, security and consent state that the sections show stay in the tables of their own domains.
+
+## catalog schema (CAT-001)
+
+The `catalog` schema is a fifth cluster: the platform-owned taxonomy. It depends on `content` (every name and description is a content key, generated from the immutable code) and on `geography` (market availability). Nothing here refers to a person, a provider or a Gig; a Gig will reference `CAT_SERVICE_TYPES`.
+
+```mermaid
+erDiagram
+  CAT_CONTENT_ENTRIES {
+    text key PK "same table as content.entries"
+  }
+  GEO_MARKETS {
+    uuid market_id PK "same table as geography.markets"
+  }
+  CAT_CATEGORIES {
+    uuid category_id PK
+    text code UK "immutable snake_case identity"
+    text name_content_key FK "GENERATED from code, FK to content.entries"
+    text description_content_key FK "nullable, exactly the conventional key"
+    text icon_key "design-system icon name, nullable"
+    text status "DRAFT, ACTIVE, INACTIVE, RETIRED"
+    timestamptz created_at
+    timestamptz updated_at
+  }
+  CAT_SERVICE_TYPES {
+    uuid service_type_id PK
+    uuid category_id FK "exactly one category, immutable"
+    text code UK "unique across all service types"
+    text name_content_key FK "GENERATED"
+    text description_content_key FK "nullable"
+    text status "DRAFT, ACTIVE, INACTIVE, RETIRED"
+    timestamptz created_at
+    timestamptz updated_at
+  }
+  CAT_PROHIBITED_SERVICES {
+    uuid prohibited_service_id PK
+    uuid category_id FK "nullable, administrative grouping, immutable"
+    text code UK
+    text name_content_key FK "GENERATED"
+    text description_content_key FK "nullable"
+    text status "DRAFT, ACTIVE, INACTIVE, RETIRED"
+    timestamptz created_at
+    timestamptz updated_at
+  }
+  CAT_MARKET_CATEGORIES {
+    uuid market_id PK "part of the key, FK to markets"
+    uuid category_id PK "part of the key, FK to categories"
+    boolean enabled
+    integer display_order UK "unique per market"
+    timestamptz created_at
+    timestamptz updated_at
+  }
+  CAT_MARKET_SERVICE_TYPES {
+    uuid market_id PK "part of the key, FK to markets"
+    uuid service_type_id PK "part of the key, FK to service types"
+    boolean enabled "needs the category enabled in the same market"
+    integer display_order UK "unique per market"
+    timestamptz created_at
+    timestamptz updated_at
+  }
+  CAT_AUDIT_EVENTS {
+    uuid audit_event_id PK
+    timestamptz occurred_at
+    text actor
+    text action
+    uuid category_id FK
+    uuid service_type_id FK
+    uuid prohibited_service_id FK
+    uuid market_id FK
+    jsonb changes
+    text reason
+    text correlation_id
+  }
+  CAT_CATEGORIES ||--o{ CAT_SERVICE_TYPES : "has service types (category_id)"
+  CAT_CATEGORIES |o--o{ CAT_PROHIBITED_SERVICES : "optional grouping (category_id)"
+  CAT_CONTENT_ENTRIES ||--o{ CAT_CATEGORIES : "name and description (name_content_key, description_content_key -> key)"
+  CAT_CONTENT_ENTRIES ||--o{ CAT_SERVICE_TYPES : "name and description"
+  CAT_CONTENT_ENTRIES ||--o{ CAT_PROHIBITED_SERVICES : "name and description"
+  GEO_MARKETS ||--o{ CAT_MARKET_CATEGORIES : "offered in (market_id)"
+  CAT_CATEGORIES ||--o{ CAT_MARKET_CATEGORIES : "availability (category_id)"
+  GEO_MARKETS ||--o{ CAT_MARKET_SERVICE_TYPES : "offered in (market_id)"
+  CAT_SERVICE_TYPES ||--o{ CAT_MARKET_SERVICE_TYPES : "availability (service_type_id)"
+  CAT_CATEGORIES |o--o{ CAT_AUDIT_EVENTS : "CATEGORY_* and availability of a category"
+  CAT_SERVICE_TYPES |o--o{ CAT_AUDIT_EVENTS : "SERVICE_TYPE_* and availability of a service type"
+  CAT_PROHIBITED_SERVICES |o--o{ CAT_AUDIT_EVENTS : "PROHIBITED_SERVICE_*"
+  GEO_MARKETS |o--o{ CAT_AUDIT_EVENTS : "MARKET_CATALOG_AVAILABILITY_CHANGED"
+```
+
+**Taxonomy, availability and the hierarchy rule.** A service type belongs to exactly one category (a tree, as the PRD reads), and the two market tables mirror that: a service type can be enabled in a market only while its category is enabled there (a guard trigger, not a column copy). The generated `name_content_key` columns make the foreign key to the content registry impossible to point at the wrong entry: the key is a function of the code. A Gig (a later, provider-owned table) will reference `CAT_SERVICE_TYPES.service_type_id`; the category of a Gig is that of its service type.
+

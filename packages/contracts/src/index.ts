@@ -119,3 +119,4 @@ export * from './phone';
 export * from './security';
 export * from './consent';
 export * from './account-area';
+export * from './catalog';

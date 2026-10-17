@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import swagger from '@fastify/swagger';
 import type { AppConfig } from '@bananagig/config';
 import { API_PREFIX } from '@bananagig/contracts';
+import type { CatalogService } from '@bananagig/catalog';
 import type { ConfigurationService } from '@bananagig/configuration';
 import type { ContentService } from '@bananagig/content';
 import type {
@@ -23,6 +24,7 @@ import { enforceStrictIntegerParams } from './plugins/strict-params';
 import { configurationRoutes } from './modules/configuration/routes';
 import { contentRoutes } from './modules/content/routes';
 import { accountRoutes } from './modules/account/routes';
+import { catalogRoutes } from './modules/catalog/routes';
 import { consentRoutes } from './modules/consent/routes';
 import { passwordResetRoutes, securityRoutes } from './modules/security/routes';
 import { drainWithTimeout } from './modules/security/wiring';
@@ -80,6 +82,8 @@ export interface AppDeps {
    * guard of PUT /account/profile) are active only when provided together with `accounts`. index.ts always provides it.
    */
   accountArea?: AccountAreaOperations;
+  /** The catalogue taxonomy (CAT-001): the routes are registered when provided together with `content` (names and descriptions are resolved through it). */
+  catalog?: CatalogService;
 }
 
 /**
@@ -147,6 +151,11 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
             'The shared account area (ACC-001): one framework for every persona. The navigation is data (a registry of sections per application role) selected by the ACTIVE role of the request; the section read models compose the profile, contact, security and consent domains and store nothing of their own. A section the active role does not have is a 404 on its endpoints, whatever the front end shows',
         },
         {
+          name: 'catalog',
+          description:
+            'The PLATFORM-OWNED catalogue taxonomy (CAT-001): categories and service types (a Gig belongs to a provider and is not here), their availability and display order per market and the prohibited-service list. Reads are public with visibility rules (ACTIVE items enabled in an ACTIVE market, resolved names and descriptions); management needs the admin context plus catalog-read or catalog-write, a reason and writes an immutable audit row',
+        },
+        {
           name: 'consent',
           description:
             "The caller's own consent to the legal documents (ID-005): what each purpose needs, the version in force, and an append-only history of acceptances and withdrawals bound to the exact version, locale and text hash. The legal text itself is owned and served by the content registry; no account id is ever accepted",
@@ -176,6 +185,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   if (deps.content) await app.register(contentRoutes, { prefix: `${API_PREFIX}/content`, content: deps.content });
   if (deps.geography) await app.register(geographyRoutes, { prefix: `${API_PREFIX}/geography`, geography: deps.geography });
   if (deps.address) await app.register(addressRoutes, { prefix: `${API_PREFIX}/geography`, address: deps.address });
+  if (deps.catalog && deps.content) await app.register(catalogRoutes, { prefix: `${API_PREFIX}/catalog`, catalog: deps.catalog, content: deps.content });
   if (deps.accounts) {
     await app.register(accountPlugin, {
       accounts: deps.accounts,

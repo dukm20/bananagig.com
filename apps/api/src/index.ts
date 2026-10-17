@@ -17,6 +17,7 @@ import {
 } from '@bananagig/platform';
 import { ConfigurationService, ValkeyConfigCache } from '@bananagig/configuration';
 import { ContentService } from '@bananagig/content';
+import { CatalogService, createCatalogScopeReferenceValidator } from '@bananagig/catalog';
 import { AccountAreaService, AccountService, ConsentService, EmailVerificationService, PhoneVerificationService, SecurityService } from '@bananagig/accounts';
 import {
   AddressService,
@@ -29,6 +30,7 @@ import {
 import { KeycloakAdminClient, createTokenVerifier } from '@bananagig/identity';
 import { buildApp } from './app';
 import { createContentSmsRenderer, createPhoneCountryDirectory, createPhonePolicyProvider } from './modules/account/phone-wiring';
+import { composeScopeReferenceValidators, createMarketGate } from './modules/catalog/wiring';
 import { createConsentPolicyProvider, createDefaultLocaleResolver } from './modules/consent/wiring';
 import { createKeycloakSecurityIdentityProvider, createSecurityPolicyProvider, createUnavailableSecurityIdentityProvider } from './modules/security/wiring';
 import { createContentEmailRenderer, createVerificationLinkBuilder, createVerificationPolicyProvider } from './modules/account/email-wiring';
@@ -62,7 +64,17 @@ const geography = new GeographyService({
   cacheTtlSeconds: cfg.configuration.cacheTtlSeconds,
   allowTestKeys: cfg.env !== 'production', // devtest-* markets and the test country ZZ are DEV/TEST only
 });
-const scopeReferences = createGeographyScopeReferenceValidator(geography);
+// The catalogue taxonomy (CAT-001): platform-owned categories and service types. The public visibility of a market is geography's decision (a port, no package imports another).
+const catalog = new CatalogService({
+  database,
+  markets: createMarketGate(geography),
+  cache: new ValkeyConfigCache(valkey),
+  env: cfg.env,
+  cacheTtlSeconds: cfg.configuration.cacheTtlSeconds,
+  allowTestKeys: cfg.env !== 'production', // devtest_* codes are DEV/TEST only
+});
+// One scope reference validator out of its owners (DEBT-0024): geography owns COUNTRY and MARKET, the catalogue owns CATEGORY.
+const scopeReferences = composeScopeReferenceValidators([createGeographyScopeReferenceValidator(geography), createCatalogScopeReferenceValidator(catalog)]);
 
 const configuration = new ConfigurationService({
   database,
@@ -187,6 +199,7 @@ const app = await buildApp({
   security,
   consent,
   accountArea,
+  catalog,
   // Critical for serving requests: Postgres only. Valkey/NATS/OpenSearch/flagd outages must not take the API down.
   readiness: async () => ({ postgres: (await database.health()).ok ? 'up' : 'down' }),
   diagnostics: () => runDiagnostics(adapters),

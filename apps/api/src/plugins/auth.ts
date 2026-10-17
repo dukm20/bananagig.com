@@ -161,6 +161,25 @@ export function requireGeographyPermission(action: keyof typeof GEOGRAPHY_PERMIS
   };
 }
 
+/**
+ * TEMPORARY permission strategy for the catalogue taxonomy (CAT-001), the same model as configuration, content and geography (DEBT-0021): admin-console identity
+ * context plus client roles on `bananagig-admin`. `catalog-read` shows every status, the disabled availability rows and the management-only fields on the read routes
+ * and the prohibited-service list; `catalog-write` creates, updates and changes the status and the market availability, and implies read. No other registry's role
+ * grants either.
+ */
+export const CATALOG_PERMISSIONS = { read: 'catalog-read', write: 'catalog-write' } as const;
+/** `catalog-write` implies `catalog-read` (whoever may change the taxonomy may see what they changed); the reverse never holds. */
+export const hasCatalogPermission = (principal: Principal | undefined, action: keyof typeof CATALOG_PERMISSIONS): boolean =>
+  hasAdminClientRole(principal, CATALOG_PERMISSIONS[action]) || (action === 'read' && hasAdminClientRole(principal, CATALOG_PERMISSIONS.write));
+
+export function requireCatalogPermission(action: keyof typeof CATALOG_PERMISSIONS): preHandlerAsyncHookHandler {
+  const authenticate = requireAuthenticated();
+  return async function guard(request, reply) {
+    await authenticate.call(request.server, request, reply);
+    if (!hasCatalogPermission(request.principal, action)) throw forbidden();
+  };
+}
+
 /** Handler-level check for entries owned by LEGAL: the caller must also hold `content-legal` (AUTHORIZATION 403 otherwise). */
 export function assertContentLegal(principal: Principal | undefined): void {
   if (!hasAdminClientRole(principal, CONTENT_LEGAL_ROLE)) throw forbidden();

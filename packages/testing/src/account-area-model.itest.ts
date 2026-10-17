@@ -563,15 +563,18 @@ describe('A. schema shape: a registry of account sections and of the sections ea
             `SELECT (SELECT count(*)::int FROM identity.accounts) AS accounts, (SELECT count(*)::int FROM integration.outbox_events) AS outbox,
                     (SELECT count(*)::int FROM configuration.parameters) AS parameters, (SELECT count(*)::int FROM identity.account_audit_events) AS audit,
                     (SELECT count(*)::int FROM content.locales) AS locales, (SELECT count(*)::int FROM geography.time_zones) AS zones,
-                    (SELECT count(*)::int FROM content.entries WHERE key NOT LIKE 'account.area.%') AS other_entries,
-                    (SELECT count(*)::int FROM content.versions v JOIN content.entries e ON e.entry_id = v.entry_id WHERE e.key NOT LIKE 'account.area.%') AS other_versions`,
+                    (SELECT count(*)::int FROM content.entries WHERE key NOT LIKE 'account.area.%' AND key NOT LIKE 'catalog.%') AS other_entries,
+                    (SELECT count(*)::int FROM content.versions v JOIN content.entries e ON e.entry_id = v.entry_id WHERE e.key NOT LIKE 'account.area.%' AND e.key NOT LIKE 'catalog.%') AS other_versions`,
           )
         ).rows[0];
       expect(await countsOf(pool)).toEqual(await countsOf(beforePool));
       const total = (from: pg.Pool) =>
         from
           .query(
-            'SELECT (SELECT count(*)::int FROM content.entries) AS entries, (SELECT count(*)::int FROM content.versions) AS versions, (SELECT count(*)::int FROM content.audit_events) AS audit',
+            // the catalogue copy of 0015 (catalog.*) is a later migration: only what 0014 added may differ
+            `SELECT (SELECT count(*)::int FROM content.entries WHERE key NOT LIKE 'catalog.%') AS entries,
+                    (SELECT count(*)::int FROM content.versions v JOIN content.entries e ON e.entry_id = v.entry_id WHERE e.key NOT LIKE 'catalog.%') AS versions,
+                    (SELECT count(*)::int FROM content.audit_events a JOIN content.entries e ON e.entry_id = a.entry_id WHERE e.key NOT LIKE 'catalog.%') AS audit`,
           )
           .then((r) => r.rows[0] as { entries: number; versions: number; audit: number });
       const [x, y] = [await total(beforePool), await total(pool)];
@@ -663,20 +666,20 @@ async function catalog(from: pg.Pool) {
   return {
     columns: await rows(
       `SELECT table_schema, table_name, column_name, data_type, is_nullable, column_default, ordinal_position FROM information_schema.columns
-        WHERE table_schema NOT IN ('pg_catalog', 'information_schema') AND NOT (table_schema = 'identity' AND table_name IN ('account_sections', 'account_section_roles'))
+        WHERE table_schema NOT IN ('pg_catalog', 'information_schema', 'catalog') AND NOT (table_schema = 'identity' AND table_name IN ('account_sections', 'account_section_roles'))
         ORDER BY table_schema, table_name, ordinal_position`,
     ),
     constraints: await rows(
       `SELECT n.nspname, t.relname, c.conname, c.contype, pg_get_constraintdef(c.oid) AS def FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid JOIN pg_namespace n ON n.oid = t.relnamespace
-        WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') AND NOT ${isNew} ORDER BY n.nspname, t.relname, c.conname COLLATE "C"`,
+        WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'catalog') AND NOT ${isNew} ORDER BY n.nspname, t.relname, c.conname COLLATE "C"`,
     ),
     indexes: await rows(
-      `SELECT schemaname, tablename, indexname, indexdef FROM pg_indexes t2 WHERE schemaname NOT IN ('pg_catalog', 'information_schema') AND NOT (schemaname = 'identity' AND tablename IN ('account_sections', 'account_section_roles'))
+      `SELECT schemaname, tablename, indexname, indexdef FROM pg_indexes t2 WHERE schemaname NOT IN ('pg_catalog', 'information_schema', 'catalog') AND NOT (schemaname = 'identity' AND tablename IN ('account_sections', 'account_section_roles'))
         ORDER BY schemaname, tablename, indexname COLLATE "C"`,
     ),
     triggers: await rows(
       `SELECT n.nspname, t.relname, g.tgname, pg_get_triggerdef(g.oid) AS def FROM pg_trigger g JOIN pg_class t ON t.oid = g.tgrelid JOIN pg_namespace n ON n.oid = t.relnamespace
-        WHERE NOT g.tgisinternal AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND NOT ${isNew} AND g.tgname <> 'trg_roles__account_sections' ORDER BY n.nspname, t.relname, g.tgname COLLATE "C"`,
+        WHERE NOT g.tgisinternal AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'catalog') AND NOT ${isNew} AND g.tgname <> 'trg_roles__account_sections' ORDER BY n.nspname, t.relname, g.tgname COLLATE "C"`,
     ),
     functions: await rows(
       `SELECT n.nspname, p.proname, pg_get_function_identity_arguments(p.oid) AS args, md5(p.prosrc) AS src, p.provolatile, p.prosecdef FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
