@@ -17,6 +17,7 @@
     "@bananagig/database": "workspace:*",
     "@bananagig/observability": "workspace:*",
     "@bananagig/platform": "workspace:*",
+    "@bananagig/provider": "workspace:*",
     "nats": "^2.29.3",
     "pg-boss": "^12.36.0"
   },

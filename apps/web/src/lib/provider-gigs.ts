@@ -22,6 +22,13 @@ export const GIG_NOTICE_KEYS: Readonly<Record<string, string>> = {
   published: gigKey('notice.published'),
   draft_created: gigKey('notice.draft_created'),
   retired: gigKey('notice.retired'),
+  // CAT-004
+  variants_saved: gigKey('notice.variants_saved'),
+  add_ons_saved: gigKey('notice.add_ons_saved'),
+  photo_added: gigKey('notice.photo_added'),
+  photo_removed: gigKey('notice.photo_removed'),
+  photo_order_saved: gigKey('notice.photo_order_saved'),
+  photo_saved: gigKey('notice.photo_saved'),
 };
 
 export const one = (v: string | string[] | undefined): string | undefined => (typeof v === 'string' ? v : undefined);

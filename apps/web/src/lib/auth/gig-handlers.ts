@@ -14,6 +14,9 @@ import {
   CatalogCode,
   FieldKey,
   GIG_ERROR_CODES,
+  GIG_ISSUE_REASONS,
+  GIG_MEDIA_REFUSAL_REASONS,
+  GigIssueDto,
   gigWireCode,
   GIG_FIELD_VALUES_MAX,
   OptionCode,
@@ -28,7 +31,7 @@ import type { AuthDeps } from './types';
 
 /** The most a Gig form may declare (the editor form is well below this; 64 field values of 20000 characters at 4 bytes would be 5 MiB, which no real form reaches). */
 export const GIG_FORM_MAX_BYTES = 1_048_576;
-const NO_STORE = { 'cache-control': 'no-store' };
+export const NO_STORE = { 'cache-control': 'no-store' };
 /** `create` (from a template), `save` (the draft), `publish`, `retire`, `draft` (start the next draft). */
 export const GIG_ACTIONS = ['create', 'save', 'publish', 'retire', 'draft'] as const;
 export type GigAction = (typeof GIG_ACTIONS)[number];
@@ -39,26 +42,65 @@ export const GIG_NOTICES = ['created', 'saved', 'published', 'draft_created', 'r
 export const GIG_GENERIC_ERROR = 'API_ERROR';
 /** The API error codes (`GIG_<code>`, so a few read `GIG_NOT_FOUND`) a redirect may carry in `?error=`: a closed list; every other failure is `API_ERROR`. */
 export const GIG_API_ERROR_CODES: readonly string[] = GIG_ERROR_CODES.map((c) => gigWireCode(c));
+/** The targets an issue can be about (the contract's closed list). */
+export const GIG_ISSUE_TARGETS: readonly string[] = GigIssueDto.shape.target.options;
+/** What `?item=` may hold: a variant / add-on key or the id of a photo (identifiers the API minted; never provider text). */
+const ITEM_WORD = /^(?:[a-z][a-z0-9_]{1,39}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+/** The item identifier of a named problem if it is a safe one (a key or a photo id), else undefined. */
+export const itemWordOf = (v: string | undefined): string | undefined => (v !== undefined && ITEM_WORD.test(v) ? v : undefined);
+export const isGigIssueReason = (v: unknown): v is (typeof GIG_ISSUE_REASONS)[number] =>
+  typeof v === 'string' && (GIG_ISSUE_REASONS as readonly string[]).includes(v);
+/** `&issue=<REASON>&target=<target>[&item=<key or id>]` for a problem the person can fix, or ''. Every word is from a closed list or a safe identifier pattern; no typed text, ever. */
+export function issueQuery(reason: string, target: string, item?: string): string {
+  if (!isGigIssueReason(reason) || !GIG_ISSUE_TARGETS.includes(target)) return '';
+  return `&issue=${reason}&target=${target}${item !== undefined && ITEM_WORD.test(item) ? `&item=${item}` : ''}`;
+}
+export const isGigMediaRefusalReason = (v: unknown): v is (typeof GIG_MEDIA_REFUSAL_REASONS)[number] =>
+  typeof v === 'string' && (GIG_MEDIA_REFUSAL_REASONS as readonly string[]).includes(v);
+/**
+ * The problem the API named for a refused value or photo, as redirect words: for a 400 GIG_VALIDATION_FAILED the FIRST issue whose reason and target are on the closed lists
+ * (`&issue=..&target=..[&item=..]`); for a GIG_MEDIA_REFUSED the `details.reason` when it is one of the contract's closed refusal reasons (`&reason=..`). Anything else is dropped.
+ */
+export function issueQueryOf(err: unknown): string {
+  if (err instanceof ApiError && err.code === 'GIG_MEDIA_REFUSED') {
+    const reason = err.details?.reason;
+    return isGigMediaRefusalReason(reason) ? `&reason=${reason}` : '';
+  }
+  return validationIssueQueryOf(err);
+}
+/** The issue the API named for a refused value (400 VALIDATION_FAILED with `details.issues`): the FIRST one whose reason and target are on the closed lists, else ''. */
+function validationIssueQueryOf(err: unknown): string {
+  if (!(err instanceof ApiError) || err.code !== 'GIG_VALIDATION_FAILED') return '';
+  const issues = err.details?.issues;
+  if (!Array.isArray(issues)) return '';
+  for (const raw of issues) {
+    if (raw === null || typeof raw !== 'object') continue;
+    const i = raw as Record<string, unknown>;
+    const q = issueQuery(String(i.reason), String(i.target), typeof i.itemKey === 'string' ? i.itemKey : undefined);
+    if (q) return q;
+  }
+  return '';
+}
 /** The closed-list word of an error thrown by the API client, or the generic word. */
 export const gigErrorWordOf = (err: unknown): string => (err instanceof ApiError && GIG_API_ERROR_CODES.includes(err.code) ? err.code : GIG_GENERIC_ERROR);
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const REVISION = /^[1-9][0-9]{0,8}$/;
-const MINOR_UNITS = /^[0-9]{1,15}$/;
-const MINUTES = /^[0-9]{1,6}$/;
+export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const REVISION = /^[1-9][0-9]{0,8}$/;
+export const MINOR_UNITS = /^[0-9]{1,15}$/;
+export const MINUTES = /^[0-9]{1,6}$/;
 const INTEGER = /^-?[0-9]{1,15}$/;
 const DECIMAL = /^-?[0-9]{1,15}(\.[0-9]{1,6})?$/;
 /** `field.<kind>.<fieldKey>`: t text, n integer or duration, d decimal, b boolean, e option. The kind only says how to read the string; the API checks the value against the template. */
 const FIELD_NAME = /^field\.([tndbe])\.([a-z][a-z0-9_]*)$/;
 
-const location = (d: AuthDeps, path: string, query: string): Response =>
+export const location = (d: AuthDeps, path: string, query: string): Response =>
   new Response(null, { status: 303, headers: { location: `${d.cfg.webPublicUrl}${path}${query}`, ...NO_STORE } });
-const badRequest = (): Response => new Response('Bad request', { status: 400, headers: NO_STORE });
-const methodNotAllowed = (): Response => new Response('Method not allowed', { status: 405, headers: { allow: 'POST', ...NO_STORE } });
-const forbidden = (): Response => new Response('Forbidden', { status: 403, headers: NO_STORE });
+export const badRequest = (): Response => new Response('Bad request', { status: 400, headers: NO_STORE });
+export const methodNotAllowed = (): Response => new Response('Method not allowed', { status: 405, headers: { allow: 'POST', ...NO_STORE } });
+export const forbidden = (): Response => new Response('Forbidden', { status: 403, headers: NO_STORE });
 
 /** The body of the request as bytes, or undefined once it exceeds `max` (the stream is cancelled; nothing beyond the cap is buffered). */
-async function boundedBody(req: Request, max: number): Promise<Uint8Array | undefined> {
+export async function boundedBody(req: Request, max: number): Promise<Uint8Array | undefined> {
   if (req.body === null) return new Uint8Array(0);
   const reader = req.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -124,7 +166,7 @@ async function strictForm(
 }
 
 /** The text a person typed, or null when it is blank. */
-const textOrNull = (v: string | undefined): string | null => (v === undefined || v.trim() === '' ? null : v);
+export const textOrNull = (v: string | undefined): string | null => (v === undefined || v.trim() === '' ? null : v);
 
 type Parsed<T> = { ok: true; value: T } | { ok: false };
 const invalid: Parsed<never> = { ok: false };
@@ -257,6 +299,6 @@ export async function handleGigAction(req: Request, d: AuthDeps, action: GigActi
     if (isSessionRevokedError(err)) return endRevokedSession(session.id, session.record, d);
     const word = gigErrorWordOf(err);
     d.log?.('warn', 'gig action refused', { action, code: word, status: err instanceof ApiError ? err.status : undefined });
-    return location(d, action === 'create' ? '/provider/gigs' : pathOf(), `?error=${word}`);
+    return location(d, action === 'create' ? '/provider/gigs' : pathOf(), `?error=${word}${issueQueryOf(err)}`);
   }
 }

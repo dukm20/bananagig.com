@@ -695,9 +695,12 @@ describe('A. shape of the schema', () => {
     expect(fns.map((f) => f.proname).sort(byName)).toEqual([
       'assert_gig_has_version',
       'assert_gig_state_consistent',
+      'check_gig_version_children', // 0021 (CAT-004), asserted in gig-options-media-model.itest.ts
       'check_gig_version_content',
       'guard_gig_audit_events',
       'guard_gig_version_field_values',
+      'guard_gig_version_media', // 0021
+      'guard_gig_version_options', // 0021
       'guard_gig_versions',
       'guard_gigs',
     ]);
@@ -752,7 +755,8 @@ describe('B. seeds (configuration and content, through the real workflows)', () 
          JOIN configuration.parameter_values pv ON pv.parameter_id = p.parameter_id AND pv.scope_type = 'PLATFORM'
          JOIN configuration.value_versions vv ON vv.parameter_value_id = pv.parameter_value_id
          JOIN configuration.change_requests cr ON cr.value_version_id = vv.version_id
-        WHERE p.key LIKE 'provider.gig.%' ORDER BY p.key COLLATE "C"`,
+        WHERE p.key = ANY ($1) ORDER BY p.key COLLATE "C"`, // the five parameters of 0020; the fifteen of 0021 are asserted in gig-options-media-model.itest.ts
+      [SEEDED.map((s) => s[0])],
     );
     expect(rows.map((r) => r.key)).toEqual(SEEDED.map((s) => s[0]).sort(byName));
     for (const [key, value, min, max] of SEEDED) {
@@ -865,14 +869,17 @@ describe('B. seeds (configuration and content, through the real workflows)', () 
   const CONTRACT_KEYS = [
     ...GIG_STATUSES.map(gigStatusKey),
     ...GIG_VERSION_STATUSES.map(gigVersionStatusKey),
-    ...GIG_ERROR_CODES.map(gigErrorKey),
-    ...GIG_ISSUE_REASONS.map(gigIssueKey),
+    ...GIG_ERROR_CODES.slice(0, 15).map(gigErrorKey),
+    ...GIG_ISSUE_REASONS.slice(0, 24).map(gigIssueKey),
   ];
 
-  it('seeds one content entry per contract enumeration value (3 statuses, 4 version statuses, 15 errors, 24 issues) and per UI key of the shared list, and nothing else', async () => {
-    expect([GIG_STATUSES.length, GIG_VERSION_STATUSES.length, GIG_ERROR_CODES.length, GIG_ISSUE_REASONS.length]).toEqual([3, 4, 15, 24]);
+  // the copy of migration 0020 only (its content seed is tagged with the correlation id seed-0020); the 72 entries of 0021 are asserted in gig-options-media-model.itest.ts
+  const SEED_0020 = "e.entry_id IN (SELECT entry_id FROM content.audit_events WHERE correlation_id = 'seed-0020' AND action = 'ENTRY_CREATED')";
+  it('seeds one content entry per contract enumeration value of CAT-003 (3 statuses, 4 version statuses, the first 15 errors, the first 24 issues) and per UI key of the shared list, and nothing else', async () => {
+    // CAT-004 appended 4 error codes and 19 issue reasons to the contract (19 and 43 in all): they are the entries of migration 0021
+    expect([GIG_STATUSES.length, GIG_VERSION_STATUSES.length, GIG_ERROR_CODES.length, GIG_ISSUE_REASONS.length]).toEqual([3, 4, 19, 43]);
     expect(UI_KEYS).toHaveLength(61);
-    const keys = (await q<{ key: string }>("SELECT key FROM content.entries WHERE key LIKE 'provider.gig.%'")).map((r) => r.key);
+    const keys = (await q<{ key: string }>(`SELECT key FROM content.entries e WHERE key LIKE 'provider.gig.%' AND ${SEED_0020}`)).map((r) => r.key);
     expect([...keys].sort(byName)).toEqual([...CONTRACT_KEYS, ...UI_KEYS].sort(byName));
     expect(keys).toHaveLength(107);
   });
@@ -889,7 +896,7 @@ describe('B. seeds (configuration and content, through the real workflows)', () 
       n: number;
     }>(
       `SELECT e.key, e.content_type, e.is_active, v.locale, v.scope_type, v.status, v.body, count(*) OVER (PARTITION BY e.key)::int AS n
-         FROM content.entries e JOIN content.versions v ON v.entry_id = e.entry_id WHERE e.key LIKE 'provider.gig.%'`,
+         FROM content.entries e JOIN content.versions v ON v.entry_id = e.entry_id WHERE e.key LIKE 'provider.gig.%' AND ${SEED_0020}`,
     );
     expect(rows).toHaveLength(107);
     for (const r of rows) {

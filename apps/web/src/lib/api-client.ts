@@ -10,6 +10,8 @@ import {
   ProviderVerificationResponse,
   VerificationDocumentResponse,
   GigDetailResponse,
+  GigMediaPreviewResponse,
+  GigMediaUploadResponse,
   GigMenuResponse,
   GigTemplateChoicesResponse,
   GigVersionResponse,
@@ -59,11 +61,20 @@ import {
   type FinalizeDocumentRequest,
   type ProviderVerificationDto,
   type CreateGigRequest,
+  type DetachGigMediaRequest,
+  type FinalizeGigMediaRequest,
   type GigDetailDto,
+  type GigMediaPreviewDto,
+  type GigMediaUploadDto,
   type GigMenuDto,
   type GigTemplateChoicesDto,
   type GigVersionDto,
   type PublishGigRequest,
+  type ReorderGigMediaRequest,
+  type ReplaceGigAddOnsRequest,
+  type ReplaceGigVariantsRequest,
+  type RequestGigMediaUploadRequest,
+  type UpdateGigMediaRequest,
   type UpdateGigDraftRequest,
   type RequestDocumentUploadRequest,
   type SubmitVerificationRequest,
@@ -609,6 +620,82 @@ export function createApiClient(opts: ApiClientOptions) {
           { method: 'POST', headers: roleHeader(o) },
         )
       ).data;
+    },
+    // ---------------------------------------------------------------- variants, add-ons and photos of a Gig draft (CAT-004): same ownership rules, nothing here names an account, an object or a URL except the one-time upload target
+    /** PUT /api/v1/provider/gigs/:gigId/draft/variants: replaces the WHOLE list of variants of the draft (array order = display order) at the revision last read. */
+    async replaceGigVariants(gigId: string, input: ReplaceGigVariantsRequest, o: AccountCallOptions = {}): Promise<GigDetailDto> {
+      return (
+        await request(`/provider/gigs/${encodeURIComponent(gigId)}/draft/variants`, (j) => GigDetailResponse.parse(j).data, input, {
+          method: 'PUT',
+          headers: roleHeader(o),
+        })
+      ).data;
+    },
+    /** PUT /api/v1/provider/gigs/:gigId/draft/add-ons: replaces the WHOLE list of add-ons of the draft. */
+    async replaceGigAddOns(gigId: string, input: ReplaceGigAddOnsRequest, o: AccountCallOptions = {}): Promise<GigDetailDto> {
+      return (
+        await request(`/provider/gigs/${encodeURIComponent(gigId)}/draft/add-ons`, (j) => GigDetailResponse.parse(j).data, input, {
+          method: 'PUT',
+          headers: roleHeader(o),
+        })
+      ).data;
+    },
+    /** POST /api/v1/provider/gigs/:gigId/draft/media/uploads: authorizes ONE image upload (201). The answer carries a one-time PUT target: never store, log, render or redirect it. */
+    async requestGigMediaUpload(gigId: string, input: RequestGigMediaUploadRequest, o: AccountCallOptions = {}): Promise<GigMediaUploadDto> {
+      return (
+        await request(`/provider/gigs/${encodeURIComponent(gigId)}/draft/media/uploads`, (j) => GigMediaUploadResponse.parse(j).data, input, {
+          method: 'POST',
+          headers: roleHeader(o),
+        })
+      ).data;
+    },
+    /** POST /api/v1/provider/gigs/:gigId/draft/media/:mediaId/finalize: the server verifies the stored file, scans it and attaches it. Repeatable while the scan is unavailable. */
+    async finalizeGigMedia(gigId: string, mediaId: string, input: FinalizeGigMediaRequest, o: AccountCallOptions = {}): Promise<GigDetailDto> {
+      return (
+        await request(
+          `/provider/gigs/${encodeURIComponent(gigId)}/draft/media/${encodeURIComponent(mediaId)}/finalize`,
+          (j) => GigDetailResponse.parse(j).data,
+          input,
+          { method: 'POST', headers: roleHeader(o) },
+        )
+      ).data;
+    },
+    /** PUT /api/v1/provider/gigs/:gigId/draft/media/:mediaId: changes the alt text of a photo of the draft. */
+    async updateGigMedia(gigId: string, mediaId: string, input: UpdateGigMediaRequest, o: AccountCallOptions = {}): Promise<GigDetailDto> {
+      return (
+        await request(`/provider/gigs/${encodeURIComponent(gigId)}/draft/media/${encodeURIComponent(mediaId)}`, (j) => GigDetailResponse.parse(j).data, input, {
+          method: 'PUT',
+          headers: roleHeader(o),
+        })
+      ).data;
+    },
+    /** DELETE /api/v1/provider/gigs/:gigId/draft/media/:mediaId: removes the photo from the draft (the JSON body carries the revision). */
+    async detachGigMedia(gigId: string, mediaId: string, input: DetachGigMediaRequest, o: AccountCallOptions = {}): Promise<GigDetailDto> {
+      return (
+        await request(`/provider/gigs/${encodeURIComponent(gigId)}/draft/media/${encodeURIComponent(mediaId)}`, (j) => GigDetailResponse.parse(j).data, input, {
+          method: 'DELETE',
+          headers: roleHeader(o),
+        })
+      ).data;
+    },
+    /** PUT /api/v1/provider/gigs/:gigId/draft/media/order: sets the WHOLE order of the draft's photos (every media id exactly once). */
+    async reorderGigMedia(gigId: string, input: ReorderGigMediaRequest, o: AccountCallOptions = {}): Promise<GigDetailDto> {
+      return (
+        await request(`/provider/gigs/${encodeURIComponent(gigId)}/draft/media/order`, (j) => GigDetailResponse.parse(j).data, input, {
+          method: 'PUT',
+          headers: roleHeader(o),
+        })
+      ).data;
+    },
+    /**
+     * GET the short-lived one-object GET target of the owner's photo: the draft's (`version` omitted) or any version's. The URL is for ONE redirect and is never rendered or logged.
+     */
+    async getGigMediaPreview(gigId: string, mediaId: string, version?: number, o: AccountCallOptions = {}): Promise<GigMediaPreviewDto> {
+      const path =
+        version === undefined
+          ? `/provider/gigs/${encodeURIComponent(gigId)}/draft/media/${encodeURIComponent(mediaId)}/preview`
+          : `/provider/gigs/${encodeURIComponent(gigId)}/versions/${encodeURIComponent(String(version))}/media/${encodeURIComponent(mediaId)}/preview`;
+      return (await request(path, (j) => GigMediaPreviewResponse.parse(j).data, undefined, { headers: roleHeader(o) })).data;
     },
     // ---------------------------------------------------------------- the shared account area (ACC-001): every call acts as the session's active role (x-active-role)
     /** GET /api/v1/account/navigation: the enabled sections of the active role (registry data, in menu order), the switchable roles and the contact summary. */

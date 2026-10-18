@@ -4,17 +4,24 @@ import {
   gigStatusKey,
   gigVersionStatusKey,
   isGigFieldTypeSupported,
+  type GigChildSummaryDto,
   type GigConstraintsDto,
   type GigDto,
   type GigFieldDto,
   type GigFieldValueDto,
+  type GigIssueDto,
+  type GigOptionDto,
   type GigStatus,
   type GigTemplateLinkDto,
   type GigVersionDto,
   type GigVersionStatus,
   type GigVersionSummaryDto,
+  type ProviderGigMediaPolicy,
+  type ProviderGigOptionsPolicy,
   type ProviderGigPolicy,
 } from '@bananagig/contracts';
+import { optionKindValid, optionsIssues, optionsPermitted, type OptionStats } from './gig-options';
+import { mediaSummary, mediaIssues, toMediaDtos, type GigMediaRow } from './gig-media-model';
 import type { GigTemplateFieldFacts, GigTemplateStructure } from './gig-types';
 import { completenessIssues, durationAllowed, priceAllowed, sortedFields, type FieldValue, type GigContent } from './gig-validate';
 
@@ -221,6 +228,8 @@ export function fieldDtos(s: GigTemplateStructure): GigFieldDto[] {
       maxLength: f.maxLength,
       minNumber: f.minNumber,
       maxNumber: f.maxNumber,
+      minItems: f.minItems,
+      maxItems: f.maxItems,
       options: [...f.options]
         .sort((a, b) => a.displayOrder - b.displayOrder)
         .map((o) => ({
@@ -233,9 +242,28 @@ export function fieldDtos(s: GigTemplateStructure): GigFieldDto[] {
   });
 }
 
-export function constraintsDto(s: GigTemplateStructure, policy: ProviderGigPolicy, currency: string | null): GigConstraintsDto {
+/** The three policies a Gig view needs: the Gig content, the variants and add-ons, the photos (each fails closed on its own). */
+export interface GigPolicies {
+  gig: ProviderGigPolicy;
+  options: ProviderGigOptionsPolicy;
+  media: ProviderGigMediaPolicy;
+}
+/** The children of one version as loaded from the database. */
+export interface VersionChildren {
+  variants: readonly GigOptionDto[];
+  addOns: readonly GigOptionDto[];
+  media: readonly GigMediaRow[];
+}
+export const NO_CHILDREN: VersionChildren = { variants: [], addOns: [], media: [] };
+
+/** A template version offers photos when it has a MEDIA field that does not prohibit them and the platform allows photos at all. */
+const mediaPermitted = (s: GigTemplateStructure, media: ProviderGigMediaPolicy): boolean =>
+  media.maxItems > 0 && s.fields.some((f) => f.fieldType === 'MEDIA' && f.maxItems !== 0);
+
+export function constraintsDto(s: GigTemplateStructure, policies: GigPolicies, currency: string | null): GigConstraintsDto {
   const price = priceAllowed(s);
   const duration = durationAllowed(s);
+  const { gig: policy, options, media } = policies;
   return {
     title: { maxLength: policy.titleMaxLength },
     shortPitch: { maxLength: policy.shortPitchMaxLength },
@@ -248,6 +276,134 @@ export function constraintsDto(s: GigTemplateStructure, policy: ProviderGigPolic
       maxMinutes: s.duration.maxMinutes,
       suggestedMinutes: s.duration.suggestedMinutes,
     },
+    variants: {
+      permitted: optionsPermitted('variants', s),
+      maxCount: options.variantMaxCount,
+      nameMaxLength: options.nameMaxLength,
+      descriptionMaxLength: options.descriptionMaxLength,
+    },
+    addOns: {
+      permitted: optionsPermitted('addOns', s),
+      maxCount: options.addOnMaxCount,
+      nameMaxLength: options.nameMaxLength,
+      descriptionMaxLength: options.descriptionMaxLength,
+    },
+    media: {
+      permitted: mediaPermitted(s, media),
+      maxItems: media.maxItems,
+      maxFileSizeBytes: media.maxFileSizeBytes,
+      allowedMimeTypes: [...media.allowedMimeTypes],
+      minEdgePixels: media.minEdgePixels,
+      maxEdgePixels: media.maxEdgePixels,
+      altTextMaxLength: media.altTextMaxLength,
+    },
+  };
+}
+
+/** Everything that stands between a draft and PUBLISHED: the Gig's own content, the variants and add-ons, and the photos. Identifiers only. */
+export function publishIssues(
+  content: GigContent,
+  structure: GigTemplateStructure,
+  policies: GigPolicies,
+  currency: string | null,
+  children: VersionChildren,
+): GigIssueDto[] {
+  return [
+    ...completenessIssues(content, structure, policies.gig, currency),
+    ...optionsIssues(children.variants, children.addOns, structure, policies.options, policies.gig),
+    ...mediaIssues(children.media, structure, policies.media),
+  ];
+}
+
+/** Structural facts about the children of a version (counts and the validity of each part). */
+export function childSummary(structure: GigTemplateStructure, policies: GigPolicies, children: VersionChildren): GigChildSummaryDto {
+  const option = optionsIssues(children.variants, children.addOns, structure, policies.options, policies.gig);
+  const media = mediaSummary(children.media, structure, policies.media);
+  return {
+    variantCount: children.variants.length,
+    addOnCount: children.addOns.length,
+    mediaCount: media.mediaCount,
+    variantsValid: !option.some((i) => i.target === 'variants'),
+    addOnsValid: !option.some((i) => i.target === 'addOns'),
+    mediaRequirementSatisfied: media.mediaRequirementSatisfied,
+  };
+}
+
+/** The same facts for the GigMenu, from SQL aggregates of the options (counts and the longest texts) instead of the rows. */
+export function menuChildSummary(
+  structure: GigTemplateStructure,
+  policies: GigPolicies,
+  stats: OptionStats | undefined,
+  media: readonly GigMediaRow[],
+): GigChildSummaryDto {
+  const none = { count: 0, maxNameLength: 0, maxDescriptionLength: 0 };
+  const variants = stats?.variants ?? none;
+  const addOns = stats?.addOns ?? none;
+  const m = mediaSummary(media, structure, policies.media);
+  return {
+    variantCount: variants.count,
+    addOnCount: addOns.count,
+    mediaCount: m.mediaCount,
+    variantsValid: optionKindValid('variants', variants, structure, policies.options),
+    addOnsValid: optionKindValid('addOns', addOns, structure, policies.options),
+    mediaRequirementSatisfied: m.mediaRequirementSatisfied,
+  };
+}
+
+/**
+ * A structure carrying ONLY what the options and media rules read (the permissions and the MEDIA fields), for the GigMenu, which must not call the template port (one batch read
+ * of the bound versions instead). Never given to anything that reads other template facts.
+ */
+export function partialStructure(r: {
+  fixedWithVariants: boolean;
+  addOnsAllowed: boolean;
+  mediaFields: readonly {
+    gigTemplateFieldId: string;
+    fieldKey: string;
+    behavior: GigTemplateFieldFacts['behavior'];
+    minItems: number | null;
+    maxItems: number | null;
+  }[];
+}): GigTemplateStructure {
+  return {
+    gigTemplateId: '',
+    gigTemplateCode: '',
+    templateStatus: 'ACTIVE',
+    serviceTypeCode: '',
+    serviceTypeStatus: 'ACTIVE',
+    categoryCode: '',
+    nameContentKey: '',
+    descriptionContentKey: null,
+    instructionsContentKey: null,
+    gigTemplateVersionId: '',
+    versionNumber: 0,
+    versionStatus: 'ACTIVE',
+    duration: { minMinutes: null, maxMinutes: null, suggestedMinutes: null },
+    pricing: { fixed: true, fixedWithVariants: r.fixedWithVariants },
+    addOnsAllowed: r.addOnsAllowed,
+    fields: r.mediaFields.map((f, i) => ({
+      gigTemplateFieldId: f.gigTemplateFieldId,
+      fieldKey: f.fieldKey,
+      fieldType: 'MEDIA',
+      section: 'DETAILS',
+      behavior: f.behavior,
+      customerVisible: true,
+      displayOrder: i + 1,
+      labelContentKey: '',
+      helpContentKey: null,
+      defaultContentKey: null,
+      defaultNumber: null,
+      defaultBoolean: null,
+      defaultOption: null,
+      minLength: null,
+      maxLength: null,
+      minNumber: null,
+      maxNumber: null,
+      minItems: f.minItems,
+      maxItems: f.maxItems,
+      options: [],
+    })),
+    requirements: [],
   };
 }
 
@@ -255,13 +411,14 @@ export function versionDto(
   v: VersionRow,
   structure: GigTemplateStructure,
   values: ReadonlyMap<string, FieldValue>,
-  policy: ProviderGigPolicy,
+  policies: GigPolicies,
   currency: string | null,
+  children: VersionChildren = NO_CHILDREN,
 ): GigVersionDto {
   const fieldValues: GigFieldValueDto[] = sortedFields(structure)
     .filter((f) => values.has(f.fieldKey))
     .map((f) => ({ fieldKey: f.fieldKey, value: values.get(f.fieldKey)! }));
-  const issues = v.status === 'DRAFT' ? completenessIssues(contentOf(v, values), structure, policy, currency) : [];
+  const issues = v.status === 'DRAFT' ? publishIssues(contentOf(v, values), structure, policies, currency, children) : [];
   return {
     ...summaryDto(v),
     shortPitch: v.shortPitch,
@@ -271,7 +428,11 @@ export function versionDto(
     fieldValues,
     template: linkDto(structure),
     fields: fieldDtos(structure),
-    constraints: constraintsDto(structure, policy, currency),
+    constraints: constraintsDto(structure, policies, currency),
+    variants: [...children.variants],
+    addOns: [...children.addOns],
+    media: toMediaDtos(children.media),
+    children: childSummary(structure, policies, children),
     publishable: v.status === 'DRAFT' ? issues.length === 0 : null,
     issues,
   };

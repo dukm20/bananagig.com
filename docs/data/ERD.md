@@ -1159,3 +1159,83 @@ erDiagram
 **One typed value per field.** `PROVIDER_GIG_VERSION_FIELD_VALUES` has the composite key `(gig_version_id, gig_template_field_id)` and exactly one typed column populated. The ENUM option is a composite foreign key `(gig_template_field_id, option_code)` to `catalog.gig_template_field_options` (MATCH SIMPLE: NULL for every other type), so an option of another field cannot be stored. The guard (not a foreign key) requires the field to belong to the version's bound template version and to be provider-editable.
 
 **Audit.** `PROVIDER_GIG_AUDIT_EVENTS` repeats `account_id` (the owner at the time of the event) so a trail can be read per account; a guard checks that it agrees with the Gig and that the version belongs to the Gig. The diagram shows the three subject keys as separate relationships.
+
+## Variants, add-ons and media of a Gig version (CAT-004)
+
+The `provider` schema gains the children of a Gig VERSION: variants and add-ons (delta-priced on the CAT-003 base price) and photos, modelled as an account-owned ASSET plus an ATTACHMENT to a version and to a MEDIA field of the exact bound template version. The template permission for add-ons is the new column `catalog.gig_template_versions.pricing_add_ons`.
+
+```mermaid
+erDiagram
+  OM_ACCOUNTS {
+    uuid account_id PK "same table as identity.accounts"
+  }
+  OM_TEMPLATE_VERSIONS {
+    uuid gig_template_version_id PK "same table as catalog.gig_template_versions"
+    boolean pricing_add_ons "CAT-004 permission for add-ons, frozen after DRAFT"
+  }
+  OM_TEMPLATE_FIELDS {
+    uuid gig_template_field_id PK "same table as catalog.gig_template_fields (MEDIA fields carry min_items, max_items)"
+  }
+  PROVIDER_GIG_VERSIONS {
+    uuid gig_version_id PK "same table as provider.gig_versions (CAT-003)"
+  }
+  PROVIDER_GIG_VERSION_VARIANTS {
+    uuid variant_id PK
+    uuid gig_version_id FK "restrict, DRAFT only"
+    text item_key UK "stable key, unique per version"
+    text name
+    text description
+    bigint price_delta_minor "0 to 10^12, added to the base"
+    integer duration_delta_minutes "0 to 100000"
+    integer display_order UK "unique per version"
+  }
+  PROVIDER_GIG_VERSION_ADD_ONS {
+    uuid add_on_id PK
+    uuid gig_version_id FK "restrict, DRAFT only"
+    text item_key UK
+    text name
+    text description
+    bigint price_delta_minor
+    integer duration_delta_minutes
+    integer display_order UK
+  }
+  PROVIDER_MEDIA_ASSETS {
+    uuid media_asset_id PK
+    uuid account_id FK "owner, restrict, immutable"
+    text status "UPLOAD_PENDING, READY, ABANDONED, DELETED"
+    text object_key UK "secret of the store, always provider/gig-media/(id)"
+    text mime_type "jpeg, png, webp"
+    bigint size_bytes
+    char64 sha256 "set at READY"
+    integer width "header"
+    integer height "header"
+    text scan_status "PENDING, CLEAN, INFECTED, ERROR"
+    timestamptz upload_expires_at
+    timestamptz ready_at
+    timestamptz objects_removed_at "0022 one-way marker, terminal assets"
+    timestamptz upload_key_removed_at "0022 one-way marker"
+  }
+  PROVIDER_GIG_VERSION_MEDIA {
+    uuid gig_version_media_id PK "the API media id"
+    uuid gig_version_id FK "restrict, DRAFT only"
+    uuid media_asset_id FK "restrict, UK with version"
+    uuid gig_template_field_id FK "the MEDIA field of the bound template version"
+    integer display_order UK "unique per version, deferrable"
+    text alt_text
+  }
+  OM_TEMPLATE_VERSIONS ||--o{ PROVIDER_GIG_VERSIONS : "bound exactly (CAT-003)"
+  PROVIDER_GIG_VERSIONS ||--o{ PROVIDER_GIG_VERSION_VARIANTS : "owns (FIXED_WITH_VARIANTS)"
+  PROVIDER_GIG_VERSIONS ||--o{ PROVIDER_GIG_VERSION_ADD_ONS : "owns (pricing_add_ons)"
+  PROVIDER_GIG_VERSIONS ||--o{ PROVIDER_GIG_VERSION_MEDIA : "owns"
+  PROVIDER_MEDIA_ASSETS ||--o{ PROVIDER_GIG_VERSION_MEDIA : "attached to many versions, no binary copy"
+  OM_TEMPLATE_FIELDS ||--o{ PROVIDER_GIG_VERSION_MEDIA : "satisfied by"
+  OM_ACCOUNTS ||--o{ PROVIDER_MEDIA_ASSETS : "owns the bytes"
+```
+
+**Version ownership.** All three child kinds hang off `gig_versions`; none hangs off the Gig identity. A published version keeps its children; the next draft receives copies (same keys, same order) and re-attachments of the same READY assets.
+
+**Asset versus attachment.** The asset is a fact about a FILE (owner, bytes, hash, dimensions, scan verdict, lifecycle); the attachment is a fact about a VERSION (field, order, alt text). The asset is attached only to Gigs of its owner, and an asset referenced by any attachment is never abandoned or deleted.
+
+**Consumer rule.** A booking, a BananaDrop or a bundle references a variant or an add-on by `(gig_version_id, item_key)`, never by `variant_id` or `add_on_id` (row ids are regenerated in every version; the key is stable). The base price is the price with no variant selected; whether a booking must pick one is a booking rule.
+
+**No currency on a child.** A child inherits the currency of its parent version (the market currency), so a currency cannot disagree with the price it is added to. The template rule for photos is read from the exact bound template version through the field and never copied.

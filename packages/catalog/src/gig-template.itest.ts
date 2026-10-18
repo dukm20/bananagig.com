@@ -449,7 +449,7 @@ const vStatuses = async (c: string) => (await versionRows(c)).map((v) => [v.vers
 /** The structure of a version, as one comparable value (rows without surrogate ids and timestamps). */
 const structureOf = async (c: string, n: number) => ({
   version: await one<Row>(
-    `SELECT min_duration_minutes, max_duration_minutes, suggested_duration_minutes, pricing_fixed, pricing_fixed_with_variants, pricing_bundle_eligible, pricing_drop_eligible,
+    `SELECT min_duration_minutes, max_duration_minutes, suggested_duration_minutes, pricing_fixed, pricing_fixed_with_variants, pricing_bundle_eligible, pricing_drop_eligible, pricing_add_ons,
             area_radius, area_postal_codes, area_polygon FROM catalog.gig_template_versions v JOIN catalog.gig_templates t USING (gig_template_id) WHERE t.code = $1 AND v.version_number = $2`,
     [c, n],
   ),
@@ -1075,7 +1075,15 @@ describe('createGigTemplateVersion', () => {
       publishedAt: null,
       closedAt: null,
     });
-    expect(await versionRow(c, 1)).toMatchObject({ status: 'DRAFT', revision: 1, published_at: null, closed_at: null, pricing_fixed: true, area_radius: true });
+    expect(await versionRow(c, 1)).toMatchObject({
+      status: 'DRAFT',
+      revision: 1,
+      published_at: null,
+      closed_at: null,
+      pricing_fixed: true,
+      pricing_add_ons: false,
+      area_radius: true,
+    });
     expect([(await fieldRows(c, 1)).length, (await optionRows(c, 1)).length, (await reqRows(c, 1)).length]).toEqual([0, 0, 0]);
     expect(await tplAudit(c)).toHaveLength(2);
     expect((await tplAudit(c)).at(-1)).toEqual({
@@ -1184,6 +1192,39 @@ describe('createGigTemplateVersion', () => {
 });
 
 describe('replaceGigTemplateDraft', () => {
+  it('ADD_ONS (CAT-004) is the pricing_add_ons permission: stored, reported by the management and public views, audited as a pricing change, copied into the next draft, and false for every version that did not ask for it', async () => {
+    const env = await mkEnv();
+    const c = await mkTemplate(env.st, { activate: true });
+    await tplAvail(env.market, c, true, 'auto');
+    await copyFor(c);
+    await createDraft(c);
+    expect(await versionRow(c, 1)).toMatchObject({ pricing_add_ons: false });
+    const view = await replaceDraft(c, 1, def(1, { pricingModels: ['FIXED', 'ADD_ONS'] }));
+    expect(view.pricingModels).toEqual(['FIXED', 'ADD_ONS']);
+    expect(await versionRow(c, 1)).toMatchObject({ pricing_fixed: true, pricing_bundle_eligible: false, pricing_add_ons: true });
+    expect((await tplAudit(c)).at(-1)).toMatchObject({ changes: { pricingModels: [['FIXED'], ['FIXED', 'ADD_ONS']] } });
+    // add-ons alone are not a base price
+    await expectError(replaceDraft(c, 1, def(2, { pricingModels: ['ADD_ONS'] })), 'VALIDATION_FAILED');
+    expect(await versionRow(c, 1)).toMatchObject({ revision: 2, pricing_add_ons: true });
+    // an identical replace is a no-op; dropping the permission is a change
+    const world = await worldHash();
+    await replaceDraft(c, 1, def(2, { pricingModels: ['FIXED', 'ADD_ONS'] }));
+    expect(await worldHash()).toBe(world);
+    expect((await publish(c, 1, 2)).pricingModels).toEqual(['FIXED', 'ADD_ONS']);
+    expect((await bare.getGigTemplate(c)).activeVersion!.pricingModels).toEqual(['FIXED', 'ADD_ONS']);
+    expect((await bare.getGigTemplateForMarket(env.market, c)).template.activeVersion!.pricingModels).toEqual(['FIXED', 'ADD_ONS']);
+    expect((await bare.listGigTemplatesForMarket(env.market)).templates.find((t) => t.code === c)!.activeVersion!.pricingModels).toEqual(['FIXED', 'ADD_ONS']);
+    const byId = await bare.getGigTemplateVersionById((await versionRow(c, 1)).gig_template_version_id as string);
+    expect(byId.version.pricingModels).toEqual(['FIXED', 'ADD_ONS']);
+    // the next draft copies the permission; v1 stays as published
+    expect((await createDraft(c, 1)).pricingModels).toEqual(['FIXED', 'ADD_ONS']);
+    expect(await versionRow(c, 2)).toMatchObject({ pricing_add_ons: true });
+    const v2 = await replaceDraft(c, 2, def(1, { pricingModels: ['FIXED'] }));
+    expect(v2.pricingModels).toEqual(['FIXED']);
+    expect(await versionRow(c, 2)).toMatchObject({ pricing_add_ons: false });
+    expect(await versionRow(c, 1)).toMatchObject({ pricing_add_ons: true });
+  });
+
   it('writes the whole definition: version columns, fields in order, options in order, requirements, the derived content keys; revision 2; ONE audit row with the diff in identifiers; no event, no bump', async () => {
     const { st } = await mkServiceTypeActive();
     const c = await mkTemplate(st);
@@ -1205,6 +1246,7 @@ describe('replaceGigTemplateDraft', () => {
       pricing_fixed_with_variants: false,
       pricing_bundle_eligible: true,
       pricing_drop_eligible: false,
+      pricing_add_ons: false,
       area_radius: true,
       area_postal_codes: true,
       area_polygon: false,
@@ -4543,6 +4585,7 @@ describe('shape and privacy', () => {
         'pricing_fixed_with_variants',
         'pricing_bundle_eligible',
         'pricing_drop_eligible',
+        'pricing_add_ons',
         'area_radius',
         'area_postal_codes',
         'area_polygon',

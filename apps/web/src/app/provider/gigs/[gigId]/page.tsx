@@ -1,13 +1,16 @@
 import type { Metadata } from 'next';
 import { headers } from 'next/headers';
 import { notFound } from 'next/navigation';
-import { gigVersionStatusKey, type GigDetailDto, type GigIssueDto } from '@bananagig/contracts';
+import { gigIssueKey, gigMediaRefusedKey, gigVersionStatusKey, type GigDetailDto, type GigIssueDto } from '@bananagig/contracts';
+import { GIG_ISSUE_TARGETS, isGigIssueReason, isGigMediaRefusalReason, itemWordOf } from '../../../../lib/auth/gig-handlers';
 import { getSession } from '../../../../lib/auth/handlers';
 import { authDeps } from '../../../../lib/auth/runtime';
 import { BOOTSTRAP_COPY, getContentMany, renderContent } from '../../../../lib/content';
 import { GENERIC_GIG_ERROR_KEY, GIG_ERROR_KEYS, GIG_NOTICE_KEYS, UUID, day, gigCopy, gigKey, loadGig, one } from '../../../../lib/provider-gigs';
 import { serverApi } from '../../../../lib/server';
 import { DraftEditor, editorCopyKeys } from '../_components/draft-editor';
+import { MediaEditor, mediaCopyKeys } from '../_components/media-editor';
+import { OptionsEditor, optionsCopyKeys } from '../_components/options-editor';
 import { VersionView, versionCopyKeys } from '../_components/version-view';
 
 // One Gig of the provider (CAT-003): the published version, the editable draft, what stands in the way of publishing, the history, "next draft" and "retire". A deliberately
@@ -21,6 +24,12 @@ const k = gigKey;
 interface SearchParams {
   notice?: string | string[];
   error?: string | string[];
+  /** A named problem of a refused value (CAT-004): a closed reason, a closed target and a safe item identifier; shown only with GIG_VALIDATION_FAILED. */
+  issue?: string | string[];
+  target?: string | string[];
+  item?: string | string[];
+  /** A closed refusal reason of a photo (GIG_MEDIA_REFUSED only). */
+  reason?: string | string[];
 }
 
 /** Where an issue's link goes: the control it is about. */
@@ -31,6 +40,9 @@ const anchorOf = (i: GigIssueDto): string | undefined => {
   if (t === 'description') return '#gig-description';
   if (t === 'price') return '#gig-price';
   if (t === 'duration') return '#gig-duration';
+  if (t === 'variants') return '#gig-variants';
+  if (t === 'addOns') return '#gig-add-ons';
+  if (t === 'media') return i.fieldKey ? `#gig-photos-${i.fieldKey}` : '#gig-photos';
   return t === 'field' && i.fieldKey ? `#gig-field-${i.fieldKey}` : undefined;
 };
 
@@ -72,6 +84,13 @@ export default async function ProviderGigPage({ params, searchParams }: { params
     detail !== null &&
     (noticeWord === 'created' ||
       ((noticeWord === 'saved' || noticeWord === 'draft_created') && draft !== null) ||
+      ((noticeWord === 'variants_saved' ||
+        noticeWord === 'add_ons_saved' ||
+        noticeWord === 'photo_removed' ||
+        noticeWord === 'photo_order_saved' ||
+        noticeWord === 'photo_saved') &&
+        draft !== null) ||
+      (noticeWord === 'photo_added' && draft !== null && draft.media.length > 0) ||
       (noticeWord === 'published' && current !== null) ||
       (noticeWord === 'retired' && retired))
       ? GIG_NOTICE_KEYS[noticeWord]
@@ -79,12 +98,24 @@ export default async function ProviderGigPage({ params, searchParams }: { params
   const errorWord = one(query.error);
   const errorKey = errorWord !== undefined ? (Object.hasOwn(GIG_ERROR_KEYS, errorWord) ? GIG_ERROR_KEYS[errorWord] : GENERIC_GIG_ERROR_KEY) : undefined;
   const everythingDown = !result.ok;
+  // the problem the handler named: all three words are checked against closed lists or a strict identifier pattern, and the message is registry copy
+  const issueWord = one(query.issue);
+  const targetWord = one(query.target);
+  const flagged =
+    errorWord === 'GIG_VALIDATION_FAILED' && isGigIssueReason(issueWord) && targetWord !== undefined && GIG_ISSUE_TARGETS.includes(targetWord)
+      ? { reason: issueWord, target: targetWord, item: itemWordOf(one(query.item)) }
+      : undefined;
+  // the specific reason a photo was refused: a closed word of the contract's list, shown through its registry key (the generic refused message when the registry has none)
+  const reasonWord = one(query.reason);
+  const refusalKey = errorWord === 'GIG_MEDIA_REFUSED' && isGigMediaRefusalReason(reasonWord) ? gigMediaRefusedKey(reasonWord) : undefined;
 
   const text = await gigCopy([
     k('editor.heading'),
     k('editor.back'),
     ...(noticeKey ? [noticeKey] : []),
     ...(errorKey ? [errorKey] : everythingDown ? [GENERIC_GIG_ERROR_KEY] : []),
+    ...(flagged ? [gigIssueKey(flagged.reason)] : []),
+    ...(refusalKey ? [refusalKey] : []),
     ...(detail
       ? [
           detail.gig.nameContentKey,
@@ -95,7 +126,15 @@ export default async function ProviderGigPage({ params, searchParams }: { params
           ...detail.versions.map((v) => gigVersionStatusKey(v.status)),
           ...(current ? [k('editor.current_heading'), ...versionCopyKeys(current)] : []),
           ...(draft
-            ? [k('editor.draft_heading'), k('editor.issues_heading'), k('editor.publish'), ...editorCopyKeys(draft), ...draft.issues.map((i) => i.messageKey)]
+            ? [
+                k('editor.draft_heading'),
+                k('editor.issues_heading'),
+                k('editor.publish'),
+                ...editorCopyKeys(draft),
+                ...optionsCopyKeys(),
+                ...mediaCopyKeys(),
+                ...draft.issues.map((i) => i.messageKey),
+              ]
             : []),
           ...(canStartDraft ? [k('editor.new_draft')] : []),
           ...(!retired ? [k('editor.retire'), k('editor.retire_note')] : [k('editor.not_editable')]),
@@ -103,8 +142,19 @@ export default async function ProviderGigPage({ params, searchParams }: { params
       : []),
   ]);
 
-  const failure = errorKey ? text(errorKey) : everythingDown ? text(GENERIC_GIG_ERROR_KEY) : null;
+  const failureText = (refusalKey ? text(refusalKey) : null) ?? (errorKey ? text(errorKey) : everythingDown ? text(GENERIC_GIG_ERROR_KEY) : null);
+  const issueText = flagged ? text(gigIssueKey(flagged.reason)) : null;
+  // the alert says what failed and, when the problem is named, which rule was broken (both registry copy)
+  const failure = failureText && issueText ? `${failureText} ${issueText}` : (failureText ?? issueText);
+  const alert = failure && flagged ? { id: 'gig-error', target: flagged.target, item: flagged.item } : undefined;
   const notice = noticeKey ? text(noticeKey) : null;
+  // a visible copy of the notice or the alert inside the section it is about (the redirect lands on that section, so the message at the top of the page may be out of sight);
+  // it is hidden from assistive technology because the live regions above already announce it
+  const sectionOf = (word: string | undefined): string | undefined =>
+    word === 'variants_saved' ? 'variants' : word === 'add_ons_saved' ? 'addOns' : word?.startsWith('photo_') ? 'media' : undefined;
+  const echoSection = noticeKey ? sectionOf(noticeWord) : flagged ? flagged.target : errorWord?.startsWith('GIG_MEDIA_') ? 'media' : undefined;
+  const echoText = noticeKey ? notice : failure;
+  const echoFor = (section: string): string | undefined => (echoSection === section && echoText ? String(echoText) : undefined);
   const title = text(k('editor.heading'));
   const errorId = 'gig-error';
   const issues = draft ? draft.issues.map((issue, n) => ({ issue, n, message: text(issue.messageKey) })).filter((x) => x.message) : [];
@@ -151,6 +201,9 @@ export default async function ProviderGigPage({ params, searchParams }: { params
                 </section>
               ) : null}
               <DraftEditor gigId={gigId} draft={draft} text={text} formDescribedBy={describedBy} />
+              <OptionsEditor gigId={gigId} draft={draft} kind="variants" text={text} alert={alert} echo={echoFor('variants')} />
+              <OptionsEditor gigId={gigId} draft={draft} kind="addOns" text={text} alert={alert} echo={echoFor('addOns')} />
+              <MediaEditor gigId={gigId} draft={draft} text={text} alert={alert} echo={echoFor('media')} />
               {draft.publishable === true && text(k('editor.publish')) ? (
                 <form method="post" action="/auth/provider/gigs/publish" {...formDescribedBy}>
                   <input type="hidden" name="gigId" value={gigId} />
@@ -172,7 +225,7 @@ export default async function ProviderGigPage({ params, searchParams }: { params
           {current ? (
             <section aria-labelledby="gig-current">
               {text(k('editor.current_heading')) ? <h2 id="gig-current">{text(k('editor.current_heading'))}</h2> : null}
-              <VersionView version={current} text={text} />
+              <VersionView version={current} text={text} gigId={gigId} />
             </section>
           ) : null}
 

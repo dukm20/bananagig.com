@@ -11,6 +11,8 @@ import type { Database } from '@bananagig/database';
 import {
   GigError,
   ProviderGigService,
+  DEFAULT_GIG_MEDIA_POLICY,
+  DEFAULT_GIG_OPTIONS_POLICY,
   StaticGigPolicyProvider,
   gigPolicyKeys,
   gigsPrerequisite,
@@ -25,7 +27,7 @@ import {
   type GigTemplateStructure,
 } from './index';
 import { checkFieldValue, completenessIssues, parseDecimal, validateDraftInput, type GigContent } from './gig-validate';
-import { constraintsDto, fieldDtos, versionDto, type VersionRow } from './gig-view';
+import { constraintsDto, fieldDtos, versionDto, type GigPolicies, type VersionRow } from './gig-view';
 
 // every log call of the code under test is captured here (and nothing is printed)
 const logSink = vi.hoisted(() => ({ lines: [] as string[] }));
@@ -66,6 +68,7 @@ const surface = (e: GigError): string => JSON.stringify({ name: e.name, code: e.
 
 // ====================================================================== builders
 const POLICY: ProviderGigPolicy = { maxActive: 5, maxDrafts: 3, titleMaxLength: 20, shortPitchMaxLength: 40, descriptionMaxLength: 100 };
+const POLICIES: GigPolicies = { gig: POLICY, options: DEFAULT_GIG_OPTIONS_POLICY, media: DEFAULT_GIG_MEDIA_POLICY };
 const field = (fieldKey: string, over: Partial<GigTemplateFieldFacts> = {}): GigTemplateFieldFacts => ({
   gigTemplateFieldId: `field-${fieldKey}`,
   fieldKey,
@@ -84,6 +87,8 @@ const field = (fieldKey: string, over: Partial<GigTemplateFieldFacts> = {}): Gig
   maxLength: null,
   minNumber: null,
   maxNumber: null,
+  minItems: null,
+  maxItems: null,
   options: [],
   ...over,
 });
@@ -102,6 +107,7 @@ const structure = (over: Partial<GigTemplateStructure> = {}): GigTemplateStructu
   versionStatus: 'ACTIVE',
   duration: { minMinutes: 60, maxMinutes: 240, suggestedMinutes: 120 },
   pricing: { fixed: true, fixedWithVariants: false },
+  addOnsAllowed: false,
   fields: [],
   requirements: [],
   ...over,
@@ -229,8 +235,11 @@ describe('checkFieldValue: every supported type', () => {
     expect(checkFieldValue(open, 1.5)).toEqual({ ok: false, reason: 'FIELD_VALUE_INVALID' });
   });
 
-  it.each(['MONEY', 'MEDIA', 'EQUIPMENT_REFERENCE', 'SKILL_REFERENCE'])('%s is never accepted by the value check', (fieldType) => {
+  it.each(['MONEY', 'EQUIPMENT_REFERENCE', 'SKILL_REFERENCE'])('%s is never accepted by the value check', (fieldType) => {
     expect(checkFieldValue(field('x', { fieldType }), 'anything')).toEqual({ ok: false, reason: 'FIELD_TYPE_NOT_SUPPORTED' });
+  });
+  it('MEDIA is satisfied by photos, never by a value', () => {
+    expect(checkFieldValue(field('x', { fieldType: 'MEDIA' }), 'anything')).toEqual({ ok: false, reason: 'FIELD_MEDIA_NOT_A_VALUE' });
   });
 
   it('every field type of the template vocabulary is handled (no type falls through unnoticed)', () => {
@@ -313,7 +322,7 @@ describe('validateDraftInput', () => {
     );
     expect(reasons(r)).toEqual([
       'field:intro:FIELD_NOT_PROVIDER_EDITABLE',
-      'field:photos:FIELD_TYPE_NOT_SUPPORTED',
+      'field:photos:FIELD_MEDIA_NOT_A_VALUE',
       'field:price_hint:FIELD_TYPE_NOT_SUPPORTED',
       'field:ghost:FIELD_UNKNOWN',
     ]);
@@ -409,9 +418,11 @@ describe('completenessIssues', () => {
     const s = structure({
       fields: [
         field('a', { behavior: 'PROVIDER_REQUIRED', displayOrder: 2 }),
-        field('b', { behavior: 'PROVIDER_REQUIRED', fieldType: 'MEDIA', displayOrder: 1 }),
+        field('b', { behavior: 'PROVIDER_REQUIRED', fieldType: 'EQUIPMENT_REFERENCE', displayOrder: 1 }),
         field('c', { behavior: 'PROVIDER_CONFIGURABLE', displayOrder: 3 }),
-        field('d', { behavior: 'PROVIDER_CONFIGURABLE', fieldType: 'MEDIA', displayOrder: 4 }),
+        field('d', { behavior: 'PROVIDER_CONFIGURABLE', fieldType: 'EQUIPMENT_REFERENCE', displayOrder: 4 }),
+        // a required MEDIA field is satisfied by photos (the media rules decide), never by a value
+        field('m', { behavior: 'PROVIDER_REQUIRED', fieldType: 'MEDIA', displayOrder: 6, minItems: 1, maxItems: 3 }),
         field('e', { behavior: 'PLATFORM_FIXED', displayOrder: 5 }),
       ],
     });
@@ -462,7 +473,7 @@ describe('read-model builders', () => {
     fields: [
       field('intro', { behavior: 'PLATFORM_FIXED', fieldType: 'LONG_TEXT', displayOrder: 3, defaultContentKey: 'k.default' }),
       field('notes', { behavior: 'PROVIDER_REQUIRED', displayOrder: 1 }),
-      field('photos', { fieldType: 'MEDIA', displayOrder: 2 }),
+      field('photos', { fieldType: 'MEDIA', displayOrder: 2, minItems: 0, maxItems: 5 }),
       field('finish', {
         fieldType: 'ENUM',
         displayOrder: 4,
@@ -479,24 +490,44 @@ describe('read-model builders', () => {
     expect(dtos.map((f) => f.fieldKey)).toEqual(['notes', 'photos', 'intro', 'finish']);
     expect(dtos.map((f) => [f.supported, f.required, f.fixed])).toEqual([
       [true, true, false],
-      [false, false, false],
+      [true, false, false],
       [true, false, true],
       [true, false, false],
     ]);
+    expect(dtos[1]).toMatchObject({ fieldType: 'MEDIA', minItems: 0, maxItems: 5 });
+    expect(dtos[0]).toMatchObject({ minItems: null, maxItems: null });
+    expect(fieldDtos(structure({ fields: [field('gear', { fieldType: 'EQUIPMENT_REFERENCE' })] }))[0]).toMatchObject({ supported: false, required: false });
     expect(dtos[3]!.options.map((o) => o.optionCode)).toEqual(['a', 'b']);
     expect(dtos[2]!.defaultContentKey).toBe('k.default');
   });
 
   it('constraints come from the policy and the exact template version; the currency only with a permitted price', () => {
-    expect(constraintsDto(s, POLICY, 'USD')).toEqual({
+    expect(constraintsDto(s, POLICIES, 'USD')).toEqual({
       title: { maxLength: 20 },
       shortPitch: { maxLength: 40 },
       description: { maxLength: 100 },
       price: { permitted: true, required: true, currency: 'USD' },
       duration: { permitted: true, required: true, minMinutes: 60, maxMinutes: 240, suggestedMinutes: 120 },
+      variants: { permitted: false, maxCount: 10, nameMaxLength: 80, descriptionMaxLength: 500 },
+      addOns: { permitted: false, maxCount: 20, nameMaxLength: 80, descriptionMaxLength: 500 },
+      media: {
+        permitted: true,
+        maxItems: 50,
+        maxFileSizeBytes: 10_485_760,
+        allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp'],
+        minEdgePixels: 200,
+        maxEdgePixels: 12_000,
+        altTextMaxLength: 200,
+      },
     });
+    // the permissions come from the exact template version (variants: pricing; add-ons: the explicit hook; photos: a MEDIA field that does not prohibit them)
+    const allowed = structure({ pricing: { fixed: true, fixedWithVariants: true }, addOnsAllowed: true });
+    expect(constraintsDto(allowed, POLICIES, 'USD')).toMatchObject({ variants: { permitted: true }, addOns: { permitted: true }, media: { permitted: false } });
+    const noPhotos = structure({ fields: [field('photos', { fieldType: 'MEDIA', maxItems: 0 })] });
+    expect(constraintsDto(noPhotos, POLICIES, 'USD').media.permitted).toBe(false);
+    expect(constraintsDto(s, { ...POLICIES, media: { ...DEFAULT_GIG_MEDIA_POLICY, maxItems: 0 } }, 'USD').media.permitted).toBe(false);
     const none = structure({ pricing: { fixed: false, fixedWithVariants: false }, duration: { minMinutes: null, maxMinutes: null, suggestedMinutes: null } });
-    expect(constraintsDto(none, POLICY, 'USD')).toMatchObject({
+    expect(constraintsDto(none, POLICIES, 'USD')).toMatchObject({
       price: { permitted: false, required: false, currency: null },
       duration: { permitted: false, required: false },
     });
@@ -504,23 +535,23 @@ describe('read-model builders', () => {
 
   it('a DRAFT carries publishable and issues, a published version is complete by definition; PLATFORM_FIXED values are never in fieldValues', () => {
     const values = new Map<string, string | number | boolean>([['notes', 'text']]);
-    const draft = versionDto(version(), s, values, POLICY, 'USD');
+    const draft = versionDto(version(), s, values, POLICIES, 'USD');
     expect(draft.publishable).toBe(true);
     expect(draft.issues).toEqual([]);
     expect(draft.fieldValues).toEqual([{ fieldKey: 'notes', value: 'text' }]);
     expect(draft.price).toEqual({ amountMinor: 5000, currency: 'USD' });
     expect(draft.template).toMatchObject({ gigTemplateCode: 'car_wash', gigTemplateVersionId: 'tv-1', versionStatus: 'ACTIVE' });
-    const incomplete = versionDto(version({ title: null }), s, new Map(), POLICY, 'USD');
+    const incomplete = versionDto(version({ title: null }), s, new Map(), POLICIES, 'USD');
     expect(incomplete.publishable).toBe(false);
     expect(reasons({ issues: incomplete.issues })).toEqual(['title:TITLE_REQUIRED', 'field:notes:FIELD_REQUIRED']);
-    const published = versionDto(version({ status: 'PUBLISHED', publishedAt: '2026-01-03T00:00:00.000Z' }), s, new Map(), POLICY, 'USD');
+    const published = versionDto(version({ status: 'PUBLISHED', publishedAt: '2026-01-03T00:00:00.000Z' }), s, new Map(), POLICIES, 'USD');
     expect(published.publishable).toBeNull();
     expect(published.issues).toEqual([]);
     expect(published.statusKey).toBe('provider.gig.version_status.published');
   });
 
   it('a price without a currency (impossible in the database) is not invented', () => {
-    expect(versionDto(version({ priceCurrency: null }), s, new Map(), POLICY, null).price).toBeNull();
+    expect(versionDto(version({ priceCurrency: null }), s, new Map(), POLICIES, null).price).toBeNull();
   });
 });
 
@@ -697,6 +728,7 @@ function untouchable() {
 }
 const A = 'acc-1';
 const GIG = '11111111-1111-4111-8111-111111111111';
+const OPTION = { name: 'Wax', description: null, priceDeltaMinor: 500, durationDeltaMinutes: 15 };
 const valid = { expectedRevision: 1, title: null, shortPitch: null, description: null, priceAmountMinor: null, durationMinutes: null, fieldValues: [] };
 
 describe('input is validated before anything else is touched', () => {
@@ -732,6 +764,45 @@ describe('input is validated before anything else is touched', () => {
     ['publish: no revision', (s) => s.publish(A, GIG, {})],
     ['publish: extra field', (s) => s.publish(A, GIG, { expectedRevision: 1, force: true })],
     ['retire: free text', (s) => s.retire(A, GIG, { reason: 'because' })],
+    ['replaceVariants: no revision', (s) => s.replaceVariants(A, GIG, { variants: [] })],
+    ['replaceVariants: zero revision', (s) => s.replaceVariants(A, GIG, { expectedRevision: 0, variants: [] })],
+    ['replaceVariants: not an array', (s) => s.replaceVariants(A, GIG, { expectedRevision: 1, variants: {} })],
+    ['replaceVariants: extra field', (s) => s.replaceVariants(A, GIG, { expectedRevision: 1, variants: [], currency: 'EUR' })],
+    [
+      'replaceVariants: client-supplied currency on an item',
+      (s) => s.replaceVariants(A, GIG, { expectedRevision: 1, variants: [{ ...OPTION, currency: 'EUR' }] }),
+    ],
+    ['replaceVariants: absolute price instead of a delta', (s) => s.replaceVariants(A, GIG, { expectedRevision: 1, variants: [{ ...OPTION, priceMinor: 5 }] })],
+    ['replaceVariants: negative delta', (s) => s.replaceVariants(A, GIG, { expectedRevision: 1, variants: [{ ...OPTION, priceDeltaMinor: -1 }] })],
+    ['replaceVariants: float delta', (s) => s.replaceVariants(A, GIG, { expectedRevision: 1, variants: [{ ...OPTION, priceDeltaMinor: 1.5 }] })],
+    ['replaceVariants: negative minutes', (s) => s.replaceVariants(A, GIG, { expectedRevision: 1, variants: [{ ...OPTION, durationDeltaMinutes: -5 }] })],
+    [
+      'replaceVariants: minutes above the ceiling',
+      (s) => s.replaceVariants(A, GIG, { expectedRevision: 1, variants: [{ ...OPTION, durationDeltaMinutes: 100001 }] }),
+    ],
+    ['replaceVariants: bad key', (s) => s.replaceVariants(A, GIG, { expectedRevision: 1, variants: [{ ...OPTION, key: 'Bad Key' }] })],
+    [
+      'replaceVariants: duplicate keys',
+      (s) =>
+        s.replaceVariants(A, GIG, {
+          expectedRevision: 1,
+          variants: [
+            { ...OPTION, key: 'opt_aa' },
+            { ...OPTION, key: 'opt_aa' },
+          ],
+        }),
+    ],
+    [
+      'replaceVariants: too many items for the structural ceiling',
+      (s) => s.replaceVariants(A, GIG, { expectedRevision: 1, variants: Array.from({ length: 101 }, () => OPTION) }),
+    ],
+    ['replaceAddOns: no revision', (s) => s.replaceAddOns(A, GIG, { addOns: [] })],
+    ['replaceAddOns: variants key instead of addOns', (s) => s.replaceAddOns(A, GIG, { expectedRevision: 1, variants: [] })],
+    ['replaceAddOns: null name', (s) => s.replaceAddOns(A, GIG, { expectedRevision: 1, addOns: [{ ...OPTION, name: null }] })],
+    [
+      'replaceAddOns: missing description',
+      (s) => s.replaceAddOns(A, GIG, { expectedRevision: 1, addOns: [{ name: 'x', priceDeltaMinor: 1, durationDeltaMinutes: 0 }] }),
+    ],
   ];
   for (const [label, call] of invalid)
     it(`${label} is VALIDATION_FAILED and touches nothing`, async () => {
@@ -766,6 +837,10 @@ describe('input is validated before anything else is touched', () => {
       (s: ProviderGigService) => s.updateDraft(A, 'nope', valid),
       (s: ProviderGigService) => s.publish(A, 'nope', { expectedRevision: 1 }),
       (s: ProviderGigService) => s.retire(A, 'nope', {}),
+      (s: ProviderGigService) => s.replaceVariants(A, 'nope', { expectedRevision: 1, variants: [] }),
+      (s: ProviderGigService) => s.replaceAddOns(A, 'nope', { expectedRevision: 1, addOns: [] }),
+      (s: ProviderGigService) => s.readDraft(A, 'nope'),
+      (s: ProviderGigService) => s.mutateDraft(A, 'nope', 1, async () => ({ changed: false, value: undefined })),
     ])
       expect(asGig(await fail(call(b.service))).code).toBe('GIG_NOT_FOUND');
     expect(b.touched).toEqual([]);
@@ -784,6 +859,8 @@ describe('input is validated before anything else is touched', () => {
     expect(((await fail(b.service.createGig(A, { gigTemplateCode: 'car_wash' }))) as Error).message).toBe(SENTINEL);
     expect(((await fail(b.service.publish(A, GIG, { expectedRevision: 1 }))) as Error).message).toBe(SENTINEL);
     expect(((await fail(b.service.updateDraft(A, GIG, valid))) as Error).message).toBe(SENTINEL);
+    expect(((await fail(b.service.replaceVariants(A, GIG, { expectedRevision: 1, variants: [OPTION] }))) as Error).message).toBe(SENTINEL);
+    expect(((await fail(b.service.replaceAddOns(A, GIG, { expectedRevision: 1, addOns: [] }))) as Error).message).toBe(SENTINEL);
     expect(b.touched.length).toBeGreaterThan(0);
   });
 
@@ -795,6 +872,8 @@ describe('input is validated before anything else is touched', () => {
       (s: ProviderGigService) => s.updateDraft(A, GIG, valid),
       (s: ProviderGigService) => s.publish(A, GIG, { expectedRevision: 1 }),
       (s: ProviderGigService) => s.listProviderGigs(A),
+      (s: ProviderGigService) => s.replaceVariants(A, GIG, { expectedRevision: 1, variants: [] }),
+      (s: ProviderGigService) => s.replaceAddOns(A, GIG, { expectedRevision: 1, addOns: [] }),
     ]) {
       const e = await fail(call(b.service));
       expect(asGig(e)).toMatchObject({ code: 'UNAVAILABLE' });
@@ -835,6 +914,77 @@ describe('mapGigDbError: the currency guard and the remaining value rules are ty
   });
   it('FIELD_TYPE_MISMATCH is a validation failure', () => {
     expect(run(rule('FIELD_TYPE_MISMATCH'))).toMatchObject({ code: 'VALIDATION_FAILED' });
+  });
+});
+
+describe('mapGigDbError: the CAT-004 guard backstops are typed', () => {
+  const rule = (key: string) => Object.assign(new Error('driver text SECRET-SQL'), { code: '23000', detail: `provider_rule:${key}` });
+  const run = (e: unknown, ctx?: Parameters<typeof mapGigDbError>[1]) => asGig(capture(() => mapGigDbError(e, ctx)));
+  it('variants and add-ons not permitted by the template: VALIDATION_FAILED on a save, PUBLISH_BLOCKED on a publish, with the issue of the right target', () => {
+    for (const [key, target] of [
+      ['VARIANTS_NOT_PERMITTED', 'variants'],
+      ['ADD_ONS_NOT_PERMITTED', 'addOns'],
+    ] as const) {
+      const issues = [{ target, reason: 'OPTIONS_NOT_PERMITTED', messageKey: gigIssueKey('OPTIONS_NOT_PERMITTED') }];
+      expect(run(rule(key), 'draft')).toMatchObject({ code: 'VALIDATION_FAILED', details: { reason: key, issues } });
+      expect(run(rule(key), 'publish')).toMatchObject({ code: 'PUBLISH_BLOCKED', details: { reason: key, issues } });
+      expect(surface(run(rule(key)))).not.toContain('SECRET-SQL');
+    }
+  });
+  it('photos not ready or missing at publish block the publish with a media issue; elsewhere they are a conflict', () => {
+    for (const key of ['MEDIA_NOT_READY', 'MEDIA_REQUIRED'] as const) {
+      expect(run(rule(key), 'publish')).toMatchObject({
+        code: 'PUBLISH_BLOCKED',
+        details: { reason: key, issues: [{ target: 'media', reason: key, messageKey: gigIssueKey(key) }] },
+      });
+      expect(run(rule(key), 'draft')).toMatchObject({ code: 'CONFLICT', details: { reason: key } });
+    }
+  });
+  it('a prohibited or full MEDIA field is a validation failure with a media issue', () => {
+    expect(run(rule('MEDIA_PROHIBITED'))).toMatchObject({
+      code: 'VALIDATION_FAILED',
+      details: { issues: [{ target: 'media', reason: 'MEDIA_NOT_PERMITTED' }] },
+    });
+    expect(run(rule('MEDIA_FIELD_FULL'))).toMatchObject({ code: 'VALIDATION_FAILED', details: { issues: [{ target: 'media', reason: 'MEDIA_TOO_MANY' }] } });
+  });
+  it('MEDIA_FIELD_FULL at publish blocks the publish with a typed media issue', () => {
+    expect(run(rule('MEDIA_FIELD_FULL'), 'publish')).toMatchObject({
+      code: 'PUBLISH_BLOCKED',
+      details: { reason: 'MEDIA_FIELD_FULL', issues: [{ target: 'media', reason: 'MEDIA_TOO_MANY' }] },
+    });
+  });
+  it('the attachment guards speak of MEDIA fields in a child mutation and of field values in a draft save', () => {
+    expect(run(rule('FIELD_NOT_IN_TEMPLATE_VERSION'), 'child')).toMatchObject({
+      code: 'VALIDATION_FAILED',
+      details: { issues: [{ target: 'media', reason: 'MEDIA_FIELD_UNKNOWN' }] },
+    });
+    expect(run(rule('FIELD_TYPE_MISMATCH'), 'child')).toMatchObject({
+      code: 'VALIDATION_FAILED',
+      details: { issues: [{ target: 'media', reason: 'MEDIA_NOT_PERMITTED' }] },
+    });
+    expect(run(rule('FIELD_NOT_IN_TEMPLATE_VERSION'), 'draft')).toMatchObject({ details: { issues: [{ target: 'field', reason: 'FIELD_UNKNOWN' }] } });
+    expect(run(rule('FIELD_TYPE_MISMATCH'), 'draft')).toMatchObject({ details: { issues: [{ target: 'field', reason: 'FIELD_VALUE_INVALID' }] } });
+    expect(run(rule('MEDIA_PROHIBITED'), 'child')).toMatchObject({ details: { issues: [{ target: 'media', reason: 'MEDIA_NOT_PERMITTED' }] } });
+  });
+  it('the integrity rules of migration 0022 and the asset rules are typed: a conflict with the rule as reason, never driver text; a foreign asset is MEDIA_NOT_FOUND', () => {
+    for (const key of [
+      'NO_UPDATE',
+      'MARKER_ONE_WAY',
+      'ASSET_FROZEN',
+      'ASSET_REFERENCED',
+      'BYTES_IMMUTABLE',
+      'ASSET_NOT_USABLE',
+      'MUST_START_PENDING',
+      'IMMUTABLE_IDENTITY',
+    ]) {
+      const e = run(rule(key));
+      expect(e, key).toMatchObject({ code: 'CONFLICT', details: { reason: key } });
+      expect(surface(e)).not.toContain('SECRET-SQL');
+    }
+    expect(run(rule('ASSET_OWNER'))).toMatchObject({ code: 'MEDIA_NOT_FOUND', details: {} });
+  });
+  it('a frozen version is a plain conflict with the rule as reason', () => {
+    expect(run(rule('VERSION_FROZEN'))).toMatchObject({ code: 'CONFLICT', details: { reason: 'VERSION_FROZEN' } });
   });
 });
 

@@ -112,6 +112,7 @@ const template = (over: Partial<GigVersionDto['template']> = {}): GigVersionDto[
   requirements: [{ requirementType: 'VERIFICATION', referenceCode: 'identity' }],
   ...over,
 });
+const CHILDREN = { variantCount: 0, addOnCount: 0, mediaCount: 0, variantsValid: true, addOnsValid: true, mediaRequirementSatisfied: true };
 const versionFixture = (over: Partial<GigVersionDto> = {}): GigVersionDto => ({
   gigVersionId: VERSION_ID,
   versionNumber: 1,
@@ -157,6 +158,8 @@ const versionFixture = (over: Partial<GigVersionDto> = {}): GigVersionDto => ({
       maxLength: null,
       minNumber: 1,
       maxNumber: 20,
+      minItems: null,
+      maxItems: null,
       options: [],
     },
     {
@@ -179,6 +182,8 @@ const versionFixture = (over: Partial<GigVersionDto> = {}): GigVersionDto => ({
       maxLength: null,
       minNumber: null,
       maxNumber: null,
+      minItems: null,
+      maxItems: null,
       options: [
         { optionCode: 'small', displayOrder: 1, isDefault: true, labelContentKey: 'catalog.option.small' },
         { optionCode: 'large', displayOrder: 2, isDefault: false },
@@ -191,7 +196,22 @@ const versionFixture = (over: Partial<GigVersionDto> = {}): GigVersionDto => ({
     description: { maxLength: 5000 },
     price: { permitted: true, required: true, currency: 'USD' },
     duration: { permitted: true, required: true, minMinutes: 30, maxMinutes: 480, suggestedMinutes: 90 },
+    variants: { permitted: false, maxCount: 10, nameMaxLength: 80, descriptionMaxLength: 500 },
+    addOns: { permitted: false, maxCount: 20, nameMaxLength: 80, descriptionMaxLength: 500 },
+    media: {
+      permitted: false,
+      maxItems: 50,
+      maxFileSizeBytes: 10_485_760,
+      allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp'],
+      minEdgePixels: 200,
+      maxEdgePixels: 12_000,
+      altTextMaxLength: 200,
+    },
   },
+  variants: [],
+  addOns: [],
+  media: [],
+  children: CHILDREN,
   publishable: false,
   issues: [{ target: 'title', reason: 'TITLE_REQUIRED', messageKey: gigIssueKey('TITLE_REQUIRED') }],
   ...over,
@@ -225,6 +245,10 @@ const detailFixture = (): GigDetailDto => {
         template: _f,
         fields: _g,
         constraints: _h,
+        variants: _k,
+        addOns: _l,
+        media: _m,
+        children: _n,
         publishable: _i,
         issues: _j,
         ...s
@@ -243,8 +267,9 @@ const menuFixture = (): GigMenuDto => ({
         price: { amountMinor: 4500, currency: 'USD' },
         durationMinutes: 90,
         publishedAt: ISO,
+        children: CHILDREN,
       },
-      draftVersion: { versionNumber: 2, revision: 4, title: null, updatedAt: ISO },
+      draftVersion: { versionNumber: 2, revision: 4, title: null, updatedAt: ISO, children: CHILDREN },
       versionCount: 2,
     },
   ],
@@ -915,6 +940,10 @@ describe('typed Gig failures become the standard error envelope', () => {
     VALIDATION_FAILED: [400, 'VALIDATION'],
     CONFLICT: [409, 'CONFLICT'],
     UNAVAILABLE: [503, 'DEPENDENCY'],
+    MEDIA_NOT_FOUND: [404, 'NOT_FOUND'],
+    MEDIA_REFUSED: [400, 'VALIDATION'],
+    MEDIA_EXPIRED: [409, 'CONFLICT'],
+    MEDIA_SCAN_UNAVAILABLE: [503, 'DEPENDENCY'],
   };
 
   it('covers every contract error code', () => {
@@ -1148,6 +1177,7 @@ describe('the Gig Template port over the catalogue', () => {
       versionStatus: 'ACTIVE',
       duration: { minMinutes: 30, maxMinutes: 480, suggestedMinutes: 90 },
       pricing: { fixed: true, fixedWithVariants: false },
+      addOnsAllowed: false,
       requirements: [{ requirementType: 'VERIFICATION', referenceCode: 'identity' }],
     });
     expect(f.fields[0]).toMatchObject({ gigTemplateFieldId: '22222222-2222-4222-8222-222222222222', fieldKey: 'size', defaultOption: 'large' });
@@ -1156,6 +1186,21 @@ describe('the Gig Template port over the catalogue', () => {
       fixed: false,
       fixedWithVariants: true,
     });
+  });
+
+  it('maps the CAT-004 facts: add-ons are allowed only by the ADD_ONS pricing model, and a MEDIA field keeps its item bounds', () => {
+    const d = detail();
+    expect(toGigTemplateStructure(d).addOnsAllowed).toBe(false);
+    expect(toGigTemplateStructure(detail({ version: { ...d.version, pricingModels: ['FIXED', 'ADD_ONS'] } })).addOnsAllowed).toBe(true);
+    // a base model alone never grants add-ons, and add-ons alone are not a variants permission
+    expect(toGigTemplateStructure(detail({ version: { ...d.version, pricingModels: ['FIXED_WITH_VARIANTS'] } })).addOnsAllowed).toBe(false);
+    expect(toGigTemplateStructure(detail({ version: { ...d.version, pricingModels: ['FIXED', 'ADD_ONS'] } })).pricing).toEqual({
+      fixed: true,
+      fixedWithVariants: false,
+    });
+    const media = { ...d.fields[0]!, fieldKey: 'photos', fieldType: 'MEDIA' as const, minItems: 1, maxItems: 3, options: [] };
+    expect(toGigTemplateStructure(detail({ fields: [media] })).fields[0]).toMatchObject({ fieldKey: 'photos', fieldType: 'MEDIA', minItems: 1, maxItems: 3 });
+    expect(toGigTemplateStructure(d).fields[0]).toMatchObject({ minItems: null, maxItems: null });
   });
 
   it('a version without a status (a public view) is an outage, never a guess', () => {
@@ -1289,6 +1334,19 @@ describe('OpenAPI and the committed specs', () => {
       if (p.startsWith('/api/v1/provider'))
         for (const [method, op] of Object.entries(item))
           found.push({ operationId: op.operationId, method: method.toUpperCase(), path: p, tags: op.tags, security: op.security });
+    // the nine CAT-004 operations (variants, add-ons, photos) are inventoried in gig-options-media.test.ts
+    const cat004 = new Set([
+      'replaceProviderGigDraftVariants',
+      'replaceProviderGigDraftAddOns',
+      'requestProviderGigMediaUpload',
+      'finalizeProviderGigMedia',
+      'reorderProviderGigDraftMedia',
+      'updateProviderGigDraftMedia',
+      'detachProviderGigDraftMedia',
+      'getProviderGigDraftMediaPreview',
+      'getProviderGigVersionMediaPreview',
+    ]);
+    for (let i = found.length - 1; i >= 0; i--) if (cat004.has(found[i]!.operationId)) found.splice(i, 1);
     expect(found).toHaveLength(9);
     expect(found.map((f) => f.operationId).sort()).toEqual(ROUTES.map((r) => r.operationId).sort());
     for (const r of ROUTES) {
@@ -1338,9 +1396,11 @@ describe('OpenAPI and the committed specs', () => {
     for (const type of Object.values(GIG_EVENTS)) expect(asyncapi, type).toContain(type);
   });
 
-  it('the Gig event payloads carry identifiers and counts only: no title, pitch, description, price or text property', () => {
+  it('the Gig event payloads carry identifiers and counts only (CAT-004 adds three counts): no title, pitch, description, price or text property', () => {
     for (const payload of [GigCreatedPayload, GigVersionPublishedPayload, GigRetiredPayload])
       for (const key of Object.keys(payload.shape))
-        expect(key, key).toMatch(/^(accountId|gigId|gigVersionId|versionNumber|gigTemplateVersionId|supersededGigVersionId)$/);
+        expect(key, key).toMatch(
+          /^(accountId|gigId|gigVersionId|versionNumber|gigTemplateVersionId|supersededGigVersionId|variantCount|addOnCount|mediaCount)$/,
+        );
   });
 });

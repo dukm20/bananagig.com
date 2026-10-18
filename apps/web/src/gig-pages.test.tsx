@@ -67,7 +67,7 @@ const fieldKeys = (k: string): Record<string, string> => ({
   [`catalog.gig_template.field.${k}.help`]: `Registry help ${k}`,
 });
 const EXTRA: Record<string, string> = {
-  ...Object.assign({}, ...['rooms', 'notes', 'details', 'area', 'pets', 'supplies', 'length', 'inclusions', 'photos', 'fixedthing'].map(fieldKeys)),
+  ...Object.assign({}, ...['rooms', 'notes', 'details', 'area', 'pets', 'supplies', 'length', 'inclusions', 'gear', 'fixedthing'].map(fieldKeys)),
   'catalog.gig_template.field.fixedthing.default': 'Registry fixed default text',
   'catalog.gig_template.field.notes.default': 'Registry notes example',
   'catalog.gig_template.option.provider': 'Registry option provider',
@@ -135,14 +135,15 @@ const FIELDS: GigFieldDto[] = [
     labelContentKey: 'catalog.gig_template.field.fixedthing.label',
     defaultContentKey: 'catalog.gig_template.field.fixedthing.default',
   }),
+  // an equipment reference stays unsupported (MEDIA fields are photos since CAT-004: see gig-children.test.tsx)
   fieldDto({
-    fieldKey: 'photos',
-    fieldType: 'MEDIA',
+    fieldKey: 'gear',
+    fieldType: 'EQUIPMENT_REFERENCE',
     behavior: 'PROVIDER_REQUIRED',
     supported: false,
     required: false,
     displayOrder: 9,
-    labelContentKey: 'catalog.gig_template.field.photos.label',
+    labelContentKey: 'catalog.gig_template.field.gear.label',
   }),
 ];
 
@@ -520,7 +521,7 @@ describe('provider Gig pages', () => {
       signedIn();
       give();
       const html = await renderGig();
-      expect(actionsOf(html)).toEqual(['save', 'retire']);
+      expect(actionsOf(html)).toEqual(['save', 'variants', 'add-ons', 'retire']);
       expect(editorOf(html).hidden).toEqual([
         { type: 'hidden', name: 'gigId', value: GIG_ID },
         { type: 'hidden', name: 'expectedRevision', value: '7' },
@@ -685,10 +686,10 @@ describe('provider Gig pages', () => {
       give();
       const form = editorOf(await renderGig());
       expect(form.inner).toContain(
-        `<li id="gig-field-photos">${FIELD_LABEL('photos')}<span class="gig-req"> (${ed('required')})</span>: ${ed('unsupported_note')}</li>`,
+        `<li id="gig-field-gear">${FIELD_LABEL('gear')}<span class="gig-req"> (${ed('required')})</span>: ${ed('unsupported_note')}</li>`,
       );
       expect(form.inner).not.toContain('name="field.m');
-      expect(form.inner).not.toMatch(/name="[^"]*photos/);
+      expect(form.inner).not.toMatch(/name="[^"]*gear/);
     });
     it('a control whose registry label is missing keeps its VALUE in a hidden field (a save must never silently clear it); no unlabelled control is offered', async () => {
       signedIn();
@@ -742,7 +743,7 @@ describe('provider Gig pages', () => {
       issueDto({ target: 'title', reason: 'TITLE_REQUIRED', messageKey: 'provider.gig.issue.title_required' }),
       issueDto({ target: 'price', reason: 'PRICE_REQUIRED', messageKey: 'provider.gig.issue.price_required' }),
       issueDto({ target: 'field', fieldKey: 'rooms', reason: 'FIELD_REQUIRED', messageKey: 'provider.gig.issue.field_required' }),
-      issueDto({ target: 'field', fieldKey: 'photos', reason: 'FIELD_TYPE_NOT_SUPPORTED', messageKey: 'provider.gig.issue.field_type_not_supported' }),
+      issueDto({ target: 'field', fieldKey: 'gear', reason: 'FIELD_TYPE_NOT_SUPPORTED', messageKey: 'provider.gig.issue.field_type_not_supported' }),
       issueDto({ target: 'template', reason: 'TEMPLATE_VERSION_RETIRED', messageKey: 'provider.gig.issue.template_version_retired' }),
     ];
     it('lists the issues of the API with registry messages, each linking to its control; the template issue has no link', async () => {
@@ -753,7 +754,7 @@ describe('provider Gig pages', () => {
       expect(html).toContain('<li id="gig-issue-0"><a href="#gig-title">Registry issue title_required</a></li>');
       expect(html).toContain('<li id="gig-issue-1"><a href="#gig-price">Registry issue price_required</a></li>');
       expect(html).toContain('<li id="gig-issue-2"><a href="#gig-field-rooms">Registry issue field_required</a></li>');
-      expect(html).toContain('<li id="gig-issue-3"><a href="#gig-field-photos">Registry issue field_type_not_supported</a></li>');
+      expect(html).toContain('<li id="gig-issue-3"><a href="#gig-field-gear">Registry issue field_type_not_supported</a></li>');
       expect(html).toContain('<li id="gig-issue-4">Registry issue template_version_retired</li>');
       // the summary comes before the form, so a keyboard or screen reader user meets it first
       expect(html.indexOf('id="gig-issues"')).toBeLessThan(html.search(/<form [^>]*action="\/auth\/provider\/gigs\/save"/));
@@ -789,7 +790,7 @@ describe('provider Gig pages', () => {
       signedIn();
       give(detailDto({ draft: versionDto({ revision: 9, fields: FIELDS, publishable: true }) }));
       const html = await renderGig();
-      expect(actionsOf(html)).toEqual(['save', 'publish', 'retire']);
+      expect(actionsOf(html)).toEqual(['save', 'variants', 'add-ons', 'publish', 'retire']);
       const form = formFor(html, 'publish')!;
       expect(form.hidden).toEqual([
         { type: 'hidden', name: 'gigId', value: GIG_ID },
@@ -801,13 +802,13 @@ describe('provider Gig pages', () => {
     it.each([false, null])('no Publish when publishable is %s', async (publishable) => {
       signedIn();
       give(detailDto({ draft: versionDto({ revision: 9, fields: FIELDS, publishable }) }));
-      expect(actionsOf(await renderGig())).toEqual(['save', 'retire']);
+      expect(actionsOf(await renderGig())).toEqual(['save', 'variants', 'add-ons', 'retire']);
     });
     it('without the Publish label in the registry no publish form is offered', async () => {
       signedIn();
       give(detailDto({ draft: versionDto({ revision: 9, fields: FIELDS, publishable: true }) }));
       stub.catalog = withCopy(EXTRA, (k) => k === 'provider.gig.editor.publish');
-      expect(actionsOf(await renderGig())).toEqual(['save', 'retire']);
+      expect(actionsOf(await renderGig())).toEqual(['save', 'variants', 'add-ons', 'retire']);
     });
   });
 
@@ -817,7 +818,7 @@ describe('provider Gig pages', () => {
       const published = publishedVersionDto({ versionNumber: 1, fields: FIELDS });
       give(detailDto({ current: published, draft: versionDto({ versionNumber: 2, revision: 4, fields: FIELDS }) }));
       const html = await renderGig();
-      expect(actionsOf(html)).toEqual(['save', 'retire']);
+      expect(actionsOf(html)).toEqual(['save', 'variants', 'add-ons', 'retire']);
       expect(html).toContain(`<h2 id="gig-current">${ed('current_heading')}</h2>`);
       expect(html).toContain(`<h2 id="gig-history">${ed('history_heading')}</h2>`);
       expect(html).not.toContain(ed('new_draft'));

@@ -34,7 +34,8 @@ const ALLOWED = {
     'testing',
     'trust',
   ],
-  '@bananagig/worker': ['config', 'contracts', 'configuration', 'content', 'database', 'observability', 'platform', 'testing'],
+  // worker -> provider: the CAT-004 clean-up job of abandoned and unreferenced Gig photos (GigMediaService over database + object store + configuration)
+  '@bananagig/worker': ['config', 'contracts', 'configuration', 'content', 'database', 'observability', 'platform', 'provider', 'testing'],
   '@bananagig/smoke': ['accounts', 'contracts', 'database', 'identity', 'testing'],
 };
 

@@ -10,17 +10,22 @@
 // own repeatable-read snapshots, which cannot nest) happen BEFORE the transaction; the rules that can race with a template or service type retirement are enforced again by the database
 // guards under FOR SHARE locks, and the facts of the account are read again under the account lock. Audit rows hold identifiers, changed field NAMES and counts, never the provider's
 // text; events hold identifiers only.
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import {
   CreateGigRequest,
   CreateGigVersionRequest,
   GIG_EVENTS,
   PublishGigRequest,
+  ReplaceGigAddOnsRequest,
+  ReplaceGigVariantsRequest,
   RetireGigRequest,
   UpdateGigDraftRequest,
   type GigCreatedPayload,
   type GigDetailDto,
   type GigIssueDto,
+  type GigMediaPreviewDto,
+  type GigOptionInput,
+  type GigMediaUploadDto,
   type GigMenuDto,
   type GigReadinessDto,
   type GigRetiredPayload,
@@ -28,7 +33,6 @@ import {
   type GigTemplateLinkDto,
   type GigVersionDto,
   type GigVersionPublishedPayload,
-  type ProviderGigPolicy,
 } from '@bananagig/contracts';
 import { sql, type Database, type DatabaseSchema, type Kysely, type Trx } from '@bananagig/database';
 import { getCorrelationId, log } from '@bananagig/observability';
@@ -37,22 +41,38 @@ import type { z } from 'zod';
 import { PROVIDER_ROLE_CODE } from './evaluator';
 import { ProviderError, isDatabaseOutage } from './errors';
 import { GigError } from './gig-errors';
-import type { GigPolicyProvider, GigTemplatePort, GigTemplateStructure } from './gig-types';
+import type { PrivateObjectStore } from '@bananagig/platform';
+import { GigMediaService, type GigMediaCleanupResult } from './gig-media';
+import type {
+  DraftMutationContext,
+  DraftMutator,
+  DraftReadContext,
+  GigMediaScanner,
+  GigPolicyProvider,
+  GigTemplatePort,
+  GigTemplateStructure,
+} from './gig-types';
+import { copyOptions, deleteOptions, insertOptions, loadOptions, loadOptionStats, sameOptions, validateOptions, type OptionKind } from './gig-options';
+import { closePendingMediaOfDraft, copyGigMedia, deleteMediaObjects, loadGigMedia } from './gig-media-model';
 import {
   gigDto,
+  menuChildSummary,
   columnsOf,
   contentOf,
+  partialStructure,
+  publishIssues,
   summaryDto,
   toGigRow,
   toVersionRow,
   valueOfRow,
   versionDto,
   linkDto,
+  type GigPolicies,
   type GigRow,
   type Row,
   type VersionRow,
 } from './gig-view';
-import { completenessIssues, issue, validateDraftInput, type FieldValue } from './gig-validate';
+import { issue, validateDraftInput, type FieldValue } from './gig-validate';
 import { guardRuleOf } from './service';
 import type { AccountFacts, AccountPort, PrerequisitePort, PrerequisiteState } from './types';
 
@@ -63,10 +83,14 @@ export interface ProviderGigServiceDeps {
   accounts: AccountPort;
   templates: GigTemplatePort;
   policy: GigPolicyProvider;
+  /** CAT-004: the private object store and the scanner for provider photos. Without them every media operation is UNAVAILABLE (nothing is attached). */
+  store?: PrivateObjectStore;
+  scanner?: GigMediaScanner;
 }
 
 // ---------------------------------------------------------------- errors
-export type GigGuardContext = 'create' | 'draft' | 'publish' | 'retire';
+/** `child`: a variant, add-on or photo mutation (the attachment guards speak of MEDIA fields, not of field values). */
+export type GigGuardContext = 'create' | 'draft' | 'child' | 'publish' | 'retire';
 
 const concurrent = () =>
   new GigError('CONFLICT', 'the change conflicted with a concurrent update; repeat the request', { reason: 'CONCURRENT_UPDATE', retryable: true });
@@ -137,13 +161,38 @@ export function mapGigDbError(err: unknown, context: GigGuardContext = 'draft'):
           throw new GigError('PUBLISH_BLOCKED', 'the Gig cannot be published', { reason: rule, issues: [issue('price', 'PRICE_REQUIRED')] });
         throw new GigError('VALIDATION_FAILED', 'the request is not valid', { reason: rule, issues: [issue('price', 'PRICE_REQUIRED')] });
       case 'FIELD_TYPE_MISMATCH':
+        // the same rule key guards the field values and the photo attachments: a photo attaches to a MEDIA field only
+        if (context === 'child')
+          throw new GigError('VALIDATION_FAILED', 'the request is not valid', { reason: rule, issues: [issue('media', 'MEDIA_NOT_PERMITTED')] });
         throw new GigError('VALIDATION_FAILED', 'the request is not valid', { reason: rule, issues: [issue('field', 'FIELD_VALUE_INVALID')] });
       case 'FIELD_FIXED':
         throw new GigError('VALIDATION_FAILED', 'the request is not valid', { reason: rule, issues: [issue('field', 'FIELD_NOT_PROVIDER_EDITABLE')] });
       case 'FIELD_TYPE_UNSUPPORTED':
         throw new GigError('VALIDATION_FAILED', 'the request is not valid', { reason: rule, issues: [issue('field', 'FIELD_TYPE_NOT_SUPPORTED')] });
       case 'FIELD_NOT_IN_TEMPLATE_VERSION':
+        if (context === 'child')
+          throw new GigError('VALIDATION_FAILED', 'the request is not valid', { reason: rule, issues: [issue('media', 'MEDIA_FIELD_UNKNOWN')] });
         throw new GigError('VALIDATION_FAILED', 'the request is not valid', { reason: rule, issues: [issue('field', 'FIELD_UNKNOWN')] });
+      // CAT-004 backstops (the service checks the same rules first; these answer a race with a template change)
+      case 'VARIANTS_NOT_PERMITTED':
+      case 'ADD_ONS_NOT_PERMITTED': {
+        const blocking = [issue(rule === 'VARIANTS_NOT_PERMITTED' ? 'variants' : 'addOns', 'OPTIONS_NOT_PERMITTED')];
+        if (context === 'publish') throw new GigError('PUBLISH_BLOCKED', 'the Gig cannot be published', { reason: rule, issues: blocking });
+        throw new GigError('VALIDATION_FAILED', 'the request is not valid', { reason: rule, issues: blocking });
+      }
+      case 'MEDIA_NOT_READY':
+      case 'MEDIA_REQUIRED':
+        if (context === 'publish') throw new GigError('PUBLISH_BLOCKED', 'the Gig cannot be published', { reason: rule, issues: [issue('media', rule)] });
+        throw new GigError('CONFLICT', 'the operation violates a Gig integrity rule', { reason: rule });
+      // an asset of another account is indistinguishable from one that does not exist
+      case 'ASSET_OWNER':
+        throw new GigError('MEDIA_NOT_FOUND', 'the photo was not found', {});
+      case 'MEDIA_PROHIBITED':
+        throw new GigError('VALIDATION_FAILED', 'the request is not valid', { reason: rule, issues: [issue('media', 'MEDIA_NOT_PERMITTED')] });
+      case 'MEDIA_FIELD_FULL':
+        if (context === 'publish')
+          throw new GigError('PUBLISH_BLOCKED', 'the Gig cannot be published', { reason: rule, issues: [issue('media', 'MEDIA_TOO_MANY')] });
+        throw new GigError('VALIDATION_FAILED', 'the request is not valid', { reason: rule, issues: [issue('media', 'MEDIA_TOO_MANY')] });
       default:
         throw new GigError('CONFLICT', 'the operation violates a Gig integrity rule', rule ? { reason: rule } : {});
     }
@@ -217,7 +266,7 @@ function unavailableReason(s: GigTemplateStructure): string | null {
   return null;
 }
 
-export class ProviderGigService {
+export class ProviderGigService implements DraftMutator {
   constructor(protected readonly deps: ProviderGigServiceDeps) {}
 
   private get db(): Executor {
@@ -303,11 +352,17 @@ export class ProviderGigService {
     return (await this.read(() => this.loadRegistration(this.db, accountId)))?.currency ?? null;
   }
 
-  /** The DTOs of the given versions of a Gig (one values query, one port read per distinct template version). */
+  /** The three policies a Gig view needs (each fails closed: an unreadable or invalid configuration is UNAVAILABLE, never a code default). */
+  private async policies(): Promise<GigPolicies> {
+    const [gig, options, media] = await Promise.all([this.deps.policy.policy(), this.deps.policy.options(), this.deps.policy.media()]);
+    return { gig, options, media };
+  }
+
+  /** The DTOs of the given versions of a Gig (one values query, one options query, one media query, one port read per distinct template version). */
   private async buildVersions(
     accountId: string,
     versions: readonly VersionRow[],
-    policy: ProviderGigPolicy,
+    policy: GigPolicies,
     ex: Executor = this.db,
     known?: ReadonlyMap<string, GigTemplateStructure>,
   ): Promise<Map<string, GigVersionDto>> {
@@ -318,9 +373,19 @@ export class ProviderGigService {
       ),
       this.marketCurrency(accountId),
     ]);
-    const values = await this.read(() => this.loadValues(ex, versions, structures));
+    const ids = versions.map((v) => v.gigVersionId);
+    const [values, options, media] = await this.read(() =>
+      Promise.all([this.loadValues(ex, versions, structures), loadOptions(ex, ids), loadGigMedia(ex, ids)]),
+    );
     return new Map(
-      versions.map((v) => [v.gigVersionId, versionDto(v, structures.get(v.gigTemplateVersionId)!, values.get(v.gigVersionId)!, policy, currency)]),
+      versions.map((v) => [
+        v.gigVersionId,
+        versionDto(v, structures.get(v.gigTemplateVersionId)!, values.get(v.gigVersionId)!, policy, currency, {
+          variants: options.get(v.gigVersionId)?.variants ?? [],
+          addOns: options.get(v.gigVersionId)?.addOns ?? [],
+          media: media.get(v.gigVersionId) ?? [],
+        }),
+      ]),
     );
   }
 
@@ -414,22 +479,53 @@ export class ProviderGigService {
   // ------------------------------------------------------------------ reads
   /** GigMenu (owner-only): every Gig of the account with its current version and draft, in constant queries, plus readiness and limits. */
   async listProviderGigs(accountId: string): Promise<GigMenuDto> {
-    const policy = await this.deps.policy.policy();
+    const policies = await this.policies();
+    const policy = policies.gig;
     const { facts, registration } = await this.eligibilityFacts(accountId);
-    const { gigs, versions, counts } = await this.read(async () => {
+    const { gigs, versions, counts, options, media, templateFacts } = await this.read(async () => {
       const gigRows = (await sql<Row>`${gigSelect} WHERE g.account_id = ${accountId} ORDER BY g.created_at DESC, g.gig_id`.execute(this.db)).rows.map(toGigRow);
-      const versionRows = (
-        await sql<Row>`${versionSelect} JOIN provider.gigs g ON g.gig_id = v.gig_id WHERE g.account_id = ${accountId} AND v.status IN ('PUBLISHED', 'DRAFT')`.execute(
-          this.db,
-        )
-      ).rows.map(toVersionRow);
+      // the bound template version's permissions and MEDIA fields come in the same statement: the menu never calls the template port (CAT-004 children facts)
+      const versionRaw = (
+        await sql<Row>`SELECT v.*, tv.version_number AS template_version_number, tv.pricing_fixed_with_variants, tv.pricing_add_ons,
+               COALESCE((SELECT jsonb_agg(jsonb_build_object('id', f.gig_template_field_id, 'key', f.field_key, 'behavior', f.behavior, 'min', f.min_items, 'max', f.max_items)
+                                          ORDER BY f.display_order)
+                           FROM catalog.gig_template_fields f WHERE f.gig_template_version_id = v.gig_template_version_id AND f.field_type = 'MEDIA'), '[]'::jsonb) AS media_fields
+          FROM provider.gig_versions v
+          JOIN catalog.gig_template_versions tv ON tv.gig_template_version_id = v.gig_template_version_id
+          JOIN provider.gigs g ON g.gig_id = v.gig_id
+         WHERE g.account_id = ${accountId} AND v.status IN ('PUBLISHED', 'DRAFT')`.execute(this.db)
+      ).rows;
+      const versionRows = versionRaw.map(toVersionRow);
+      const templateFacts = new Map(
+        versionRaw.map((r) => [
+          r.gig_version_id as string,
+          partialStructure({
+            fixedWithVariants: r.pricing_fixed_with_variants === true,
+            addOnsAllowed: r.pricing_add_ons === true,
+            mediaFields: (
+              (r.media_fields as {
+                id: string;
+                key: string;
+                behavior: 'PLATFORM_FIXED' | 'PROVIDER_CONFIGURABLE' | 'PROVIDER_REQUIRED';
+                min: number | null;
+                max: number | null;
+              }[]) ?? []
+            ).map((f) => ({ gigTemplateFieldId: f.id, fieldKey: f.key, behavior: f.behavior, minItems: f.min, maxItems: f.max })),
+          }),
+        ]),
+      );
+      const versionIds = versionRows.map((v) => v.gigVersionId);
       const countRows = (
         await sql<Row>`SELECT v.gig_id, count(*) AS n FROM provider.gig_versions v JOIN provider.gigs g ON g.gig_id = v.gig_id WHERE g.account_id = ${accountId} GROUP BY v.gig_id`.execute(
           this.db,
         )
       ).rows;
-      return { gigs: gigRows, versions: versionRows, counts: new Map(countRows.map((r) => [r.gig_id as string, Number(r.n)])) };
+      // counts and the longest texts are computed in SQL: the menu never loads the names or descriptions of the options
+      const [options, media] = [await loadOptionStats(this.db, versionIds), await loadGigMedia(this.db, versionIds)];
+      return { gigs: gigRows, versions: versionRows, counts: new Map(countRows.map((r) => [r.gig_id as string, Number(r.n)])), options, media, templateFacts };
     });
+    const childrenOf = (v: VersionRow) =>
+      menuChildSummary(templateFacts.get(v.gigVersionId)!, policies, options.get(v.gigVersionId), media.get(v.gigVersionId) ?? []);
     const published = new Map(versions.filter((v) => v.status === 'PUBLISHED').map((v) => [v.gigId, v]));
     const drafts = new Map(versions.filter((v) => v.status === 'DRAFT').map((v) => [v.gigId, v]));
     const activeCount = gigs.filter((g) => g.status === 'ACTIVE').length;
@@ -451,9 +547,12 @@ export class ProviderGigService {
                 price: cur.priceAmountMinor === null || cur.priceCurrency === null ? null : { amountMinor: cur.priceAmountMinor, currency: cur.priceCurrency },
                 durationMinutes: cur.durationMinutes,
                 publishedAt: cur.publishedAt!,
+                children: childrenOf(cur),
               }
             : null,
-          draftVersion: dr ? { versionNumber: dr.versionNumber, revision: dr.revision, title: dr.title, updatedAt: dr.updatedAt } : null,
+          draftVersion: dr
+            ? { versionNumber: dr.versionNumber, revision: dr.revision, title: dr.title, updatedAt: dr.updatedAt, children: childrenOf(dr) }
+            : null,
           versionCount: counts.get(g.gigId) ?? 0,
         };
       }),
@@ -475,7 +574,7 @@ export class ProviderGigService {
    */
   private async detailOf(accountId: string, gigId: string, known?: ReadonlyMap<string, GigTemplateStructure>): Promise<GigDetailDto> {
     assertGigId(gigId);
-    const policy = await this.deps.policy.policy();
+    const policy = await this.policies();
     const { gig, versions } = await this.read(async () => ({
       gig: await this.loadGig(this.db, accountId, gigId),
       versions: await this.loadVersions(this.db, gigId),
@@ -507,7 +606,7 @@ export class ProviderGigService {
       await this.read(() => this.loadGig(this.db, accountId, gigId));
       throw new GigError('GIG_VERSION_NOT_FOUND', 'the Gig version was not found', {});
     }
-    const policy = await this.deps.policy.policy();
+    const policy = await this.policies();
     const version = await this.read(async () => {
       await this.loadGig(this.db, accountId, gigId);
       return (await sql<Row>`${versionSelect} WHERE v.gig_id = ${gigId} AND v.version_number = ${versionNumber}`.execute(this.db)).rows.map(toVersionRow)[0];
@@ -519,7 +618,7 @@ export class ProviderGigService {
   /** The current PUBLISHED version of a Gig of the account, or null. */
   async getCurrentPublishedGigVersion(accountId: string, gigId: string): Promise<GigVersionDto | null> {
     assertGigId(gigId);
-    const policy = await this.deps.policy.policy();
+    const policy = await this.policies();
     const version = await this.read(async () => {
       await this.loadGig(this.db, accountId, gigId);
       return (await sql<Row>`${versionSelect} WHERE v.gig_id = ${gigId} AND v.status = 'PUBLISHED'`.execute(this.db)).rows.map(toVersionRow)[0];
@@ -683,12 +782,26 @@ export class ProviderGigService {
             SELECT count(*) AS n FROM ins`.execute(trx)
         ).rows[0]!.n,
       );
+      // CAT-004: the variants and add-ons are copied (same keys, same order); the photos are RE-ATTACHED (the same READY assets, no binary copy)
+      // the deltas are minor units of the currency of the base price: when the price was not carried over (the market currency changed) they would be wrong, so they are not copied
+      const options = priceCopied ? await copyOptions(trx, publishedId, newId) : { variants: 0, addOns: 0 };
+      const mediaCopied = await copyGigMedia(trx, publishedId, newId);
       await this.audit(trx, cid, {
         accountId,
         action: 'GIG_DRAFT_CREATED',
         gigId,
         gigVersionId: newId,
-        changes: { versionNumber: next, revision: 1, copiedFromVersion: Number(published.version_number), fieldValueCount: copied, priceCopied },
+        changes: {
+          versionNumber: next,
+          revision: 1,
+          copiedFromVersion: Number(published.version_number),
+          fieldValueCount: copied,
+          priceCopied,
+          optionsCopied: priceCopied,
+          variantCount: options.variants,
+          addOnCount: options.addOns,
+          mediaCount: mediaCopied,
+        },
       });
     });
     return this.detailOf(accountId, gigId, known);
@@ -794,7 +907,8 @@ export class ProviderGigService {
     assertGigId(gigId);
     const cid = getCorrelationId() ?? randomUUID();
     // other domains and the policy first, never inside the transaction
-    const policy = await this.deps.policy.policy();
+    const policies = await this.policies();
+    const policy = policies.gig;
     const { draft } = await this.preDraft(accountId, gigId);
     if (draft.revision !== body.expectedRevision) throw this.stale();
     const [pre, structure] = await Promise.all([
@@ -813,9 +927,22 @@ export class ProviderGigService {
       if (!(await this.deps.templates.enabledInMarket(registration.marketCode, structure.gigTemplateId)))
         throw new GigError('GIG_TEMPLATE_NOT_AVAILABLE', 'the Gig Template is not available', { reason: 'TEMPLATE_NOT_IN_MARKET' });
     }
-    const values = (await this.read(() => this.loadValues(this.db, [draft], new Map([[draft.gigTemplateVersionId, structure]])))).get(draft.gigVersionId)!;
-    // the content cannot change without a new revision, and the transaction checks the revision under the lock, so these issues hold when it commits
-    const issues: GigIssueDto[] = completenessIssues(contentOf(draft, values), structure, policy, registration.currency);
+    const [valuesByVersion, optionsByVersion, mediaByVersion] = await this.read(() =>
+      Promise.all([
+        this.loadValues(this.db, [draft], new Map([[draft.gigTemplateVersionId, structure]])),
+        loadOptions(this.db, [draft.gigVersionId]),
+        loadGigMedia(this.db, [draft.gigVersionId]),
+      ]),
+    );
+    const values = valuesByVersion.get(draft.gigVersionId)!;
+    const children = {
+      variants: optionsByVersion.get(draft.gigVersionId)?.variants ?? [],
+      addOns: optionsByVersion.get(draft.gigVersionId)?.addOns ?? [],
+      media: mediaByVersion.get(draft.gigVersionId) ?? [],
+    };
+    // the content and the children cannot change without a new revision, and the transaction checks the revision under the lock, so these issues hold when it commits
+    // (the database guards re-check the media counts, READY status and the permissions as the backstop)
+    const issues: GigIssueDto[] = publishIssues(contentOf(draft, values), structure, policies, registration.currency, children);
     if (issues.length > 0) throw new GigError('PUBLISH_BLOCKED', 'the Gig cannot be published yet', { reason: 'PUBLISH_BLOCKED', issues });
     await this.tx('publish', async (trx) => {
       await this.lockAccount(trx, accountId);
@@ -862,6 +989,9 @@ export class ProviderGigService {
           versionNumber: draft.versionNumber,
           revision: draft.revision,
           fieldValueCount: values.size,
+          variantCount: children.variants.length,
+          addOnCount: children.addOns.length,
+          mediaCount: children.media.length,
           gigStatus: [gig.status, 'ACTIVE'],
           supersededVersion: previous ? Number(previous.version_number) : null,
         },
@@ -873,6 +1003,9 @@ export class ProviderGigService {
         versionNumber: draft.versionNumber,
         gigTemplateVersionId: draft.gigTemplateVersionId,
         supersededGigVersionId: previous ? (previous.gig_version_id as string) : null,
+        variantCount: children.variants.length,
+        addOnCount: children.addOns.length,
+        mediaCount: children.media.length,
       };
       await this.event(trx, cid, GIG_EVENTS.gigVersionPublished, gigId, accountId, payload);
     });
@@ -889,10 +1022,10 @@ export class ProviderGigService {
     // (the retire is idempotent: a repeat after such a failure returns the detail without writing anything)
     const ids = await this.boundTemplateVersionIds(accountId, gigId);
     const known = await this.loadStructures(ids).catch(() => undefined);
-    await this.tx('retire', async (trx) => {
+    const orphanKeys = await this.tx('retire', async (trx) => {
       await this.lockAccount(trx, accountId);
       const gig = await this.lockGig(trx, accountId, gigId);
-      if (gig.status === 'RETIRED') return;
+      if (gig.status === 'RETIRED') return [];
       const open = (
         await sql<Row>`SELECT gig_version_id, version_number, status FROM provider.gig_versions WHERE gig_id = ${gigId} AND status IN ('DRAFT', 'PUBLISHED') ORDER BY version_number FOR UPDATE`.execute(
           trx,
@@ -900,6 +1033,9 @@ export class ProviderGigService {
       ).rows;
       // the Gig first, its open versions second (the version guard retires a version only together with a RETIRED Gig; the commit-time check closes the loop)
       await sql`UPDATE provider.gigs SET status = 'RETIRED', retired_at = now(), updated_at = now() WHERE gig_id = ${gigId}`.execute(trx);
+      // CAT-004: the unfinished photo uploads of the draft are closed while the draft is still a DRAFT (its attachments are deletable); the assets become ABANDONED. Order: account, Gig, versions, assets.
+      const draft = open.find((v) => v.status === 'DRAFT');
+      const keys = draft ? await closePendingMediaOfDraft(trx, { accountId, gigId, versionId: draft.gig_version_id as string, cid }) : [];
       await sql`UPDATE provider.gig_versions SET status = 'RETIRED', retired_at = now(), updated_at = now() WHERE gig_id = ${gigId} AND status IN ('DRAFT', 'PUBLISHED')`.execute(
         trx,
       );
@@ -911,8 +1047,139 @@ export class ProviderGigService {
       });
       const payload: GigRetiredPayload = { accountId, gigId };
       await this.event(trx, cid, GIG_EVENTS.gigRetired, gigId, accountId, payload);
+      return keys;
     });
+    // best effort after the commit: a retire never fails because of the store (the clean-up sweep removes what is left, the assets are ABANDONED)
+    if (orphanKeys.length > 0 && this.deps.store) await deleteMediaObjects(this.deps.store, orphanKeys).catch(() => undefined);
     return this.detailOf(accountId, gigId, known);
+  }
+
+  // ------------------------------------------------------------------ CAT-004: the draft-mutation primitive and the child operations
+  // SIGNATURES written by the lead; the Gig service agent implements readDraft, mutateDraft, replaceVariants and replaceAddOns (FIRST: the media agent builds on the primitive).
+  /** @see DraftMutator */
+  async readDraft(accountId: string, gigId: string): Promise<DraftReadContext> {
+    assertGigId(gigId);
+    const { gig, draft } = await this.preDraft(accountId, gigId);
+    const structure = (await this.loadStructures([draft.gigTemplateVersionId])).get(draft.gigTemplateVersionId)!;
+    const currency = await this.marketCurrency(accountId);
+    return {
+      gigId: gig.gigId,
+      gigStatus: gig.status,
+      draft: {
+        gigVersionId: draft.gigVersionId,
+        versionNumber: draft.versionNumber,
+        revision: draft.revision,
+        gigTemplateVersionId: draft.gigTemplateVersionId,
+      },
+      structure,
+      currency,
+    };
+  }
+  /** @see DraftMutator */
+  async mutateDraft<T>(
+    accountId: string,
+    gigId: string,
+    expectedRevision: number,
+    run: (ctx: DraftMutationContext) => Promise<{ changed: boolean; value: T }>,
+  ): Promise<{ value: T; detail: GigDetailDto }> {
+    assertGigId(gigId);
+    const cid = getCorrelationId() ?? randomUUID();
+    const pre = await this.readDraft(accountId, gigId);
+    if (pre.draft.revision !== expectedRevision) throw this.stale();
+    const value = await this.tx('child', async (trx) => {
+      await this.lockAccount(trx, accountId);
+      const gig = await this.lockGig(trx, accountId, gigId);
+      if (gig.status === 'RETIRED') throw new GigError('GIG_RETIRED', 'the Gig is retired', { reason: 'GIG_RETIRED' });
+      await this.lockDraft(trx, gigId, { gigVersionId: pre.draft.gigVersionId, revision: expectedRevision });
+      // the currency is the market currency NOW (the registration can change between the first read and the lock)
+      const currency = (await this.loadRegistration(trx, accountId))?.currency ?? null;
+      const out = await run({ ...pre, gigStatus: gig.status, currency, trx, accountId, cid });
+      if (out.changed)
+        await sql`UPDATE provider.gig_versions SET revision = revision + 1, updated_at = now() WHERE gig_version_id = ${pre.draft.gigVersionId}`.execute(trx);
+      return out.value;
+    });
+    return { value, detail: await this.detailOf(accountId, gigId, new Map([[pre.draft.gigTemplateVersionId, pre.structure]])) };
+  }
+  /** Replaces the WHOLE list of variants of the draft at the revision last read (array order = display order). */
+  async replaceVariants(accountId: string, gigId: string, input: unknown): Promise<GigDetailDto> {
+    const body = parseInput(ReplaceGigVariantsRequest, input);
+    return this.replaceOptions('variants', accountId, gigId, body.expectedRevision, body.variants);
+  }
+  /** Replaces the WHOLE list of add-ons of the draft at the revision last read. */
+  async replaceAddOns(accountId: string, gigId: string, input: unknown): Promise<GigDetailDto> {
+    const body = parseInput(ReplaceGigAddOnsRequest, input);
+    return this.replaceOptions('addOns', accountId, gigId, body.expectedRevision, body.addOns);
+  }
+  /**
+   * The whole-set replacement of one kind of option: ONE transaction on the draft-mutation primitive (account, Gig, draft at the revision), validation against the exact bound
+   * template version under the lock, delete-and-insert, one revision bump and one audit row (counts only) when something really changed.
+   */
+  private async replaceOptions(
+    kind: OptionKind,
+    accountId: string,
+    gigId: string,
+    expectedRevision: number,
+    items: readonly GigOptionInput[],
+  ): Promise<GigDetailDto> {
+    assertGigId(gigId);
+    const policy = await this.deps.policy.options();
+    const { detail } = await this.mutateDraft(accountId, gigId, expectedRevision, async (ctx) => {
+      const stored = (await loadOptions(ctx.trx, [ctx.draft.gigVersionId])).get(ctx.draft.gigVersionId)!;
+      const current = kind === 'variants' ? stored.variants : stored.addOns;
+      const checked = validateOptions(kind, items, new Set(current.map((i) => i.key)), ctx.structure, policy, () => `opt_${randomBytes(6).toString('hex')}`);
+      if (!checked.ok) throw new GigError('VALIDATION_FAILED', 'the draft is not valid', { reason: 'DRAFT_INVALID', issues: checked.issues });
+      if (sameOptions(current, checked.items)) return { changed: false, value: undefined };
+      await deleteOptions(ctx.trx, kind, ctx.draft.gigVersionId);
+      await insertOptions(ctx.trx, kind, ctx.draft.gigVersionId, checked.items);
+      const before = new Set(current.map((i) => i.key));
+      const after = new Set(checked.items.map((i) => i.key));
+      await this.audit(ctx.trx, ctx.cid, {
+        accountId,
+        action: kind === 'variants' ? 'GIG_VARIANTS_UPDATED' : 'GIG_ADD_ONS_UPDATED',
+        gigId,
+        gigVersionId: ctx.draft.gigVersionId,
+        changes: {
+          count: [current.length, checked.items.length],
+          added: checked.items.filter((i) => !before.has(i.key)).length,
+          removed: current.filter((i) => !after.has(i.key)).length,
+          revision: [ctx.draft.revision, ctx.draft.revision + 1],
+          versionNumber: ctx.draft.versionNumber,
+        },
+      });
+      return { changed: true, value: undefined };
+    });
+    return detail;
+  }
+
+  private mediaServiceInstance: GigMediaService | undefined;
+  private mediaService(): GigMediaService {
+    const { store, scanner } = this.deps;
+    if (!store || !scanner) throw new GigError('UNAVAILABLE', 'photos are unavailable', { reason: 'MEDIA_STORE_UNAVAILABLE' });
+    this.mediaServiceInstance ??= new GigMediaService({ database: this.deps.database, store, scanner, policy: this.deps.policy, drafts: this });
+    return this.mediaServiceInstance;
+  }
+  async requestMediaUpload(accountId: string, gigId: string, input: unknown): Promise<{ upload: GigMediaUploadDto; detail: GigDetailDto }> {
+    return this.mediaService().requestUpload(accountId, gigId, input);
+  }
+  async finalizeMedia(accountId: string, gigId: string, mediaId: string, input: unknown): Promise<GigDetailDto> {
+    return this.mediaService().finalize(accountId, gigId, mediaId, input);
+  }
+  async updateMedia(accountId: string, gigId: string, mediaId: string, input: unknown): Promise<GigDetailDto> {
+    return this.mediaService().updateAltText(accountId, gigId, mediaId, input);
+  }
+  async reorderMedia(accountId: string, gigId: string, input: unknown): Promise<GigDetailDto> {
+    return this.mediaService().reorder(accountId, gigId, input);
+  }
+  async detachMedia(accountId: string, gigId: string, mediaId: string, input: unknown): Promise<GigDetailDto> {
+    return this.mediaService().detach(accountId, gigId, mediaId, input);
+  }
+  /** `versionNumber` null = the draft, else that version of the Gig. */
+  async previewMedia(accountId: string, gigId: string, versionNumber: number | null, mediaId: string): Promise<GigMediaPreviewDto> {
+    return this.mediaService().preview(accountId, gigId, versionNumber, mediaId);
+  }
+  /** The clean-up job: abandoned uploads and unreferenced photos (reference-aware). */
+  async cleanupMedia(opts: { limit: number }): Promise<GigMediaCleanupResult> {
+    return this.mediaService().cleanup(opts);
   }
 }
 

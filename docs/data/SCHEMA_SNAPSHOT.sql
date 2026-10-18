@@ -156,6 +156,7 @@ CREATE TABLE catalog.gig_template_versions (
   updated_at timestamp with time zone NOT NULL DEFAULT now(),
   published_at timestamp with time zone,
   closed_at timestamp with time zone,
+  pricing_add_ons boolean NOT NULL DEFAULT false,
   CONSTRAINT pk_gig_template_versions PRIMARY KEY (gig_template_version_id),
   CONSTRAINT uq_gig_template_versions__id_template UNIQUE (gig_template_version_id, gig_template_id),
   CONSTRAINT uq_gig_template_versions__number UNIQUE (gig_template_id, version_number),
@@ -1308,11 +1309,33 @@ CREATE TABLE provider.gig_audit_events (
   CONSTRAINT fk_gig_audit_events__account_id FOREIGN KEY (account_id) REFERENCES identity.accounts(account_id) ON DELETE RESTRICT,
   CONSTRAINT fk_gig_audit_events__gig_id FOREIGN KEY (gig_id) REFERENCES provider.gigs(gig_id) ON DELETE RESTRICT,
   CONSTRAINT fk_gig_audit_events__gig_version_id FOREIGN KEY (gig_version_id) REFERENCES provider.gig_versions(gig_version_id) ON DELETE RESTRICT,
-  CONSTRAINT ck_gig_audit_events__action CHECK ((action = ANY (ARRAY['GIG_CREATED'::text, 'GIG_DRAFT_CREATED'::text, 'GIG_DRAFT_UPDATED'::text, 'GIG_VERSION_PUBLISHED'::text, 'GIG_VERSION_SUPERSEDED'::text, 'GIG_RETIRED'::text]))),
+  CONSTRAINT ck_gig_audit_events__action CHECK ((action = ANY (ARRAY['GIG_CREATED'::text, 'GIG_DRAFT_CREATED'::text, 'GIG_DRAFT_UPDATED'::text, 'GIG_VERSION_PUBLISHED'::text, 'GIG_VERSION_SUPERSEDED'::text, 'GIG_RETIRED'::text, 'GIG_VARIANTS_UPDATED'::text, 'GIG_ADD_ONS_UPDATED'::text, 'GIG_MEDIA_UPLOAD_AUTHORIZED'::text, 'GIG_MEDIA_UPLOAD_REFUSED'::text, 'GIG_MEDIA_ATTACHED'::text, 'GIG_MEDIA_DETACHED'::text, 'GIG_MEDIA_REORDERED'::text, 'GIG_MEDIA_UPDATED'::text]))),
   CONSTRAINT ck_gig_audit_events__actor CHECK (((length(btrim(actor)) > 0) AND (length(actor) <= 200))),
   CONSTRAINT ck_gig_audit_events__changes_object CHECK (((changes IS NULL) OR (jsonb_typeof(changes) = 'object'::text)))
 );
 CREATE INDEX idx_gig_audit_events__gig ON provider.gig_audit_events USING btree (gig_id, occurred_at);
+
+CREATE TABLE provider.gig_version_add_ons (
+  add_on_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  gig_version_id uuid NOT NULL,
+  item_key text NOT NULL,
+  name text NOT NULL,
+  description text,
+  price_delta_minor bigint NOT NULL,
+  duration_delta_minutes integer NOT NULL,
+  display_order integer NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_gig_version_add_ons PRIMARY KEY (add_on_id),
+  CONSTRAINT uq_gig_version_add_ons__key UNIQUE (gig_version_id, item_key),
+  CONSTRAINT uq_gig_version_add_ons__order UNIQUE (gig_version_id, display_order),
+  CONSTRAINT fk_gig_version_add_ons__version_id FOREIGN KEY (gig_version_id) REFERENCES provider.gig_versions(gig_version_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_gig_version_add_ons__description CHECK (((description IS NULL) OR ((length(btrim(description)) > 0) AND (char_length(description) <= 2000)))),
+  CONSTRAINT ck_gig_version_add_ons__display_order CHECK ((display_order >= 1)),
+  CONSTRAINT ck_gig_version_add_ons__duration_delta CHECK (((duration_delta_minutes >= 0) AND (duration_delta_minutes <= 100000))),
+  CONSTRAINT ck_gig_version_add_ons__key CHECK ((item_key ~ '^[a-z][a-z0-9_]{1,39}$'::text)),
+  CONSTRAINT ck_gig_version_add_ons__name CHECK (((length(btrim(name)) > 0) AND (char_length(name) <= 200))),
+  CONSTRAINT ck_gig_version_add_ons__price_delta CHECK (((price_delta_minor >= 0) AND (price_delta_minor <= '1000000000000'::bigint)))
+);
 
 CREATE TABLE provider.gig_version_field_values (
   gig_version_id uuid NOT NULL,
@@ -1335,6 +1358,49 @@ CREATE TABLE provider.gig_version_field_values (
   CONSTRAINT ck_gig_version_field_values__text CHECK (((text_value IS NULL) OR ((length(btrim(text_value)) > 0) AND (char_length(text_value) <= 20000))))
 );
 CREATE INDEX idx_gig_version_field_values__field_option ON provider.gig_version_field_values USING btree (gig_template_field_id, option_code);
+
+CREATE TABLE provider.gig_version_media (
+  gig_version_media_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  gig_version_id uuid NOT NULL,
+  media_asset_id uuid NOT NULL,
+  gig_template_field_id uuid NOT NULL,
+  display_order integer NOT NULL,
+  alt_text text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_gig_version_media PRIMARY KEY (gig_version_media_id),
+  CONSTRAINT uq_gig_version_media__asset UNIQUE (gig_version_id, media_asset_id),
+  CONSTRAINT uq_gig_version_media__order UNIQUE (gig_version_id, display_order) DEFERRABLE,
+  CONSTRAINT fk_gig_version_media__asset_id FOREIGN KEY (media_asset_id) REFERENCES provider.media_assets(media_asset_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_gig_version_media__field_id FOREIGN KEY (gig_template_field_id) REFERENCES catalog.gig_template_fields(gig_template_field_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_gig_version_media__version_id FOREIGN KEY (gig_version_id) REFERENCES provider.gig_versions(gig_version_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_gig_version_media__alt_text CHECK (((alt_text IS NULL) OR ((length(btrim(alt_text)) > 0) AND (char_length(alt_text) <= 500)))),
+  CONSTRAINT ck_gig_version_media__display_order CHECK ((display_order >= 1))
+);
+CREATE INDEX idx_gig_version_media__asset ON provider.gig_version_media USING btree (media_asset_id);
+CREATE INDEX idx_gig_version_media__field ON provider.gig_version_media USING btree (gig_template_field_id);
+
+CREATE TABLE provider.gig_version_variants (
+  variant_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  gig_version_id uuid NOT NULL,
+  item_key text NOT NULL,
+  name text NOT NULL,
+  description text,
+  price_delta_minor bigint NOT NULL,
+  duration_delta_minutes integer NOT NULL,
+  display_order integer NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_gig_version_variants PRIMARY KEY (variant_id),
+  CONSTRAINT uq_gig_version_variants__key UNIQUE (gig_version_id, item_key),
+  CONSTRAINT uq_gig_version_variants__order UNIQUE (gig_version_id, display_order),
+  CONSTRAINT fk_gig_version_variants__version_id FOREIGN KEY (gig_version_id) REFERENCES provider.gig_versions(gig_version_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_gig_version_variants__description CHECK (((description IS NULL) OR ((length(btrim(description)) > 0) AND (char_length(description) <= 2000)))),
+  CONSTRAINT ck_gig_version_variants__display_order CHECK ((display_order >= 1)),
+  CONSTRAINT ck_gig_version_variants__duration_delta CHECK (((duration_delta_minutes >= 0) AND (duration_delta_minutes <= 100000))),
+  CONSTRAINT ck_gig_version_variants__key CHECK ((item_key ~ '^[a-z][a-z0-9_]{1,39}$'::text)),
+  CONSTRAINT ck_gig_version_variants__name CHECK (((length(btrim(name)) > 0) AND (char_length(name) <= 200))),
+  CONSTRAINT ck_gig_version_variants__price_delta CHECK (((price_delta_minor >= 0) AND (price_delta_minor <= '1000000000000'::bigint)))
+);
 
 CREATE TABLE provider.gig_versions (
   gig_version_id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -1390,6 +1456,45 @@ CREATE TABLE provider.gigs (
 );
 CREATE INDEX idx_gigs__account_status ON provider.gigs USING btree (account_id, status);
 CREATE UNIQUE INDEX uq_gigs__client_request ON provider.gigs USING btree (account_id, client_request_id) WHERE (client_request_id IS NOT NULL);
+
+CREATE TABLE provider.media_assets (
+  media_asset_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  account_id uuid NOT NULL,
+  status text NOT NULL DEFAULT 'UPLOAD_PENDING'::text,
+  object_key text NOT NULL,
+  mime_type text NOT NULL,
+  size_bytes bigint NOT NULL,
+  sha256 character(64),
+  width integer,
+  height integer,
+  scan_status text NOT NULL DEFAULT 'PENDING'::text,
+  upload_expires_at timestamp with time zone NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  ready_at timestamp with time zone,
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  objects_removed_at timestamp with time zone,
+  upload_key_removed_at timestamp with time zone,
+  CONSTRAINT pk_media_assets PRIMARY KEY (media_asset_id),
+  CONSTRAINT uq_media_assets__object_key UNIQUE (object_key),
+  CONSTRAINT fk_media_assets__account_id FOREIGN KEY (account_id) REFERENCES identity.accounts(account_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_media_assets__dimensions CHECK ((((width IS NULL) = (height IS NULL)) AND ((width IS NULL) OR (((width >= 1) AND (width <= 30000)) AND ((height >= 1) AND (height <= 30000)))))),
+  CONSTRAINT ck_media_assets__expiry CHECK ((upload_expires_at > created_at)),
+  CONSTRAINT ck_media_assets__infected CHECK (((scan_status <> 'INFECTED'::text) OR (status = 'ABANDONED'::text))),
+  CONSTRAINT ck_media_assets__lifecycle CHECK ((((status = 'UPLOAD_PENDING'::text) AND (sha256 IS NULL) AND (width IS NULL) AND (height IS NULL) AND (ready_at IS NULL) AND (scan_status = ANY (ARRAY['PENDING'::text, 'ERROR'::text]))) OR ((status = 'READY'::text) AND (sha256 IS NOT NULL) AND (width IS NOT NULL) AND (height IS NOT NULL) AND (ready_at IS NOT NULL) AND (scan_status = ANY (ARRAY['CLEAN'::text, 'ERROR'::text]))) OR ((status = 'ABANDONED'::text) AND (ready_at IS NULL)) OR ((status = 'DELETED'::text) AND (sha256 IS NOT NULL) AND (width IS NOT NULL) AND (height IS NOT NULL) AND (ready_at IS NOT NULL)))),
+  CONSTRAINT ck_media_assets__mime_type CHECK ((mime_type = ANY (ARRAY['image/jpeg'::text, 'image/png'::text, 'image/webp'::text]))),
+  CONSTRAINT ck_media_assets__object_key CHECK (((length(object_key) >= 1) AND (length(object_key) <= 500))),
+  CONSTRAINT ck_media_assets__object_key_derived CHECK ((object_key = ('provider/gig-media/'::text || (media_asset_id)::text))),
+  CONSTRAINT ck_media_assets__objects_removed CHECK (((objects_removed_at IS NULL) OR (status = ANY (ARRAY['ABANDONED'::text, 'DELETED'::text])))),
+  CONSTRAINT ck_media_assets__scan_status CHECK ((scan_status = ANY (ARRAY['PENDING'::text, 'CLEAN'::text, 'INFECTED'::text, 'ERROR'::text]))),
+  CONSTRAINT ck_media_assets__sha256 CHECK (((sha256 IS NULL) OR (sha256 ~ '^[0-9a-f]{64}$'::text))),
+  CONSTRAINT ck_media_assets__size CHECK (((size_bytes > 0) AND (size_bytes <= 26214400))),
+  CONSTRAINT ck_media_assets__status CHECK ((status = ANY (ARRAY['UPLOAD_PENDING'::text, 'READY'::text, 'ABANDONED'::text, 'DELETED'::text]))),
+  CONSTRAINT ck_media_assets__upload_key_removed CHECK (((upload_key_removed_at IS NULL) OR (status = ANY (ARRAY['READY'::text, 'ABANDONED'::text, 'DELETED'::text]))))
+);
+CREATE INDEX idx_media_assets__account ON provider.media_assets USING btree (account_id);
+CREATE INDEX idx_media_assets__objects_to_remove ON provider.media_assets USING btree (updated_at) WHERE ((status = ANY (ARRAY['ABANDONED'::text, 'DELETED'::text])) AND (objects_removed_at IS NULL));
+CREATE INDEX idx_media_assets__pending_expiry ON provider.media_assets USING btree (upload_expires_at) WHERE (status = 'UPLOAD_PENDING'::text);
+CREATE INDEX idx_media_assets__upload_key_sweep ON provider.media_assets USING btree (upload_expires_at) WHERE ((status = 'READY'::text) AND (upload_key_removed_at IS NULL));
 
 CREATE TABLE provider.registration_service_types (
   provider_registration_id uuid NOT NULL,

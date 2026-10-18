@@ -3,6 +3,7 @@
 import {
   gigIssueKey,
   isGigFieldTypeSupported,
+  isGigFieldValueType,
   normalizeProviderText,
   textLength,
   type GigIssueDto,
@@ -104,6 +105,8 @@ export function checkFieldValue(f: GigTemplateFieldFacts, raw: string | number |
       if ((f.minNumber !== null && raw < f.minNumber) || (f.maxNumber !== null && raw > f.maxNumber)) return { ok: false, reason: 'FIELD_VALUE_OUT_OF_RANGE' };
       return { ok: true, value: raw };
     }
+    case 'MEDIA':
+      return { ok: false, reason: 'FIELD_MEDIA_NOT_A_VALUE' };
     default:
       return { ok: false, reason: 'FIELD_TYPE_NOT_SUPPORTED' };
   }
@@ -168,6 +171,11 @@ export function validateDraftInput(
       issues.push(issue('field', 'FIELD_NOT_PROVIDER_EDITABLE', f.fieldKey));
       continue;
     }
+    if (!isGigFieldValueType(f.fieldType) && isSupported(f)) {
+      // CAT-004: a MEDIA field is satisfied by attachments (their own endpoints), never by a value
+      issues.push(issue('field', 'FIELD_MEDIA_NOT_A_VALUE', f.fieldKey));
+      continue;
+    }
     if (!isSupported(f)) {
       issues.push(issue('field', 'FIELD_TYPE_NOT_SUPPORTED', f.fieldKey));
       continue;
@@ -184,7 +192,10 @@ export function validateDraftInput(
 export const templateWithdrawn = (s: GigTemplateStructure): boolean =>
   s.versionStatus === 'RETIRED' || s.templateStatus === 'RETIRED' || s.serviceTypeStatus === 'RETIRED';
 
-/** Everything that stands between a draft and PUBLISHED: complete copy, the price and duration the template asks for, every required field, nothing unsupported required. */
+/**
+ * Everything that stands between a draft and PUBLISHED in the Gig's OWN content: complete copy, the price and duration the template asks for, every required typed field, nothing
+ * unsupported required. Variants, add-ons and photos are checked by `optionsIssues` and `mediaIssues` (combined by `publishIssues` in gig-view).
+ */
 export function completenessIssues(
   content: GigContent,
   structure: GigTemplateStructure,
@@ -220,6 +231,8 @@ export function completenessIssues(
 
   for (const f of sortedFields(structure)) {
     if (f.behavior !== 'PROVIDER_REQUIRED') continue;
+    // a required MEDIA field is satisfied by attachments: the media rules (mediaIssues) decide, not a value
+    if (isSupported(f) && !isGigFieldValueType(f.fieldType)) continue;
     if (!isSupported(f)) issues.push(issue('field', 'FIELD_TYPE_NOT_SUPPORTED', f.fieldKey));
     else if (!content.values.has(f.fieldKey)) issues.push(issue('field', 'FIELD_REQUIRED', f.fieldKey));
   }

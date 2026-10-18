@@ -6,20 +6,35 @@ import {
   CORRELATION_HEADER,
   GIG_ERROR_CODES,
   GIG_ISSUE_REASONS,
+  GIG_MEDIA_REFUSAL_REASONS,
+  gigMediaRefusedKey,
   GIG_STATUSES,
   GIG_VERSION_STATUSES,
   GigDetailResponse,
+  GigMediaPreviewResponse,
+  GigMediaUploadResponse,
   GigMenuResponse,
   GigTemplateChoicesResponse,
   GigVersionResponse,
+  FinalizeGigMediaRequest,
+  DetachGigMediaRequest,
+  ReorderGigMediaRequest,
+  ReplaceGigAddOnsRequest,
+  ReplaceGigVariantsRequest,
+  RequestGigMediaUploadRequest,
+  UpdateGigMediaRequest,
   gigErrorKey,
   gigIssueKey,
   gigStatusKey,
   gigVersionStatusKey,
   type GigDetailDto,
   type GigDto,
+  type GigChildSummaryDto,
   type GigFieldDto,
   type GigIssueDto,
+  type GigMediaDto,
+  type GigMediaUploadDto,
+  type GigOptionDto,
   type GigMenuDto,
   type GigMenuItemDto,
   type GigTemplateChoicesDto,
@@ -54,9 +69,63 @@ export const fieldDto = (over: Partial<GigFieldDto> = {}): GigFieldDto => ({
   maxLength: null,
   minNumber: null,
   maxNumber: null,
+  minItems: null,
+  maxItems: null,
   options: [],
   ...over,
 });
+
+/** A MEDIA field of the bound template version (CAT-004): `photos` is required with at least one and at most three photos unless overridden. */
+export const mediaFieldDto = (over: Partial<GigFieldDto> = {}): GigFieldDto =>
+  fieldDto({
+    fieldKey: 'photos',
+    fieldType: 'MEDIA',
+    section: 'DETAILS',
+    behavior: 'PROVIDER_REQUIRED',
+    required: true,
+    displayOrder: 20,
+    labelContentKey: 'catalog.gig_template.field.photos.label',
+    minItems: 1,
+    maxItems: 3,
+    ...over,
+  });
+
+export const optionDto = (n: number, over: Partial<GigOptionDto> = {}): GigOptionDto => ({
+  key: `opt_${String(n).padStart(12, '0')}`,
+  name: `Option ${n}`,
+  description: null,
+  priceDeltaMinor: n * 500,
+  durationDeltaMinutes: n * 15,
+  displayOrder: n,
+  ...over,
+});
+
+export const MEDIA_ID = '6c2f9b44-1d7a-4e08-b3a5-7f0e8d1c2a55';
+export const mediaDto = (n: number, over: Partial<GigMediaDto> = {}): GigMediaDto => ({
+  mediaId: `6c2f9b44-1d7a-4e08-b3a5-7f0e8d1c2a${String(50 + n)}`,
+  fieldKey: 'photos',
+  displayOrder: n,
+  status: 'READY',
+  mimeType: 'image/png',
+  sizeBytes: 2048,
+  width: 800,
+  height: 600,
+  altText: null,
+  ...over,
+});
+
+export const childSummary = (over: Partial<GigChildSummaryDto> = {}): GigChildSummaryDto => ({
+  variantCount: 0,
+  addOnCount: 0,
+  mediaCount: 0,
+  variantsValid: true,
+  addOnsValid: true,
+  mediaRequirementSatisfied: true,
+  ...over,
+});
+/** The children facts a version's own lists imply (valid unless overridden). */
+export const childrenOf = (v: Pick<GigVersionDto, 'variants' | 'addOns' | 'media'>, over: Partial<GigChildSummaryDto> = {}): GigChildSummaryDto =>
+  childSummary({ variantCount: v.variants.length, addOnCount: v.addOns.length, mediaCount: v.media.length, ...over });
 
 export const issueDto = (over: Partial<GigIssueDto> = {}): GigIssueDto => ({
   target: 'title',
@@ -103,7 +172,22 @@ export const versionDto = (over: Partial<GigVersionDto> = {}): GigVersionDto => 
     description: { maxLength: 5000 },
     price: { permitted: true, required: true, currency: 'USD' },
     duration: { permitted: true, required: true, minMinutes: 30, maxMinutes: 480, suggestedMinutes: 120 },
+    variants: { permitted: true, maxCount: 10, nameMaxLength: 80, descriptionMaxLength: 500 },
+    addOns: { permitted: true, maxCount: 20, nameMaxLength: 80, descriptionMaxLength: 500 },
+    media: {
+      permitted: true,
+      maxItems: 50,
+      maxFileSizeBytes: 10_485_760,
+      allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp'],
+      minEdgePixels: 200,
+      maxEdgePixels: 12_000,
+      altTextMaxLength: 200,
+    },
   },
+  variants: [],
+  addOns: [],
+  media: [],
+  children: childSummary(),
   publishable: false,
   issues: [],
   ...over,
@@ -174,10 +258,17 @@ export const menuItemDto = (d: GigDetailDto): GigMenuItemDto => ({
         price: d.currentVersion.price,
         durationMinutes: d.currentVersion.durationMinutes,
         publishedAt: d.currentVersion.publishedAt ?? T1,
+        children: d.currentVersion.children,
       }
     : null,
   draftVersion: d.draftVersion
-    ? { versionNumber: d.draftVersion.versionNumber, revision: d.draftVersion.revision, title: d.draftVersion.title, updatedAt: d.draftVersion.updatedAt }
+    ? {
+        versionNumber: d.draftVersion.versionNumber,
+        revision: d.draftVersion.revision,
+        title: d.draftVersion.title,
+        updatedAt: d.draftVersion.updatedAt,
+        children: d.draftVersion.children,
+      }
     : null,
   versionCount: d.versions.length,
 });
@@ -233,11 +324,26 @@ export interface GigApiStub {
   forced: Record<string, { status: number; code: string; category: string }>;
   /** Sends this JSON body (as is) instead of the data of the route, to prove a contract violation is handled. */
   rawBody: Record<string, unknown>;
+  /** The answer of `POST .../draft/media/uploads` (CAT-004). */
+  upload: GigMediaUploadDto;
+  /** The one-object GET target the preview routes answer with, by media id (a media id that is not here is a 404 GIG_MEDIA_NOT_FOUND). */
+  previews: Map<string, string>;
   reset(): void;
   gigCalls(): GigApiCall[];
 }
 
-const fresh = (): Pick<GigApiStub, 'menu' | 'choices' | 'details' | 'versions' | 'createdStatus' | 'revoked' | 'forced' | 'rawBody'> => ({
+export const uploadDto = (over: Partial<GigMediaUploadDto> = {}): GigMediaUploadDto => ({
+  media: mediaDto(9, { status: 'UPLOADING', mimeType: 'image/png', sizeBytes: 100, width: null, height: null }),
+  upload: { url: 'http://127.0.0.1:1/private/gig-media/one-time.upload?X-Signature=ONE-TIME', headers: { 'content-type': 'image/png' }, expiresAt: T1 },
+  maxSizeBytes: 10_485_760,
+  revision: 4,
+  ...over,
+});
+
+const fresh = (): Pick<
+  GigApiStub,
+  'menu' | 'choices' | 'details' | 'versions' | 'createdStatus' | 'revoked' | 'forced' | 'rawBody' | 'upload' | 'previews'
+> => ({
   menu: menuDto(),
   choices: choicesDto(),
   details: new Map(),
@@ -246,6 +352,8 @@ const fresh = (): Pick<GigApiStub, 'menu' | 'choices' | 'details' | 'versions' |
   revoked: false,
   forced: {},
   rawBody: {},
+  upload: uploadDto(),
+  previews: new Map(),
 });
 
 export function attachGigApi(stub: ContentStub): GigApiStub {
@@ -284,7 +392,17 @@ export function attachGigApi(stub: ContentStub): GigApiStub {
     };
     const url = path.slice('/api/v1'.length).split('?')[0]!;
     const m = /^\/provider\/gigs\/([^/]+)(\/versions(?:\/([^/]+))?|\/draft|\/publish|\/retire)?$/.exec(url);
-    const route = `${req.method ?? ''} ${m ? `/provider/gigs/:gigId${m[2] ? (m[3] ? '/versions/:version' : m[2]) : ''}` : url}`;
+    // CAT-004: the child routes of the draft and the preview of a version's photo
+    const child =
+      /^\/provider\/gigs\/([^/]+)\/(?:draft\/(variants|add-ons|media\/uploads|media\/order|media\/([^/]+)(?:\/(finalize|preview))?)|versions\/([^/]+)\/media\/([^/]+)\/preview)$/.exec(
+        url,
+      );
+    let tail: string | undefined;
+    if (child) {
+      const [, , kind, mediaId, sub, versionNo] = child;
+      tail = versionNo ? '/versions/:version/media/:mediaId/preview' : mediaId ? `/draft/media/:mediaId${sub ? `/${sub}` : ''}` : `/draft/${kind}`;
+    }
+    const route = `${req.method ?? ''} ${child ? `/provider/gigs/:gigId${tail}` : m ? `/provider/gigs/:gigId${m[2] ? (m[3] ? '/versions/:version' : m[2]) : ''}` : url}`;
     const forced = api.forced[route] ?? api.forced[`${req.method ?? ''} ${url}`];
     if (forced) return fail(forced.status, forced.code, forced.category);
     const raw = api.rawBody[route] ?? api.rawBody[`${req.method ?? ''} ${url}`];
@@ -297,6 +415,9 @@ export function attachGigApi(stub: ContentStub): GigApiStub {
       const d = detail(id);
       return d ? ok(GigDetailResponse.shape.data.parse(d), status) : notFound();
     };
+    // a request body that violates the contract is a 400, like the API's strict bodies
+    const strict = (schema: { safeParse: (v: unknown) => { success: boolean } }): boolean => schema.safeParse(body).success;
+    const invalid = (): boolean => fail(400, 'VALIDATION_FAILED', 'VALIDATION');
     switch (route) {
       case 'GET /provider/gig-templates':
         return ok(GigTemplateChoicesResponse.shape.data.parse(api.choices));
@@ -316,6 +437,27 @@ export function attachGigApi(stub: ContentStub): GigApiStub {
       case 'GET /provider/gigs/:gigId/versions/:version': {
         const v = api.versions.get(`${m![1]}/${m![3]}`);
         return v && detail(m![1]!) ? ok(GigVersionResponse.shape.data.parse(v)) : fail(404, 'GIG_VERSION_NOT_FOUND', 'NOT_FOUND');
+      }
+      case 'PUT /provider/gigs/:gigId/draft/variants':
+        return strict(ReplaceGigVariantsRequest) ? detailOut(child![1]!) : invalid();
+      case 'PUT /provider/gigs/:gigId/draft/add-ons':
+        return strict(ReplaceGigAddOnsRequest) ? detailOut(child![1]!) : invalid();
+      case 'POST /provider/gigs/:gigId/draft/media/uploads':
+        if (!strict(RequestGigMediaUploadRequest)) return invalid();
+        return detail(child![1]!) ? ok(GigMediaUploadResponse.shape.data.parse(api.upload), 201) : notFound();
+      case 'POST /provider/gigs/:gigId/draft/media/:mediaId/finalize':
+        return strict(FinalizeGigMediaRequest) ? detailOut(child![1]!) : invalid();
+      case 'PUT /provider/gigs/:gigId/draft/media/:mediaId':
+        return strict(UpdateGigMediaRequest) ? detailOut(child![1]!) : invalid();
+      case 'DELETE /provider/gigs/:gigId/draft/media/:mediaId':
+        return strict(DetachGigMediaRequest) ? detailOut(child![1]!) : invalid();
+      case 'PUT /provider/gigs/:gigId/draft/media/order':
+        return strict(ReorderGigMediaRequest) ? detailOut(child![1]!) : invalid();
+      case 'GET /provider/gigs/:gigId/draft/media/:mediaId/preview':
+      case 'GET /provider/gigs/:gigId/versions/:version/media/:mediaId/preview': {
+        if (!detail(child![1]!)) return notFound();
+        const target = api.previews.get(child![3] ?? child![6]!);
+        return target ? ok(GigMediaPreviewResponse.shape.data.parse({ url: target, expiresAt: T1 })) : fail(404, 'GIG_MEDIA_NOT_FOUND', 'NOT_FOUND');
       }
       default:
         return fail(404, 'ROUTE_NOT_FOUND', 'NOT_FOUND');
@@ -380,17 +522,78 @@ const menuKeys = [
   'heading',
 ];
 const createKeys = ['heading', 'template', 'submit', 'none_available'];
-const noticeKeys = ['created', 'saved', 'published', 'draft_created', 'retired'];
+const noticeKeys = [
+  'created',
+  'saved',
+  'published',
+  'draft_created',
+  'retired',
+  'variants_saved',
+  'add_ons_saved',
+  'photo_added',
+  'photo_removed',
+  'photo_order_saved',
+  'photo_saved',
+];
+/** CAT-004 UI labels (section 8 of the checkpoint spec). */
+const optionsKeys = [
+  'variants.heading',
+  'variants.intro',
+  'add_ons.heading',
+  'add_ons.intro',
+  'empty',
+  'not_permitted',
+  'name',
+  'description',
+  'price_delta',
+  'duration_delta',
+  'add',
+  'remove',
+  'move_up',
+  'move_down',
+  'save',
+  'limit_note',
+  'delta_note',
+];
+const mediaKeys = [
+  'heading',
+  'intro',
+  'rule_required',
+  'rule_optional',
+  'rule_prohibited',
+  'no_field',
+  'count',
+  'status_uploading',
+  'status_ready',
+  'upload',
+  'file',
+  'alt_text',
+  'alt_hint',
+  'save_alt',
+  'remove',
+  'move_up',
+  'move_down',
+  'finish',
+  'preview',
+  'types_note',
+  'size_note',
+  'unavailable',
+];
+const menuChildKeys = ['variants', 'add_ons', 'photos', 'photos_missing'];
 export const GIG_TEXT: Record<string, string> = {
   'provider.gig.page.title': 'Registry gigs title',
   'provider.gig.page.intro': 'Registry gigs intro',
   ...Object.fromEntries(editorKeys.map((s) => [`provider.gig.editor.${s}`, `Registry editor ${s.replaceAll('_', ' ')}`])),
   ...Object.fromEntries(menuKeys.map((s) => [`provider.gig.menu.${s}`, `Registry menu ${s.replaceAll('_', ' ')}`])),
+  ...Object.fromEntries(optionsKeys.map((s) => [`provider.gig.options.${s}`, `Registry options ${s.replaceAll('_', ' ').replaceAll('.', ' ')}`])),
+  ...Object.fromEntries(mediaKeys.map((s) => [`provider.gig.media.${s}`, `Registry media ${s.replaceAll('_', ' ')}`])),
+  ...Object.fromEntries(menuChildKeys.map((s) => [`provider.gig.menu.${s}`, `Registry menu ${s.replaceAll('_', ' ')}`])),
   ...Object.fromEntries(createKeys.map((s) => [`provider.gig.create.${s}`, `Registry create ${s.replaceAll('_', ' ')}`])),
   ...Object.fromEntries(noticeKeys.map((s) => [`provider.gig.notice.${s}`, `Registry notice ${s.replaceAll('_', ' ')}`])),
   ...Object.fromEntries(GIG_STATUSES.map((s) => [gigStatusKey(s), `Registry gig state ${s.toLowerCase()}`])),
   ...Object.fromEntries(GIG_VERSION_STATUSES.map((s) => [gigVersionStatusKey(s), `Registry version state ${s.toLowerCase()}`])),
   ...Object.fromEntries(GIG_ERROR_CODES.map((c) => [gigErrorKey(c), `Registry gig error ${c.toLowerCase()}`])),
+  ...Object.fromEntries(GIG_MEDIA_REFUSAL_REASONS.map((r) => [gigMediaRefusedKey(r), `Registry photo refused ${r.toLowerCase()}`])),
   ...Object.fromEntries(GIG_ISSUE_REASONS.map((r) => [gigIssueKey(r), `Registry issue ${r.toLowerCase()}`])),
   'catalog.gig_template.deep_clean.name': 'Registry template deep clean',
   'catalog.gig_template.window_wash.name': 'Registry template window wash',

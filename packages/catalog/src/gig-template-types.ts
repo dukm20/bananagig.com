@@ -131,6 +131,7 @@ export function pricingModelsOf(r: Row): PricingModel[] {
   if (r.pricing_fixed_with_variants === true) out.push('FIXED_WITH_VARIANTS');
   if (r.pricing_bundle_eligible === true) out.push('BUNDLE_ELIGIBLE');
   if (r.pricing_drop_eligible === true) out.push('DROP_ELIGIBLE');
+  if (r.pricing_add_ons === true) out.push('ADD_ONS');
   return out;
 }
 export function areaModesOf(r: Row): AreaMode[] {

@@ -29,6 +29,8 @@ export interface DownloadUrlRequest {
   key: string;
   ttlSeconds: number;
   contentType?: string;
+  /** `attachment` (default: the browser saves the file) or `inline` (the browser shows it, e.g. an image preview). */
+  disposition?: 'attachment' | 'inline';
 }
 export interface DownloadAuthorization {
   url: string;
@@ -44,7 +46,10 @@ export interface PrivateObjectStore {
   read(key: string, maxBytes: number): Promise<Buffer | null>;
   /** Like `read`, with the version (ETag) of the bytes returned; the read fails with ObjectStoreError('CHANGED') if the object changes while it is being read. */
   readVersioned(key: string, maxBytes: number): Promise<{ bytes: Buffer; version: string } | null>;
-  /** Copies the object at `fromKey` to `toKey` only while it still has `version`; ObjectStoreError('CHANGED') otherwise. The source is left in place. */
+  /**
+   * Copies the object at `fromKey` to `toKey` only while it still has `version`; ObjectStoreError('CHANGED') otherwise. The source is left in place. Only the bytes and the content
+   * type are carried over: any other metadata the uploader attached to the source (cache control, content encoding, user metadata) is dropped.
+   */
   copyIfVersion(fromKey: string, toKey: string, version: string): Promise<void>;
   /** A one-object, short-lived URL the caller GETs the file from (served as an attachment). */
   createDownloadUrl(r: DownloadUrlRequest): Promise<DownloadAuthorization>;
@@ -146,6 +151,10 @@ export class S3PrivateObjectStore implements PrivateObjectStore {
   }
 
   async copyIfVersion(fromKey: string, toKey: string, version: string): Promise<void> {
+    // The browser's PUT can carry metadata nobody signed (Cache-Control, Content-Encoding, Content-Disposition, x-amz-meta-*): a plain copy would carry it to the final object. REPLACE
+    // starts the target with no metadata but the content type, which is taken from the source and set explicitly. The version condition still guards the bytes.
+    const source = await this.head(fromKey);
+    if (source === null) throw new ObjectStoreError('CHANGED', 'the object changed');
     try {
       await this.o.client.send(
         new CopyObjectCommand({
@@ -153,6 +162,8 @@ export class S3PrivateObjectStore implements PrivateObjectStore {
           Key: toKey,
           CopySource: `${this.o.bucket}/${fromKey.split('/').map(encodeURIComponent).join('/')}`,
           CopySourceIfMatch: version,
+          MetadataDirective: 'REPLACE',
+          ...(source.contentType ? { ContentType: source.contentType } : {}),
         }),
       );
     } catch (err) {
@@ -167,7 +178,7 @@ export class S3PrivateObjectStore implements PrivateObjectStore {
       new GetObjectCommand({
         Bucket: this.o.bucket,
         Key: r.key,
-        ResponseContentDisposition: 'attachment',
+        ResponseContentDisposition: r.disposition ?? 'attachment',
         ...(r.contentType ? { ResponseContentType: r.contentType } : {}),
       }),
       { expiresIn: r.ttlSeconds },
@@ -192,7 +203,7 @@ export class S3PrivateObjectStore implements PrivateObjectStore {
 export class MemoryObjectStore implements PrivateObjectStore {
   readonly objects = new Map<string, { bytes: Buffer; contentType: string | undefined; version: number }>();
   private versions = 0;
-  readonly issued: { kind: 'upload' | 'download'; key: string; ttlSeconds: number }[] = [];
+  readonly issued: { kind: 'upload' | 'download'; key: string; ttlSeconds: number; disposition?: 'attachment' | 'inline' }[] = [];
   constructor(private readonly now: () => Date = () => new Date()) {}
 
   /** Plays the uploader: stores bytes under a key (as a PUT to a presigned URL would). */
@@ -229,7 +240,7 @@ export class MemoryObjectStore implements PrivateObjectStore {
     this.put(toKey, o.bytes, o.contentType);
   }
   async createDownloadUrl(r: DownloadUrlRequest): Promise<DownloadAuthorization> {
-    this.issued.push({ kind: 'download', key: r.key, ttlSeconds: r.ttlSeconds });
+    this.issued.push({ kind: 'download', key: r.key, ttlSeconds: r.ttlSeconds, ...(r.disposition ? { disposition: r.disposition } : {}) });
     return { url: `memory://download/${encodeURIComponent(r.key)}`, expiresAt: new Date(this.now().getTime() + r.ttlSeconds * 1000) };
   }
   async delete(key: string): Promise<void> {

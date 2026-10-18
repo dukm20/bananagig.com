@@ -1,7 +1,8 @@
 import type { Metadata } from 'next';
 import { headers } from 'next/headers';
 import { randomUUID } from 'node:crypto';
-import { gigStatusKey, type GigMenuDto, type GigTemplateChoicesDto } from '@bananagig/contracts';
+import type { ReactNode } from 'react';
+import { gigStatusKey, type GigChildSummaryDto, type GigMenuDto, type GigTemplateChoicesDto } from '@bananagig/contracts';
 import { getSession } from '../../../lib/auth/handlers';
 import { authDeps } from '../../../lib/auth/runtime';
 import { BOOTSTRAP_COPY, getContentMany, renderContent } from '../../../lib/content';
@@ -21,6 +22,31 @@ const k = gigKey;
 interface SearchParams {
   notice?: string | string[];
   error?: string | string[];
+}
+
+/** The counts of variants, add-ons and photos of a version, and a text note when the photo requirement is not met (facts from the API; nothing here decides). */
+function ChildCounts({ summary: c, text, id, labelledBy }: { summary: GigChildSummaryDto; text: (key: string) => ReactNode; id: string; labelledBy: string }) {
+  const rows: Array<[string, number]> = [
+    ['menu.variants', c.variantCount],
+    ['menu.add_ons', c.addOnCount],
+    ['menu.photos', c.mediaCount],
+  ];
+  const shown = rows.filter(([key]) => text(k(key)));
+  return (
+    <>
+      {shown.length > 0 ? (
+        <dl className="gig-facts gig-counts" id={id} aria-labelledby={labelledBy}>
+          {shown.map(([key, n]) => (
+            <div className="gig-row" key={key}>
+              <dt>{text(k(key))}</dt>
+              <dd>{n}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
+      {!c.mediaRequirementSatisfied && text(k('menu.photos_missing')) ? <p className="gig-note">{text(k('menu.photos_missing'))}</p> : null}
+    </>
+  );
 }
 
 export default async function ProviderGigsPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
@@ -68,6 +94,10 @@ export default async function ProviderGigsPage({ searchParams }: { searchParams:
           k('menu.no_published'),
           k('menu.price'),
           k('menu.duration'),
+          k('menu.variants'),
+          k('menu.add_ons'),
+          k('menu.photos'),
+          k('menu.photos_missing'),
           k('editor.version'),
           ...(m.gigs.length === 0 ? [k('menu.empty')] : []),
           ...(m.cannotCreateReason === 'PROVIDER_NOT_ELIGIBLE' ? [k('menu.not_eligible')] : []),
@@ -149,7 +179,7 @@ export default async function ProviderGigsPage({ searchParams }: { searchParams:
                       {cv ? (
                         <dl className="gig-facts">
                           <div className="gig-row">
-                            <dt>
+                            <dt id={`gig-current-label-${g.gig.gigId}`}>
                               {text(k('menu.current_version'))}{' '}
                               {text(k('editor.version')) ? (
                                 <span>
@@ -177,8 +207,16 @@ export default async function ProviderGigsPage({ searchParams }: { searchParams:
                       ) : text(k('menu.no_published')) ? (
                         <p>{text(k('menu.no_published'))}</p>
                       ) : null}
+                      {cv ? (
+                        <ChildCounts
+                          id={`gig-counts-${g.gig.gigId}-current`}
+                          labelledBy={`gig-current-label-${g.gig.gigId} gig-name-${g.gig.gigId}`}
+                          text={text}
+                          summary={cv.children}
+                        />
+                      ) : null}
                       {dv && text(k('menu.draft_version')) ? (
-                        <p>
+                        <p id={`gig-draft-label-${g.gig.gigId}`}>
                           {text(k('menu.draft_version'))}
                           {text(k('editor.version')) ? (
                             <>
@@ -188,6 +226,14 @@ export default async function ProviderGigsPage({ searchParams }: { searchParams:
                           ) : null}
                           {dv.title ? <>: {dv.title}</> : null}
                         </p>
+                      ) : null}
+                      {dv ? (
+                        <ChildCounts
+                          id={`gig-counts-${g.gig.gigId}-draft`}
+                          labelledBy={`${text(k('menu.draft_version')) ? `gig-draft-label-${g.gig.gigId} ` : ''}gig-name-${g.gig.gigId}`}
+                          text={text}
+                          summary={dv.children}
+                        />
                       ) : null}
                       {text(k('menu.open')) ? (
                         <p>

@@ -445,7 +445,7 @@ const GIG_MESSAGES = {
   ],
   gigVersionPublished: [
     'ProviderGigVersionPublished',
-    'A Gig version was published (frozen) and the previous published version, when there was one, was superseded in the same transaction. This does NOT make the provider live or bookable.',
+    'A Gig version was published (frozen) and the previous published version, when there was one, was superseded in the same transaction. The payload carries the counts of variants, add-ons and photos of the version (never names, keys or hashes). This does NOT make the provider live or bookable.',
     GigVersionPublishedPayload,
     'provider_gig',
   ],

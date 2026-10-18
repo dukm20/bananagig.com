@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Let an existing account become a provider and track where it is in onboarding: the `provider` schema (registration attempts, selected service types, audit), the `@bananagig/provider` service with its pure requirement evaluator, the owner-only API under `/api/v1/provider` and the temporary web flow. Since PRO-001 the registration covers start/resume, market, service types, the derived requirement list, server-controlled submit and cancel. Since CAT-003 the same schema holds the provider's Gigs: an identity, immutable versions bound to the exact Gig Template version they were built from, typed field values, audit, and the owner-only GigMenu (`docs/engineering/PROVIDER_GIGS.md`). Later checkpoints add steps (subscription, profile, Go-Live) by implementing ports, not by changing the registration table.
+Let an existing account become a provider and track where it is in onboarding: the `provider` schema (registration attempts, selected service types, audit), the `@bananagig/provider` service with its pure requirement evaluator, the owner-only API under `/api/v1/provider` and the temporary web flow. Since PRO-001 the registration covers start/resume, market, service types, the derived requirement list, server-controlled submit and cancel. Since CAT-003 the same schema holds the provider's Gigs: an identity, immutable versions bound to the exact Gig Template version they were built from, typed field values, audit, and the owner-only GigMenu (`docs/engineering/PROVIDER_GIGS.md`). Since CAT-004 a Gig version also owns its variants, add-ons and photos (version-owned children; the photo bytes are immutable private assets shared by attachment). Later checkpoints add steps (subscription, profile, Go-Live) by implementing ports, not by changing the registration table.
 
 ## When to use
 
@@ -10,7 +10,8 @@ Let an existing account become a provider and track where it is in onboarding: t
 - Adding or changing an onboarding step (TRUST-001 verification, subscription, PRO-002 profile, CAT-003 Gigs) or the Go-Live gate (PRO-003): you plug into the evaluator through `PrerequisitePort` and content keys.
 - Changing provider registration policy (verified contacts, allowed market statuses, number of service types) or its wording.
 - Touching the `provider` schema, its guards, API, events or the `/provider/registration` and `/provider/gigs` web pages.
-- Building on provider Gigs: variants, add-ons, media (CAT-004), template adoption, service areas, availability, search or Go-Live (PRO-003) read published Gig versions and the readiness facts; the Gig rules are below.
+- Building on provider Gigs: booking (BOOK), BananaDrop (DROP), template adoption, service areas, availability, search, media delivery or Go-Live (PRO-003) read published Gig versions (variants, add-ons and photos included) and the readiness facts; the Gig rules are below.
+- Changing variants, add-ons or photos of a Gig (CAT-004): the draft-mutation primitive, the photo upload flow and the clean-up job are described below.
 
 ## Canonical files
 
@@ -23,6 +24,7 @@ Let an existing account become a provider and track where it is in onboarding: t
 - `packages/testing/src/provider-model.itest.ts`, `packages/provider/src/provider.test.ts`, `packages/provider/src/provider.itest.ts`, `packages/contracts/src/provider.test.ts`, `apps/api/src/provider.test.ts`, `apps/api/src/provider.itest.ts`, `apps/web/src/provider-handlers.test.ts`, `apps/web/src/provider-registration.test.tsx`, `apps/web/src/provider-client.test.ts`, `apps/smoke/src/index.ts` (scenario `Provider registration`)
 - `docs/engineering/PROVIDER_REGISTRATION.md`, `docs/architecture/ADR-0042-provider-registration-is-provider-domain-state-of-the-existing-account-with-derived-onboarding-steps.md`
 - Gigs (CAT-003): `db/migrations/0020_provider_gigs.sql`, `packages/contracts/src/gig.ts`, `packages/provider/src/{gig-service,gig-types,gig-policy,gig-errors}.ts`, `apps/api/src/modules/provider/{gig-routes,gig-dto,gig-wiring}.ts`, `packages/testing/src/gig-model.itest.ts`, `packages/provider/src/gig.test.ts`, `packages/provider/src/gig.itest.ts`, `apps/api/src/gig.test.ts`, `apps/api/src/gig.itest.ts`, `docs/engineering/PROVIDER_GIGS.md`, `docs/architecture/ADR-0046-provider-gig-versions-bind-immutably-to-exact-gig-template-versions.md`
+- Variants, add-ons and photos (CAT-004): `db/migrations/0021_gig_variants_addons_media.sql`, `0022_gig_media_hardening.sql`, `0023_gig_options_copy_fix.sql`, `packages/provider/src/{gig-options,gig-media,gig-media-model}.ts`, `apps/worker/src/jobs/gig-media.ts`, `apps/web/src/lib/auth/{gig-draft-handlers,gig-media-preview}.ts`, `packages/testing/src/gig-options-media-model.itest.ts`, `packages/provider/src/{gig-options.test,gig-media.test,gig-media.itest}.ts`, `apps/api/src/gig-options-media.itest.ts`, `docs/architecture/ADR-0047-gig-variants-add-ons-and-photos-are-version-owned-provider-data-with-immutable-media-assets-in-private-storage.md`
 
 ## Architecture rules
 
@@ -55,13 +57,24 @@ Let an existing account become a provider and track where it is in onboarding: t
 - **The `GIGS` onboarding step** comes from `gigsPrerequisite` over the readiness facts (`NOT_STARTED`, `IN_PROGRESS`, `COMPLETE`; never `BLOCKED`; it does not block registration submit).
 - **Product direction (PRD-TRP-001, `docs/product/BananaGig_PRD_TRP_Alignment.md`): BananaDrop is a first-class core domain.** A provider Gig, its versions, variants, add-ons and media are built to be CONSUMED by a later BananaDrop, never to contain one: a BananaDrop references the exact Gig version (and a variant key within it); price tiers, ladders, floors, thresholds, capacity and participation live in the DROP domain, are provider-configured and platform-authoritative, and are never stored on the Gig, a variant or an add-on. Compatible services of one BananaDrop keep their own base prices and ladders (one BananaDrop is never one universal price). Provider role, registration, verification, Go-Live (PRO-003), booking eligibility and BananaDrop eligibility stay separate concepts; additional demand never creates capacity.
 
+### Gig variants, add-ons and photos (CAT-004, ADR-0047)
+
+- **Children belong to the exact Gig VERSION, never to the Gig, and freeze with it.** `gig_version_variants`, `gig_version_add_ons` and `gig_version_media` carry `gig_version_id`; DB guards allow writes only while the parent is a DRAFT (`VERSION_FROZEN`, also against DELETE). The next draft COPIES variants and add-ons (same `item_key`, same order, row ids regenerated) and RE-ATTACHES the same READY photo assets (no binary copy); unfinished uploads are not copied. If the base price was not carried over (market currency changed) the options are NOT copied either, because their deltas are minor units of the old currency.
+- **One pricing rule: base + non-negative delta.** The Gig price is the base; a variant or add-on adds `price_delta_minor >= 0` and `duration_delta_minutes >= 0`. Children have no currency (the parent's, derived by the server), no absolute price, no tier/ladder/Drop field. The base is the price with no variant selected, NOT a promise that it is the cheapest; whether a booking must pick a variant is a BOOK rule. Consumers reference `(gig_version_id, item_key)`, never the row id; names are not identity (duplicates refused after NFKC + case folding).
+- **Template permissions are read from the EXACT bound template version and never copied onto the Gig:** variants need `FIXED_WITH_VARIANTS`; add-ons need the explicit pricing model `ADD_ONS` (`pricing_add_ons`, default false); a photo needs a MEDIA field of that version, whose bounds apply (`max_items = 0` prohibits, PROVIDER_REQUIRED needs `min_items` READY photos at publish). No MEDIA field means no photos. A MEDIA field is satisfied by attachments and never by a field value (`FIELD_MEDIA_NOT_A_VALUE`).
+- **The draft-mutation primitive.** Every child mutation runs through `readDraft` / `mutateDraft` of `ProviderGigService` (lock account -> Gig -> draft at `expectedRevision`, run, revision +1 only when something changed, stale = `STALE_DRAFT`); the media service is a collaborator over it (`DraftMutator`). Variants and add-ons are replaced as a WHOLE SET (array order = display order, kept keys must exist in the draft, new items get a server-minted `opt_` key; option rows are never UPDATEd).
+- **Media: asset vs attachment.** `media_assets` = account-owned bytes with a lifecycle (`UPLOAD_PENDING` -> `READY` | `ABANDONED`, `READY` -> `DELETED`; facts immutable once READY); `gig_version_media` = the attachment (version, field, order, alt text) and the API `mediaId`. One READY asset serves many versions; an asset is deleted only when NO attachment of any version references it. The asset id, object key, hash and URL never leave the media service (no default payload, audit, event, log or error detail).
+- **Private upload / finalize / promote (the TRUST-001 lessons, LRN-0056).** Authorize creates asset + attachment and a presigned PUT for a SEPARATE `<final key>.upload` key; the web server PUTs with `node:http(s)` (never `fetch`); finalize does its object-store and scanner I/O BEFORE the transaction (head, bounded `readVersioned`, signature, header-only dimensions inside the configured bounds, SHA-256, scan), promotes the exact verified bytes with the version-conditional `copyIfVersion` (the S3 copy uses `MetadataDirective: REPLACE` so unsigned metadata the browser attached is not carried over), re-hashes what landed, and only then records READY in one draft mutation. Nothing reads the upload key after promotion, so a replayed PUT changes nothing. The scanner fails closed: with `require_clean_scan` (seeded true) an `ERROR` verdict keeps the photo pending and the call repeatable (503 `MEDIA_SCAN_UNAVAILABLE`); production has no scanner, so nothing attaches there. A refusal abandons the asset and audits a REASON CODE only, except `OBJECT_MISSING` (stays pending).
+- **Reconciled deletion.** Objects are deleted best effort AFTER the commit and the asset records `objects_removed_at` / `upload_key_removed_at` (one-way markers); the worker job `provider.gig-media-cleanup` (pg-boss, every 15 minutes) abandons expired and retired-stuck uploads, deletes READY assets with no attachment after `orphan_grace_seconds`, and repeats failed deletions. Authorization windows are written and compared with the DATABASE clock, never the app or store clock.
+- **Previews are owner-only short-lived links** (`download_ttl_seconds`, inline); the web turns them into a `303` from a controlled route and never renders or logs the URL. The GigMenu carries counts and validity facts (`children`), no URL.
+
 ## Implementation pattern
 
 1. To add a step: add the id to `ONBOARDING_STEPS` in contracts (and `REGISTRATION_STEPS` only if it must block submit), add its content keys in a forward migration through the content lifecycle, implement the fact in a port, and extend `evaluateRequirements`. Never persist its status in the provider schema.
 2. To change policy: add the typed parameter through the configuration lifecycle in a forward migration, extend `ProviderRegistrationPolicy` and `parseProviderPolicy` (fail closed), and read it in the service, not in the web.
 3. New persistence: forward migration `NNNN_*.sql`, guards with `provider_rule:<KEY>`, the Data Model Review Gate, then map the key in `mapDbError` and `MESSAGES` in `dto.ts` with a content key.
 4. After changing the API or events run `pnpm specs:generate`; after changing the schema run the Data Model Review Gate and `pnpm schema:snapshot --write`.
-5. To add something to a Gig (a CAT-004 child, a new field type): key the new table by `gig_version_id` so it is versioned with the Gig, freeze it with the version in a guard, extend the publish completeness and the `GigIssueReason` list with content keys, and keep provider text out of audit and events. To support a new template field type, add its typed value column and extend the field-type guard in a forward migration.
+5. To add something to a Gig (another child like variants/add-ons/photos, a new field type): key the new table by `gig_version_id` so it is versioned with the Gig, freeze it with the version in a guard, copy it in `createNextDraft`, mutate it only through `mutateDraft` (revision +1), extend the publish completeness and the `GigIssueReason` list with content keys, and keep provider text out of audit and events. To support a new template field type, add its typed value column and extend the field-type guard in a forward migration. Binary data follows the photo pattern: an asset with its own lifecycle, a separate upload key, server verification before promotion, reference-aware clean-up.
 
 ## Commands
 
@@ -78,7 +91,7 @@ Let an existing account become a provider and track where it is in onboarding: t
 
 ## Data-model considerations
 
-Any change to the registration tables or their guards needs the Data Model Review Gate and a forward migration (never edit 0018); the same holds for the four Gig tables (never edit 0020). The Gig tables hold no contact, name, address or document either. A second market per registration, a review state or a Go-Live table are new columns/tables with their own migration and ADR update; Go-Live belongs to PRO-003, not here. Never add contact, name, address or document columns.
+Any change to the registration tables or their guards needs the Data Model Review Gate and a forward migration (never edit 0018); the same holds for the Gig tables (never edit 0020 to 0023). The Gig tables hold no contact, name, address or document either. A second market per registration, a review state or a Go-Live table are new columns/tables with their own migration and ADR update; Go-Live belongs to PRO-003, not here. Never add contact, name, address or document columns.
 
 ## Common failure modes
 
@@ -95,6 +108,9 @@ Any change to the registration tables or their guards needs the Data Model Revie
 - Treating another account's Gig as 403: it is 404 `GIG_NOT_FOUND` by design.
 - Sending a currency, a value for a PLATFORM_FIXED field, or an option code of a newer template version: refused (the server derives the currency; options belong to the bound version).
 - Reading `PUBLISH_BLOCKED` as a validation error of the request: it lists what a complete publishable draft still needs, by identifier.
+- Sending a variant/add-on list after another edit without re-reading: every child mutation raises the draft revision (409 `STALE_DRAFT`), so the next call must use the revision the previous answer returned; a list with a key that is not in the draft is `OPTION_KEY_INVALID`.
+- Expecting add-ons because the template has variants (or the reverse): each needs its own template permission (`OPTIONS_NOT_PERMITTED`), and a newer template version does not help an existing Gig.
+- Finalizing a photo whose PUT never completed (`MEDIA_REFUSED` / `OBJECT_MISSING`, the photo stays pending) or after the authorization ended (409 `MEDIA_EXPIRED`): upload again or start over; and expecting a photo to attach in production, where no scanner exists.
 
 ## Known BananaGig-specific lessons
 
@@ -105,6 +121,9 @@ Any change to the registration tables or their guards needs the Data Model Revie
 - Many parallel integration files exhaust Postgres connections (`max_connections` 100): run at most two integration files at once.
 - Catalogue reads (the template port) open repeatable-read snapshots and cannot run inside a provider transaction: read template structures first, then open the transaction and let the DB guards re-check the races (retirement of the template, version or service type).
 - A provider Gig is a published offer, not a provider being live: the readiness facts are signals for PRO-003, never a flag to set.
+- A concurrent finalize that loses the race finds the asset already READY: return the detail and never abandon a READY asset; do not delete the promoted copy when your own transaction fails (it may be the winner's object).
+- A DRAFT version with a pending upload that is retired must close the upload in the SAME transaction while the version is still a DRAFT (its attachments are deletable); once RETIRED the attachment is frozen history and the clean-up abandons the asset (pass for retired-stuck uploads).
+- The GigMenu stays a constant-statement read: it reads option aggregates (counts and longest text lengths, never names) and the template permissions in the version statement, not the template port.
 
 ## Do not
 
@@ -112,7 +131,10 @@ Any change to the registration tables or their guards needs the Data Model Revie
 - Do not store step statuses, Go-Live flags, service areas, availability, documents or verification results in the `provider` schema. The only prices are the Gig version's `price_amount_minor` and `price_currency`.
 - Do not edit, delete or re-bind a PUBLISHED Gig version, add a current-version pointer, or reactivate a retired Gig; the change is the next draft or a new Gig.
 - Do not migrate a Gig to a newer template version, copy PLATFORM_FIXED values or template structure into Gig rows, or store the service type or market on the Gig.
-- Do not put provider text (title, pitch, description, text values) or amounts in audit rows, events, logs, error details, redirects or cookies.
+- Do not put provider text (title, pitch, description, text values, option names and descriptions, alt text) or amounts in audit rows, events, logs, error details, redirects or cookies.
+- Do not store an object key, signed URL, hash or asset id in a default payload, audit row, event, log or error detail, and do not read the final bytes from the upload key or serve photo bytes through the API.
+- Do not give a variant, add-on or photo a currency, an absolute price, a negative delta, a quantity, a tier, a ladder or a Drop flag, and do not reference a variant by its row id.
+- Do not delete an asset another attachment references, or mutate a child of a PUBLISHED, SUPERSEDED or RETIRED version.
 - Do not accept an account id, currency, status or template version id from a client; the server derives them.
 - Do not accept an account id, registration id, role or status from a client, and do not accept free text on cancel (the audit trail is immutable).
 - Do not treat "PROVIDER role ACTIVE" as proof of vetting or Go-Live: until PRO-003 an account activates the role itself by completing the registration.
@@ -125,8 +147,8 @@ Any change to the registration tables or their guards needs the Data Model Revie
 
 ## Related ADRs
 
-ADR-0025, ADR-0038, ADR-0040, ADR-0041, ADR-0042, ADR-0046
+ADR-0025, ADR-0038, ADR-0040, ADR-0041, ADR-0042, ADR-0046, ADR-0047
 
 ## Last reviewed
 
-2026-10-18 (PRD-TRP-001)
+2026-10-18 (CAT-004)

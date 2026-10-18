@@ -77,6 +77,8 @@ Compose services add no tables. A service that stores state (queue, cache, searc
 
 - A host `pnpm dev` worker shares the pg-boss queue with the container worker: when `Worker runtime` fails and many checks cascade with "worker: no result", look for it before touching code (LRN-0057).
 - The private object store (SeaweedFS, bucket `bananagig-dev`) is used by the verification evidence through `PrivateObjectStore` (presigned one-object URLs; `S3_PUBLIC_ENDPOINT` is the host of those URLs for callers outside the container network; `TRUST_SCANNER` / `TRUST_EXTERNAL_PROVIDER` select the DEV/TEST fakes and are refused in production, LRN-0056).
+- Provider Gig photos (CAT-004) use the SAME private bucket, `PrivateObjectStore` and scanner adapter as the verification evidence (keys under `provider/gig-media/`, the browser's bytes on a separate `<final key>.upload` key): there is no new service, port or env variable, and `TRUST_SCANNER` also decides photo scanning (production `disabled` answers ERROR, so with `provider.gig.media.require_clean_scan` true no photo can be attached there). The `S3PrivateObjectStore` copy that promotes a verified upload uses `MetadataDirective: REPLACE` so metadata a browser attached to a presigned PUT does not reach the final object. No bucket lifecycle rule backs up the `.upload` keys yet (DEBT-0100).
+- The worker registers the pg-boss job `provider.gig-media-cleanup` (cron every 15 minutes, `apps/worker/src/jobs/gig-media.ts`) only when a `gigMedia` cleaner is passed to `Worker`: `apps/worker/src/index.ts` builds it from the database, an `S3PrivateObjectStore` over `cfg.s3` (the worker never signs a URL) and the configuration registry, with no scanner. It deletes objects, so the worker needs the same `S3_*` settings as the API; if the container worker is down, abandoned uploads and unreferenced photos accumulate (the logs of a run carry counts only: `gig photos cleaned up`).
 
 ## Do not
 
@@ -87,8 +89,8 @@ Compose services add no tables. A service that stores state (queue, cache, searc
 
 ## Related ADRs
 
-ADR-0001, ADR-0003, ADR-0005, ADR-0007
+ADR-0001, ADR-0003, ADR-0005, ADR-0007, ADR-0047
 
 ## Last reviewed
 
-2026-10-18 (TRUST-001)
+2026-10-18 (CAT-004)

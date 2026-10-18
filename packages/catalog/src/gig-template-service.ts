@@ -168,7 +168,9 @@ const pricingFlag = (r: Row, m: PricingModel): boolean =>
       ? r.pricing_fixed_with_variants === true
       : m === 'BUNDLE_ELIGIBLE'
         ? r.pricing_bundle_eligible === true
-        : r.pricing_drop_eligible === true;
+        : m === 'DROP_ELIGIBLE'
+          ? r.pricing_drop_eligible === true
+          : r.pricing_add_ons === true;
 const areaFlag = (r: Row, m: AreaMode): boolean =>
   m === 'RADIUS' ? r.area_radius === true : m === 'POSTAL_CODES' ? r.area_postal_codes === true : r.area_polygon === true;
 
@@ -811,6 +813,7 @@ export class GigTemplateService {
         min_duration_minutes = ${canon.duration.min}, max_duration_minutes = ${canon.duration.max}, suggested_duration_minutes = ${canon.duration.suggested},
         pricing_fixed = ${has(canon.pricing, 'FIXED')}, pricing_fixed_with_variants = ${has(canon.pricing, 'FIXED_WITH_VARIANTS')},
         pricing_bundle_eligible = ${has(canon.pricing, 'BUNDLE_ELIGIBLE')}, pricing_drop_eligible = ${has(canon.pricing, 'DROP_ELIGIBLE')},
+        pricing_add_ons = ${has(canon.pricing, 'ADD_ONS')},
         area_radius = ${has(canon.area, 'RADIUS')}, area_postal_codes = ${has(canon.area, 'POSTAL_CODES')}, area_polygon = ${has(canon.area, 'POLYGON')},
         revision = revision + ${bumpRevision ? 1 : 0}
       WHERE gig_template_version_id = ${versionId}`.execute(trx);

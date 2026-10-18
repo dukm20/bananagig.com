@@ -1512,7 +1512,11 @@ describe('secrecy: no contact, legal text or token in any response, log line or 
       expect(dump).not.toContain(a.phone);
     }
     expect(dump).not.toContain(LEGAL_MARK);
-    const columns = await q<{ column_name: string }>(`SELECT column_name FROM information_schema.columns WHERE table_schema = 'provider'`);
+    // CAT-004: the `name` of a variant or an add-on is the provider's label of an offer (plain text, no contact or document), the one deliberate exception
+    const columns = await q<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns WHERE table_schema = 'provider'
+          AND NOT (column_name = 'name' AND table_name IN ('gig_version_variants', 'gig_version_add_ons'))`,
+    );
     expect(columns.map((c) => c.column_name).filter((c) => /email|phone|name|address|body|token|subject|document/i.test(c))).toEqual([]);
   });
 });

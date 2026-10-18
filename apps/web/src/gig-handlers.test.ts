@@ -197,7 +197,8 @@ describe('GIG_ACTIONS and isGigAction', () => {
   });
   it('the error words a redirect may carry are exactly GIG_<API code> and the generic word is API_ERROR', () => {
     expect([...GIG_API_ERROR_CODES]).toEqual(GIG_ERROR_CODES.map((c) => gigWireCode(c)));
-    expect(GIG_API_ERROR_CODES).toHaveLength(15);
+    expect(GIG_API_ERROR_CODES).toHaveLength(19);
+    for (const c of ['GIG_MEDIA_NOT_FOUND', 'GIG_MEDIA_REFUSED', 'GIG_MEDIA_EXPIRED', 'GIG_MEDIA_SCAN_UNAVAILABLE']) expect(GIG_API_ERROR_CODES).toContain(c);
     expect(GIG_GENERIC_ERROR).toBe('API_ERROR');
   });
 });
@@ -739,6 +740,17 @@ describe('Gig actions: what the API can answer', () => {
       'user-1',
     ])
       expect(logs).not.toContain(marker);
+  });
+  it('save: a 400 GIG_VALIDATION_FAILED that names an issue passes ONE closed reason and target (never typed text); anything else is dropped', async () => {
+    const h = harness();
+    seed(h);
+    const refused = (issues: unknown[]) => new ApiError(400, 'GIG_VALIDATION_FAILED', 'VALIDATION', 'x', 'corr-1', { issues });
+    h.fns.updateGigDraft.mockRejectedValueOnce(refused([{ target: 'title', reason: 'TITLE_TOO_LONG', messageKey: '' }]));
+    expectTo(await action(h, 'save'), `/provider/gigs/${GIG}`, '?error=GIG_VALIDATION_FAILED&issue=TITLE_TOO_LONG&target=title');
+    h.fns.updateGigDraft.mockRejectedValueOnce(refused([{ target: 'title', reason: 'Zebra', messageKey: '' }]));
+    expectTo(await action(h, 'save'), `/provider/gigs/${GIG}`, '?error=GIG_VALIDATION_FAILED');
+    h.fns.updateGigDraft.mockRejectedValueOnce(refused([{ target: 'nowhere', reason: 'TITLE_TOO_LONG', messageKey: '' }]));
+    expectTo(await action(h, 'save'), `/provider/gigs/${GIG}`, '?error=GIG_VALIDATION_FAILED');
   });
   it('a refusal is logged with the action, the closed code and the status only', async () => {
     const h = harness();

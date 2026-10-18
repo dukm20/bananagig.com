@@ -2,9 +2,10 @@ import { PgBoss } from 'pg-boss';
 import { loadConfig, redactConfig } from '@bananagig/config';
 import { createDatabase, PG_BOSS_POOL_MAX } from '@bananagig/database';
 import { createDbTelemetry, getCorrelationId, registerPoolMetrics, initObservability, log, shutdownObservability } from '@bananagig/observability';
-import { NatsClient, closeValkey, createS3, createValkey, runDiagnostics, startHealthServer } from '@bananagig/platform';
+import { NatsClient, S3PrivateObjectStore, closeValkey, createS3, createValkey, runDiagnostics, startHealthServer } from '@bananagig/platform';
 import { ConfigurationService, ValkeyConfigCache } from '@bananagig/configuration';
 import { ContentService } from '@bananagig/content';
+import { createGigMediaCleaner } from './jobs/gig-media';
 import { Worker } from './worker';
 
 const cfg = loadConfig({ service: 'bananagig-worker', role: 'worker' });
@@ -33,9 +34,12 @@ const content = new ContentService({
   lkgMaxAgeSeconds: cfg.configuration.lkgMaxAgeSeconds,
   allowTestKeys: cfg.env !== 'production',
 });
+// provider Gig photos (CAT-004): the clean-up deletes objects through the same private store the API uses (the worker only reads, heads and deletes: no URL is ever signed here)
+const gigMedia = createGigMediaCleaner({ database, store: new S3PrivateObjectStore({ client: s3, bucket: cfg.s3.bucket }), configuration });
 const worker = new Worker({
   configuration,
   content,
+  gigMedia,
   cfg,
   database,
   nats,

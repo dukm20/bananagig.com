@@ -8,11 +8,16 @@ import {
   type GigDetailDto,
   type GigDto,
   type GigErrorCode,
+  type GigChildSummaryDto,
   type GigFieldDto,
   type GigIssueDto,
   type GigIssueReason,
+  type GigMediaDto,
+  type GigMediaPreviewDto,
+  type GigMediaUploadDto,
   type GigMenuDto,
   type GigMenuItemDto,
+  type GigOptionDto,
   type GigTemplateChoicesDto,
   type GigTemplateLinkDto,
   type GigVersionDto,
@@ -85,6 +90,8 @@ const fieldDto = (f: GigFieldDto): GigFieldDto => ({
   maxLength: f.maxLength,
   minNumber: f.minNumber,
   maxNumber: f.maxNumber,
+  minItems: f.minItems,
+  maxItems: f.maxItems,
   options: f.options.map((o) => ({
     optionCode: o.optionCode,
     displayOrder: o.displayOrder,
@@ -95,13 +102,66 @@ const fieldDto = (f: GigFieldDto): GigFieldDto => ({
 
 /** The issue is rebuilt from its identifiers: the message KEY is derived from the reason here, never trusted from the service. */
 const SAFE_FIELD_KEY = /^[a-z][a-z0-9_]{1,31}$/;
+/** The item an issue is about: the stable key of a variant or add-on, or the id of a photo. Never a name. */
+const SAFE_ITEM_KEY = /^(?:[a-z][a-z0-9_]{1,39}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
 const ISSUE_REASON = new Set<string>(GIG_ISSUE_REASONS);
 const ISSUE_TARGETS = new Set<string>(GigIssueSchema.shape.target.options);
 export const issueDto = (i: GigIssueDto): GigIssueDto => ({
   target: i.target,
   ...(i.fieldKey !== undefined && SAFE_FIELD_KEY.test(i.fieldKey) ? { fieldKey: i.fieldKey } : {}),
+  ...(i.itemKey !== undefined && SAFE_ITEM_KEY.test(i.itemKey) ? { itemKey: i.itemKey } : {}),
   reason: i.reason,
   messageKey: gigIssueKey(i.reason),
+});
+
+/** Facts about the children of a version (counts and three booleans); no identifiers. */
+export const childSummaryDto = (c: GigChildSummaryDto): GigChildSummaryDto => ({
+  variantCount: c.variantCount,
+  addOnCount: c.addOnCount,
+  mediaCount: c.mediaCount,
+  variantsValid: c.variantsValid,
+  addOnsValid: c.addOnsValid,
+  mediaRequirementSatisfied: c.mediaRequirementSatisfied,
+});
+
+/** A variant or an add-on of the caller's own Gig version: the provider-written name and description appear here and nowhere else (never in an error, a log or an event). */
+const optionDto = (o: GigOptionDto): GigOptionDto => ({
+  key: o.key,
+  name: o.name,
+  description: o.description,
+  priceDeltaMinor: o.priceDeltaMinor,
+  durationDeltaMinutes: o.durationDeltaMinutes,
+  displayOrder: o.displayOrder,
+});
+
+/** A photo of the caller's own version, built field by field: the asset id, the object key, the hash and any URL can never travel through this shape. */
+export const mediaDto = (m: GigMediaDto): GigMediaDto => ({
+  mediaId: m.mediaId,
+  fieldKey: m.fieldKey,
+  displayOrder: m.displayOrder,
+  status: m.status,
+  mimeType: m.mimeType,
+  sizeBytes: m.sizeBytes,
+  width: m.width,
+  height: m.height,
+  altText: m.altText,
+});
+
+/** The answer to an upload authorization: the pending media and the one-object short-lived PUT target, shown once (the response is `no-store`; the URL is never logged). */
+export const mediaUploadDto = (u: GigMediaUploadDto): GigMediaUploadDto => ({
+  media: mediaDto(u.media),
+  upload: { url: u.upload.url, headers: { ...u.upload.headers }, expiresAt: u.upload.expiresAt },
+  maxSizeBytes: u.maxSizeBytes,
+  revision: u.revision,
+});
+
+export const mediaPreviewDto = (p: GigMediaPreviewDto): GigMediaPreviewDto => ({ url: p.url, expiresAt: p.expiresAt });
+
+const optionConstraintsDto = (c: GigVersionDto['constraints']['variants']) => ({
+  permitted: c.permitted,
+  maxCount: c.maxCount,
+  nameMaxLength: c.nameMaxLength,
+  descriptionMaxLength: c.descriptionMaxLength,
 });
 
 export const versionDto = (v: GigVersionDto): GigVersionDto => ({
@@ -125,7 +185,22 @@ export const versionDto = (v: GigVersionDto): GigVersionDto => ({
       maxMinutes: v.constraints.duration.maxMinutes,
       suggestedMinutes: v.constraints.duration.suggestedMinutes,
     },
+    variants: optionConstraintsDto(v.constraints.variants),
+    addOns: optionConstraintsDto(v.constraints.addOns),
+    media: {
+      permitted: v.constraints.media.permitted,
+      maxItems: v.constraints.media.maxItems,
+      maxFileSizeBytes: v.constraints.media.maxFileSizeBytes,
+      allowedMimeTypes: [...v.constraints.media.allowedMimeTypes],
+      minEdgePixels: v.constraints.media.minEdgePixels,
+      maxEdgePixels: v.constraints.media.maxEdgePixels,
+      altTextMaxLength: v.constraints.media.altTextMaxLength,
+    },
   },
+  variants: v.variants.map(optionDto),
+  addOns: v.addOns.map(optionDto),
+  media: v.media.map(mediaDto),
+  children: childSummaryDto(v.children),
   publishable: v.publishable,
   issues: v.issues.map(issueDto),
 });
@@ -149,11 +224,18 @@ const menuItemDto = (m: GigMenuItemDto): GigMenuItemDto => ({
           price: priceDto(m.currentVersion.price),
           durationMinutes: m.currentVersion.durationMinutes,
           publishedAt: m.currentVersion.publishedAt,
+          children: childSummaryDto(m.currentVersion.children),
         },
   draftVersion:
     m.draftVersion === null
       ? null
-      : { versionNumber: m.draftVersion.versionNumber, revision: m.draftVersion.revision, title: m.draftVersion.title, updatedAt: m.draftVersion.updatedAt },
+      : {
+          versionNumber: m.draftVersion.versionNumber,
+          revision: m.draftVersion.revision,
+          title: m.draftVersion.title,
+          updatedAt: m.draftVersion.updatedAt,
+          children: childSummaryDto(m.draftVersion.children),
+        },
   versionCount: m.versionCount,
 });
 
@@ -218,6 +300,7 @@ export function safeDetails(details: Record<string, unknown>): Record<string, un
         issueDto({
           target: i.target as GigIssueDto['target'],
           ...(typeof i.fieldKey === 'string' ? { fieldKey: i.fieldKey } : {}),
+          ...(typeof i.itemKey === 'string' ? { itemKey: i.itemKey } : {}),
           reason: i.reason as GigIssueReason,
           messageKey: '',
         }),
@@ -227,6 +310,23 @@ export function safeDetails(details: Record<string, unknown>): Record<string, un
   }
   return out;
 }
+
+/** The closed list of reason codes a refused photo can report (identifiers only). Anything else is dropped before it reaches a client. */
+export const MEDIA_REFUSAL_REASONS: ReadonlySet<string> = new Set([
+  'MIME_NOT_ALLOWED',
+  'FILE_TOO_LARGE',
+  'SIZE_MISMATCH',
+  'CONTENT_TYPE_MISMATCH',
+  'SIGNATURE_MISMATCH',
+  'HASH_MISMATCH',
+  'OBJECT_MISSING',
+  'OBJECT_CHANGED',
+  'IMAGE_INVALID',
+  'IMAGE_TOO_SMALL',
+  'IMAGE_TOO_LARGE',
+  'SCAN_INFECTED',
+  'UPLOAD_EXPIRED',
+]);
 
 type Category = 'NOT_FOUND' | 'VALIDATION' | 'CONFLICT' | 'AUTHORIZATION' | 'DEPENDENCY';
 /** PUBLISH_BLOCKED is a conflict-class refusal (409): the repository's error model has no 422. */
@@ -246,6 +346,11 @@ const MESSAGES: Record<GigErrorCode, { category: Category; message: string }> = 
   VALIDATION_FAILED: { category: 'VALIDATION', message: 'The request is not valid' },
   CONFLICT: { category: 'CONFLICT', message: 'The change conflicted with a concurrent update' },
   UNAVAILABLE: { category: 'DEPENDENCY', message: 'Gigs are temporarily unavailable' },
+  // CAT-004: a photo of someone else's Gig, of another version or an unknown id is the same "not found"
+  MEDIA_NOT_FOUND: { category: 'NOT_FOUND', message: 'The photo was not found' },
+  MEDIA_REFUSED: { category: 'VALIDATION', message: 'The photo cannot be used' },
+  MEDIA_EXPIRED: { category: 'CONFLICT', message: 'The upload expired; start a new upload' },
+  MEDIA_SCAN_UNAVAILABLE: { category: 'DEPENDENCY', message: 'The photo could not be checked yet; try again later' },
 };
 
 /** The public error code of a Gig failure: the contract code itself when it already starts with `GIG_`, otherwise `GIG_<code>` (the web keeps a closed list built the same way). */
@@ -264,5 +369,12 @@ export function toAppError(err: unknown): never {
   const m = MESSAGES[err.code];
   if (!m) throw err;
   if (err.code === 'UNAVAILABLE') throw new AppError('DEPENDENCY', gigApiErrorCode(err.code), m.message, { messageKey: gigErrorKey(err.code) });
-  throw new AppError(m.category, gigApiErrorCode(err.code), m.message, { ...safeDetails(err.details), messageKey: gigErrorKey(err.code) });
+  // a scan outage is retryable by definition and carries nothing else; a missing photo carries nothing at all (it must not tell "unknown" from "not yours")
+  if (err.code === 'MEDIA_SCAN_UNAVAILABLE')
+    throw new AppError('DEPENDENCY', gigApiErrorCode(err.code), m.message, { retryable: true, messageKey: gigErrorKey(err.code) });
+  if (err.code === 'MEDIA_NOT_FOUND') throw new AppError('NOT_FOUND', gigApiErrorCode(err.code), m.message, { messageKey: gigErrorKey(err.code) });
+  const details = safeDetails(err.details);
+  // a refused photo names WHY from a closed list of reason codes (never a size, a hash, a key or the stored content type)
+  if (err.code === 'MEDIA_REFUSED' && typeof details.reason === 'string' && !MEDIA_REFUSAL_REASONS.has(details.reason)) delete details.reason;
+  throw new AppError(m.category, gigApiErrorCode(err.code), m.message, { ...details, messageKey: gigErrorKey(err.code) });
 }

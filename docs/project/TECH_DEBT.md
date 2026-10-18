@@ -1010,16 +1010,16 @@ Why deferred: each needs a consumer or an owner that does not exist yet (the wor
 Exit criteria: a worker cron for the sweep and the cleanup; expiry reminders through the notification checkpoint; the console and the polished provider flow replace the temporary page.
 Target checkpoint: PRO-003 (Go-Live needs timely expiry), the notification checkpoint and the admin console checkpoints
 
-## DEBT-0089 — Provider Gigs: variants, add-ons, bundles, media and the field types they need are left to CAT-004, and a required unsupported field blocks publishing
+## DEBT-0089 — Provider Gigs: bundles and the equipment, skill and money field types are still unsupported, and a required one blocks publishing
 
 Status: OPEN
-Severity: MEDIUM
-Introduced by: CAT-003
+Severity: LOW
+Introduced by: CAT-003 (partly resolved by CAT-004)
 Owner/domain: provider / catalog
-Description: CAT-003 built the Gig, its immutable versions, the typed field values and the GigMenu, and supports the template field types TEXT, LONG_TEXT, INTEGER, DECIMAL, BOOLEAN, ENUM and DURATION (the price is a column of the version, so MONEY is not stored as a field). It does NOT support variants (FIXED_WITH_VARIANTS only permits the base price), add-ons, bundles, drops, or media, and it stores nothing for the MEDIA, EQUIPMENT_REFERENCE and SKILL_REFERENCE field types. Behaviour while this is open: an OPTIONAL field of an unsupported type is not editable and is ignored; a PROVIDER_REQUIRED field of an unsupported type (or MONEY) blocks publishing with issue `FIELD_TYPE_NOT_SUPPORTED`, so a template that requires photos, equipment or skills cannot be published as a Gig yet and an administrator who builds such a template makes it unusable for providers until this is resolved. The platform photo limits (10 MB, 50 photos, file types) are not wired. A raw `FIELD_TYPE_UNSUPPORTED` guard in the database repeats the rule.
-Why deferred: each type needs its own storage (media objects and scanning, the equipment and skill catalogues owned by TRUST-001 and SV-09, variant and add-on tables keyed by the Gig version) and the PRD flows that use them; building any of them now would guess.
-Exit criteria: CAT-004 adds variants, add-ons and media as children of `gig_version_id` (frozen with the version), the supported field-type list and the DB guard are extended in a forward migration, the equipment and skill field types have catalogues to select from, and the publish completeness covers them. Until then the template authors know that required fields of unsupported types block providers.
-Target checkpoint: CAT-004
+Description: CAT-004 built variants, add-ons and photo media as version-owned children (ADR-0047, `docs/engineering/PROVIDER_GIGS.md`), so MEDIA template fields are now satisfied by photo attachments. Still unsupported: the EQUIPMENT_REFERENCE and SKILL_REFERENCE field types (no catalogues to select from; owned by TRUST-001 and SV-09), the MONEY field type (the price is a column of the version) and bundles (BUNDLE_ELIGIBLE, CU-10). An OPTIONAL field of an unsupported type is not editable and is ignored; a PROVIDER_REQUIRED field of an unsupported type (or MONEY) blocks publishing with issue `FIELD_TYPE_NOT_SUPPORTED`, so a template that requires equipment or skills cannot be published as a Gig yet. A raw `FIELD_TYPE_UNSUPPORTED` guard in the database repeats the rule.
+Why deferred: each needs its own catalogue or flow (the equipment and skill catalogues, bundle pricing) and the PRD flows that use them; building any of them now would guess.
+Exit criteria: the equipment and skill field types have catalogues to select from and are supported in a forward migration, bundles are specified, and the publish completeness covers them.
+Target checkpoint: the checkpoint that adds the equipment and skill catalogues (TRUST-001 follow-up / SV-09); bundles with the Growth block
 
 ## DEBT-0090 — Provider Gigs: provider-written copy is not moderated
 
@@ -1108,3 +1108,48 @@ Description: The independent security and data reviews of CAT-003 found these it
 Why deferred: each needs a policy decision, a shared component or infrastructure that later checkpoints own; none is exploitable for data exposure or for writing outside the owner's own Gigs.
 Exit criteria: total and per-Gig version caps and pagination exist with the provider console; the limiter protects the write routes (DEBT-0030); the product owner confirms the text rules for right-to-left languages; the draft save re-checks the full eligibility if the product wants paused providers to stop editing; the console keeps typed values on a validation error.
 Target checkpoint: DEBT-0030 for the limiter; the provider console / Gig builder UI checkpoint for the rest
+
+## DEBT-0098 — Provider Gigs: variants and add-ons are deliberately simple (no quantity, no negative delta, no default, no combined bounds, no Drop flag)
+
+Status: OPEN
+Severity: LOW
+Introduced by: CAT-004
+Owner/domain: provider / product / BananaDrop
+Description: A variant or add-on is a name, an optional description, a non-negative price delta in minor units of the Gig's currency, a non-negative duration delta in minutes, a stable key within the Gig and a display order (version-owned, replaced as a whole set under the draft revision). Left out by design: (1) add-on quantity and quantity pricing (the PRD gives only "pet hair +$25"); (2) negative deltas (the base is the price with no variant selected); (3) a default variant, a minimum number of variants and the rule that a booking must select exactly one variant when any exist (a BOOK rule, recorded as an assumption); (4) combined bounds: base plus a delta plus up to the configured number of add-ons can exceed the structural price ceiling (10^12 minor units) and the duration plus deltas can exceed the template maximum, so BOOK and DROP must not reuse the base ceiling for totals; (5) the PRD flag "Drop-eligible" on a variant or add-on (PR-03.08) and every tier, ladder, floor and threshold: these belong to the BananaDrop domain (DROP-002 eligibility, DROP-005 tiers), which references the exact Gig version and the item key, never the row ids (`variant_id` and `add_on_id` are regenerated on every replace and every next-draft copy; the key is stable); (6) duplicate names are refused after NFKC and case folding only (Unicode confusables are not detected); (7) a market currency change drops the base price at the next draft, and then the options are not copied (their deltas were minor units of the old currency).
+Why deferred: each needs a booking, BananaDrop or product decision that does not exist yet.
+Exit criteria: BOOK defines selection and totals and checks combined bounds; DROP-002 and DROP-005 add eligibility and tiers keyed by (gig version, item key); the owner decides on negative deltas, defaults and quantities.
+Target checkpoint: BOOK-001 and the DROP-002 / DROP-005 checkpoints
+
+## DEBT-0099 — Provider Gig photos: HEIC, header-only verification, assumed limits and no derivatives, delivery or moderation
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: CAT-004
+Owner/domain: provider / platform / trust
+Description: Photos are private assets (JPEG, PNG, WebP) verified by the server (existence, size, content type, magic bytes, SHA-256, header dimensions within configured bounds, scan) and attached to the DRAFT; a published version's attachments are frozen. Accepted limits: (1) **HEIC is not accepted** although the PRD lists JPG, PNG or HEIC (PR-03.07): there is no verified HEIC reader; SVG is never accepted; (2) **verification is header-only**: a file with a valid image header and a hostile or truncated tail passes (no IEND, EOI or RIFF-size check, because phone JPEGs legitimately carry trailing data), nothing is re-encoded and EXIF/GPS is not stripped, so the bytes must never be delivered publicly as they are; (3) **no thumbnails, derivatives, CDN, public delivery URL or search projection**; the preview is a short-lived owner-only link; (4) **no moderation** of photos or alt text (DEBT-0090) and no AI alt text; no video; (5) **assumed policy values** the owner has not confirmed: minimum edge 200 px, maximum edge 12000 px, maximum 50 megapixels, upload authorization 900 s, preview link 60 s, orphan grace 86400 s, alt text 200 characters (the PRD gives 10 MB, 50 photos and the file types only); (6) **production has no malware scanner** (DEBT-0087): with `provider.gig.media.require_clean_scan` true (the seeded value) nothing can be attached in production, and with it false unscanned photos are attachable and publishable (development and test only); a photo accepted while the flag was false becomes unusable when it is turned on and reports "not ready"; (7) there is no per-account storage quota and the orphan sweep scans all READY assets (linear in their number; no index is used); (8) the photo count of the menu is READY photos only while the editor also lists unfinished uploads.
+Why deferred: each needs a decoder or vendor (HEIC, re-encoding, scanner), a delivery architecture or a product decision.
+Exit criteria: a media derivatives checkpoint re-encodes (strips metadata, validates structure), adds thumbnails and a delivery path; HEIC is added with a verified reader and its signature test; the owner confirms or changes the assumed values; a scanner adapter exists for production; a quota and an indexed sweep exist before volume.
+Target checkpoint: the media delivery and public profile checkpoints (PRO-002 and the SEARCH/CU checkpoints), and the production scanner (DEBT-0087)
+
+## DEBT-0100 — Provider Gig photos: upload handling and concurrency accepted limits
+
+Status: OPEN
+Severity: LOW
+Introduced by: CAT-004
+Owner/domain: provider / web / platform
+Description: Accepted limits found by the independent reviews of CAT-004: (1) the temporary web handler buffers the file about three to five times (up to the configured maximum, 10 MB seeded, 25 MiB ceiling) and the API reads it again to verify it, and the Gig routes have no rate limit (DEBT-0030), so a signed-in provider can fan out concurrent uploads and finalizes; (2) two concurrent finalizes of the same photo plus a replayed presigned PUT between the winner's promotion and its commit can leave final bytes whose hash differs from the stored one (both byte sets passed the same checks; it is an integrity, not a safety, problem, matters before public delivery; finalize is not serialized per asset); (3) object deletion is best effort after the commit and is reconciled by the clean-up job (a failed delete is retried on the next run), so bytes can linger until then; (4) the clean-up job runs every 15 minutes with a batch of 200 per pass (structural constants, not configuration) and its policy adapter in `apps/worker` duplicates the API's (`createWorkerGigPolicy` and `createGigPolicyProvider`); (5) the presigned PUT can be used by the owner to attach unsigned metadata headers, which the promotion no longer copies (REPLACE directive) but which the temporary `.upload` key keeps until it is swept; (6) a lifecycle rule on the bucket as a backstop does not exist.
+Why deferred: each needs infrastructure (streaming multipart parsing, per-asset serialization or conditional-create on the store, the limiter, a bucket lifecycle rule) that other checkpoints own.
+Exit criteria: the upload is streamed into the PUT, the limiter protects authorize and finalize, finalize is serialized per asset or the store supports a conditional create, the two policy adapters are one function in the provider package, and the bucket has a lifecycle rule for `.upload` keys.
+Target checkpoint: DEBT-0030 for the limiter; the media delivery checkpoint for the rest
+
+## DEBT-0101 — Provider Gigs: API shape and temporary editor limits of the options and photo flows
+
+Status: OPEN
+Severity: LOW
+Introduced by: CAT-004
+Owner/domain: api / web
+Description: (1) Detaching a photo is `DELETE` with a JSON body (`expectedRevision`), which OpenAPI 3.1 permits but some proxies and generated clients drop; (2) the generated OpenAPI inlines the Gig detail in every route (`components.schemas` is empty project-wide), growing the file by about 16,700 lines and giving generated SDKs seventeen identical anonymous types; (3) the temporary editor takes price and duration deltas in whole minor units like the base price (DEBT-0095), shows "500 USD" for 500 minor units, and reports a validation failure with a closed issue word and no preserved input (typed values are never put in a redirect); (4) `PUT .../variants` without a key mints a new key, so a client that omits keys breaks cross-version identity (the web form always sends them); (5) success and error redirects end in a section fragment, so a sighted user lands on the section (the message is echoed there for the sections it can place, and announced from the top for everyone); (6) the visual design, previews, drag-and-drop and polish are UI-BASE-001.
+Why deferred: the shared component schema registry and the design system are separate checkpoints.
+Exit criteria: schemas are registered once in `components.schemas`; the detach route moves to a body-less shape; UI-BASE-001 retrofits the editor with a shared money component and field-level errors.
+Target checkpoint: UI-BASE-001 and the API conventions follow-up
+

@@ -344,7 +344,7 @@ channels:
         $ref: "#/components/messages/ProviderGigCreated"
   gig_gigVersionPublished:
     address: bananagig.provider.gig-version-published.v1
-    description: A Gig version was published (frozen) and the previous published version, when there was one, was superseded in the same transaction. This does NOT make the provider live or bookable. Published through the transactional outbox (aggregate provider_gig); the payload carries identifiers only, never a title, a pitch, a description or any provider text.
+    description: A Gig version was published (frozen) and the previous published version, when there was one, was superseded in the same transaction. The payload carries the counts of variants, add-ons and photos of the version (never names, keys or hashes). This does NOT make the provider live or bookable. Published through the transactional outbox (aggregate provider_gig); the payload carries identifiers only, never a title, a pitch, a description or any provider text.
     messages:
       ProviderGigVersionPublished:
         $ref: "#/components/messages/ProviderGigVersionPublished"
@@ -681,7 +681,7 @@ operations:
     action: send
     channel:
       $ref: "#/channels/gig_gigVersionPublished"
-    summary: A Gig version was published (frozen) and the previous published version, when there was one, was superseded in the same transaction. This does NOT make the provider live or bookable.
+    summary: A Gig version was published (frozen) and the previous published version, when there was one, was superseded in the same transaction. The payload carries the counts of variants, add-ons and photos of the version (never names, keys or hashes). This does NOT make the provider live or bookable.
   sendProviderGigRetired:
     action: send
     channel:
@@ -1286,7 +1286,7 @@ components:
         $ref: "#/components/schemas/ProviderGigCreated"
     ProviderGigVersionPublished:
       name: ProviderGigVersionPublished
-      title: A Gig version was published (frozen) and the previous published version, when there was one, was superseded in the same transaction. This does NOT make the provider live or bookable.
+      title: A Gig version was published (frozen) and the previous published version, when there was one, was superseded in the same transaction. The payload carries the counts of variants, add-ons and photos of the version (never names, keys or hashes). This does NOT make the provider live or bookable.
       headers:
         type: object
         properties:
@@ -5812,6 +5812,18 @@ components:
               type:
                 - string
                 - "null"
+            variantCount:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
+            addOnCount:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
+            mediaCount:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
           required:
             - accountId
             - gigId
@@ -5819,6 +5831,9 @@ components:
             - versionNumber
             - gigTemplateVersionId
             - supersededGigVersionId
+            - variantCount
+            - addOnCount
+            - mediaCount
           additionalProperties: false
       required:
         - eventId

@@ -251,7 +251,7 @@ const noPriceDefinition = () => ({
   requirements: [],
   reason: REASON,
 });
-/** A template with a required photo field: CAT-003 cannot store media, so such a Gig can be drafted but not published. */
+/** A template with a required photo field (1 to 6 photos): such a Gig cannot be published without a READY photo (CAT-004). */
 const mediaDefinition = () => ({
   expectedRevision: 1,
   duration: { minMinutes: 30, maxMinutes: 240 },
@@ -951,11 +951,11 @@ describe('price and duration follow the exact template version', () => {
     expect(rows[0]).toEqual({ price_currency: 'USD' });
   });
 
-  it('a required media field cannot be stored in CAT-003: the Gig can be drafted but publishing is blocked with FIELD_TYPE_NOT_SUPPORTED', async () => {
+  it('a required media field takes photos, never a value (CAT-004): a value is refused with FIELD_MEDIA_NOT_A_VALUE and publishing is blocked with MEDIA_REQUIRED until a photo is attached', async () => {
     const a = await provider('media');
     const d = await gigOf(a, W.tplMedia);
     const media = d.draftVersion.fields.find((f: Json) => f.fieldKey === 'before_photos');
-    expect(media).toMatchObject({ supported: false, required: false });
+    expect(media).toMatchObject({ supported: true, minItems: 1, maxItems: 6 });
     const attempt = await saveDraft(a, d.gig.gigId, {
       expectedRevision: 1,
       title: 't',
@@ -965,7 +965,7 @@ describe('price and duration follow the exact template version', () => {
       durationMinutes: 60,
       fieldValues: [{ fieldKey: 'before_photos', value: 'x' }],
     });
-    expect(hasIssue(gigFail(attempt, 400, 'VALIDATION_FAILED'), 'field', 'FIELD_TYPE_NOT_SUPPORTED', 'before_photos')).toBe(true);
+    expect(hasIssue(gigFail(attempt, 400, 'VALIDATION_FAILED'), 'field', 'FIELD_MEDIA_NOT_A_VALUE', 'before_photos')).toBe(true);
     const saved = ok(
       await saveDraft(a, d.gig.gigId, {
         expectedRevision: 1,
@@ -979,7 +979,7 @@ describe('price and duration follow the exact template version', () => {
     );
     expect(saved.draftVersion.publishable).toBe(false);
     const e = gigFail(await publish(a, d.gig.gigId, saved.draftVersion.revision), 409, 'PUBLISH_BLOCKED');
-    expect(hasIssue(e, 'field', 'FIELD_TYPE_NOT_SUPPORTED', 'before_photos')).toBe(true);
+    expect(hasIssue(e, 'media', 'MEDIA_REQUIRED', 'before_photos')).toBe(true);
   });
 });
 

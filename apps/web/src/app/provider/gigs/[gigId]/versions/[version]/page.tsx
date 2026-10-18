@@ -57,7 +57,7 @@ export default async function ProviderGigVersionPage({ params }: { params: Promi
         </h1>
       ) : null}
       {failure ? <p role="alert">{failure}</p> : null}
-      {v ? <VersionView version={v} text={text} /> : null}
+      {v ? <VersionView version={v} text={text} gigId={gigId} /> : null}
     </div>
   );
 }

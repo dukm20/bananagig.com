@@ -248,7 +248,7 @@ describe('migration 0006 seeded shell copy', () => {
     // email-model.itest.ts and phone-model.itest.ts; migration 0012 seeds the six session, MFA and recovery parameters, tested in security-model.itest.ts;
     // migration 0013 seeds the four consent.* policy parameters, tested in consent-model.itest.ts; migration 0018 seeds the five provider.registration.* policy
     // parameters, tested in provider-model.itest.ts; migration 0019 seeds the six trust.* evidence policy parameters, tested in trust-model.itest.ts; migration 0020 seeds the five provider.gig.* policy parameters, tested
-    // in gig-model.itest.ts): the parameters that exist besides those are EXACTLY the twenty-six named here
+    // in gig-model.itest.ts; migration 0021 seeds the fifteen provider.gig variant, add-on and media policy parameters, tested in gig-options-media-model.itest.ts): the parameters that exist besides those are EXACTLY the forty-one named here
     const others = await iso.database.query<{ key: string }>(
       "SELECT key FROM configuration.parameters WHERE key NOT LIKE 'verification.email.%' AND key NOT LIKE 'verification.phone.%' ORDER BY key COLLATE \"C\"",
     );
@@ -257,11 +257,26 @@ describe('migration 0006 seeded shell copy', () => {
       'consent.privacy_policy.required_for',
       'consent.terms_of_service.reacceptance',
       'consent.terms_of_service.required_for',
+      'provider.gig.add_on.max_count',
       'provider.gig.description.max_length',
       'provider.gig.max_active',
       'provider.gig.max_drafts',
+      'provider.gig.media.allowed_mime_types',
+      'provider.gig.media.alt_text.max_length',
+      'provider.gig.media.download_ttl_seconds',
+      'provider.gig.media.max_edge_pixels',
+      'provider.gig.media.max_file_size_bytes',
+      'provider.gig.media.max_items',
+      'provider.gig.media.max_pixels',
+      'provider.gig.media.min_edge_pixels',
+      'provider.gig.media.orphan_grace_seconds',
+      'provider.gig.media.require_clean_scan',
+      'provider.gig.media.upload_ttl_seconds',
+      'provider.gig.option.description.max_length',
+      'provider.gig.option.name.max_length',
       'provider.gig.short_pitch.max_length',
       'provider.gig.title.max_length',
+      'provider.gig.variant.max_count',
       'provider.registration.market_statuses_allowed',
       'provider.registration.max_service_types',
       'provider.registration.min_service_types',

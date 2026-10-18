@@ -381,6 +381,9 @@ importers:
       '@bananagig/platform':
         specifier: workspace:*
         version: link:../../packages/platform
+      '@bananagig/provider':
+        specifier: workspace:*
+        version: link:../../packages/provider
       nats:
         specifier: ^2.29.3
         version: 2.29.3

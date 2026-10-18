@@ -305,3 +305,57 @@ main:has(.account-shell) {
   display: inline-block;
   width: auto;
 }
+
+/* Variants, add-ons and photos of a Gig draft (CAT-004). Rows are fieldsets in a list; every control keeps the 44px targets of .provider-registration; status and rules are TEXT.
+   The default submit button of an option form (first in the DOM, so Enter saves and never removes a row) is hidden from sight and from the tab order (tabindex -1, aria-hidden). */
+.provider-gigs .gig-default-submit {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  min-height: 0;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+.provider-gigs :is(.gig-options, .gig-photos) {
+  list-style: none;
+  padding: 0;
+}
+.provider-gigs .gig-option fieldset,
+.provider-gigs .gig-photo > [role='group'] {
+  border: 1px solid var(--muted);
+  padding: 0.5rem 0.75rem;
+  margin: 0 0 0.75rem;
+}
+.provider-gigs .gig-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+}
+.provider-gigs .gig-inline-form {
+  display: inline-block;
+  margin: 0;
+}
+.provider-gigs .gig-thumb {
+  display: block;
+  max-width: 10rem;
+  height: auto;
+  border: 1px solid var(--muted);
+}
+.provider-gigs .gig-counts {
+  list-style: none;
+  padding: 0;
+  margin: 0.25rem 0 0.75rem;
+}
+.provider-gigs .gig-children {
+  margin: 1.5rem 0;
+}
+/* A value that follows a note which ends in its own punctuation ("… list." then "3 / 10") sits on its own line, so the two never run together. */
+.provider-gigs .gig-values {
+  display: block;
+  font-weight: 600;
+}

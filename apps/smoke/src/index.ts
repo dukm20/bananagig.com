@@ -2,6 +2,7 @@
 // round-trips, not just container status. Exits non-zero if any check fails.
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import http from 'node:http';
+import { deflateSync } from 'node:zlib';
 import { AccountService, hashDimension } from '@bananagig/accounts';
 import { Redis } from 'iovalkey';
 import { FakeSmsInbox, extractSmsCode } from '@bananagig/testing/sms';
@@ -21,6 +22,8 @@ import {
   DeviceTrustResponse,
   EmailVerifiedResponse,
   GigDetailResponse,
+  GigMediaPreviewResponse,
+  GigMediaUploadResponse,
   GigMenuResponse,
   GigTemplateChoicesResponse,
   GigVersionResponse,
@@ -6553,7 +6556,7 @@ await check('Provider GigMenu', async () => {
   // identity becomes a provider through the REAL flows (Mailpit email, fake SMS sink, the consent API, the registration API), in an isolated DEV/TEST market (ZZ) with its own
   // category, service type and Gig Template (published by admin.dev; retired or deactivated at the end). Then it builds Gigs from the template through the owner-only API: exact
   // template-version binding, eager draft validation, completeness at publish, optimistic revisions, publish/supersede/retire, the GigMenu and its readiness facts, a second account
-  // (customer.dev) that gets 404, and the web pages behind Caddy. A Gig is NOT live: Go-Live is never evaluated, and no variant, add-on, media or search field exists in any response.
+  // (customer.dev) that gets 404, and the web pages behind Caddy. A Gig is NOT live: Go-Live is never evaluated, and no service-area, availability or search field exists in any response (variants, add-ons and media are CAT-004 and have their own scenario).
   // Assumptions: DATABASE_URL (read-only SELECTs on the Gig tables, audit and outbox), LOKI_URL, MAILPIT_URL, VALKEY_URL, KEYCLOAK_ADMIN*, the legal versions published by the
   // 'Consent' scenario, and the Gig API of apps/api (routes under /api/v1/provider, error codes either GIG-prefixed or as named in the contract).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -7495,9 +7498,10 @@ await check('Provider GigMenu', async () => {
       `(19) the refusal names why (${lateGig.json.error.details?.reason})`,
     );
 
-    // (20) a Gig is NOT live: Go-Live is never evaluated, and no later-checkpoint capability exists in any response
+    // (20) a Gig is NOT live: Go-Live is never evaluated, and no later-checkpoint capability exists in any response (variants, add-ons and media arrived with CAT-004: they are proven by
+    // the scenario 'Provider variants, add-ons and media'; this template has none of them, so here they must be empty)
     const forbidden =
-      /^(variants?|addOns?|add_ons?|media|mediaItems?|photos?|gallery|serviceAreas?|serviceArea|radius|availability|capacity|bookings?|searchRank|ranking|live|isLive|bookable|goLiveEligible)$/i;
+      /^(mediaItems?|photos?|gallery|serviceAreas?|serviceArea|radius|availability|capacity|bookings?|searchRank|ranking|live|isLive|bookable|goLiveEligible)$/i;
     const walk = (value: Json, found: string[]): string[] => {
       if (Array.isArray(value)) value.forEach((v) => walk(v, found));
       else if (value && typeof value === 'object')
@@ -7534,7 +7538,7 @@ await check('Provider GigMenu', async () => {
     const req20 = (await registration('GET', '/requirements', token)).json.data;
     assert(req20.overall.goLive.evaluated === false && req20.overall.goLive.eligible === false, '(20) the registration still does not evaluate Go-Live');
     const noGoLive = await database.query<{ n: number }>(
-      `SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema = 'provider' AND table_name ~* 'variant|add_?on|media|availability|area|capacity|go_?live|search'`,
+      `SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema = 'provider' AND table_name ~* 'availability|area|capacity|go_?live|search'`,
     );
     assert(noGoLive[0]!.n === 0, `(20) the provider schema has no table of a later checkpoint (${noGoLive[0]!.n})`);
 
@@ -7622,13 +7626,1670 @@ await check('Provider GigMenu', async () => {
       `throwaway provider (registration COMPLETED through the real flows) in a DEV/TEST market; ${tpl}: customer not eligible (403), templates offered only for the selected service type; Gig created from the ACTIVE template version (exact link, idempotent token), ` +
       `eager draft validation (fixed/unknown/option/bounds/markup/length), incomplete publish blocked with identifiers, stale revisions 409, v1 published and frozen (GigMenu + GIGS step COMPLETE); template v2 did not move the Gig ` +
       `(next draft binds template v1), v2 published, v1 SUPERSEDED but readable and unchanged; web pages render behind Caddy; another account gets 404 on every route (same as a missing Gig); retire is terminal, history readable after the ` +
-      `template was retired, a new Gig binds template v2; Go-Live never evaluated, no variant/add-on/media/area/search field anywhere; audit and outbox exact, no provider text in them or in the logs; la-oc ${laocBefore} untouched`
+      `template was retired, a new Gig binds template v2; Go-Live never evaluated, no area/availability/search field anywhere; audit and outbox exact, no provider text in them or in the logs; la-oc ${laocBefore} untouched`
     );
   } finally {
     // cleanup: the Gig template, service type and category are RETIRED and the DEV/TEST market deactivated (entities are never deleted; Gigs stay as history); the throwaway user is removed
     try {
       if (admin && marketCreated) {
         if (!templateRetired) await request(`/catalog/gig-templates/${tpl}/status`, 'PUT', admin, { status: 'RETIRED', reason: 'smoke cleanup' });
+        await request(`/catalog/service-types/${serviceType}/status`, 'PUT', admin, { status: 'RETIRED', reason: 'smoke cleanup' });
+        await request(`/catalog/categories/${categoryCode}/status`, 'PUT', admin, { status: 'RETIRED', reason: 'smoke cleanup' });
+        await request(`/geography/markets/${marketCode}/activation`, 'POST', admin, { active: false, reason: 'smoke cleanup' });
+      }
+    } catch {
+      // best effort: the failure that got us here is the one to report
+    }
+    try {
+      if (kcUserId) await kcAdmin('DELETE', `/users/${kcUserId}`);
+    } catch {
+      // best effort
+    }
+    valkey.disconnect();
+    await database.close();
+  }
+});
+
+// ---------------------------------------------------------------- synthetic DEV/TEST images (CAT-004)
+// Tiny images built in code, never a real photo. The server reads only the HEADER for the dimensions (it never decodes), so a bomb is just a header that claims a huge size.
+const CRC_TABLE = ((): Uint32Array => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+const crc32 = (b: Buffer): number => {
+  let c = 0xffffffff;
+  for (const x of b) c = CRC_TABLE[(c ^ x) & 0xff]! ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+};
+const pngChunk = (type: string, data: Buffer): Buffer => {
+  const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(body));
+  return Buffer.concat([len, body, crc]);
+};
+/** A valid 8-bit grayscale PNG; `rows` below `height` makes a deliberately truncated image whose HEADER still claims the full size (a decompression-bomb header). */
+const synthPng = (width: number, height: number, shade: number, label: string, rows = height): Buffer => {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth; colour type 0 (grayscale), compression, filter and interlace stay 0
+  const raw = Buffer.alloc((width + 1) * rows, shade);
+  for (let r = 0; r < rows; r++) raw[r * (width + 1)] = 0; // filter type "none"
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk('IHDR', ihdr),
+    pngChunk('tEXt', Buffer.concat([Buffer.from('Comment', 'latin1'), Buffer.from([0]), Buffer.from(label, 'latin1')])),
+    pngChunk('IDAT', deflateSync(raw)),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+};
+/** A valid baseline grayscale JPEG (every 8x8 block is "DC difference 0, end of block": two bits of zeros per block). `edge` must be a multiple of 16. */
+const synthJpeg = (edge: number, label: string): Buffer => {
+  const seg = (marker: number, payload: Buffer): Buffer => {
+    const h = Buffer.alloc(4);
+    h.writeUInt16BE(0xff00 | marker, 0);
+    h.writeUInt16BE(payload.length + 2, 2);
+    return Buffer.concat([h, payload]);
+  };
+  const counts = (): Buffer => Buffer.from([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+  return Buffer.concat([
+    Buffer.from([0xff, 0xd8]),
+    seg(0xfe, Buffer.from(label, 'latin1')),
+    seg(0xdb, Buffer.concat([Buffer.from([0]), Buffer.alloc(64, 1)])),
+    seg(0xc0, Buffer.from([8, edge >> 8, edge & 255, edge >> 8, edge & 255, 1, 1, 0x11, 0])),
+    seg(0xc4, Buffer.concat([Buffer.from([0x00]), counts(), Buffer.from([0])])), // DC table 0: one symbol (category 0), the code "0"
+    seg(0xc4, Buffer.concat([Buffer.from([0x10]), counts(), Buffer.from([0])])), // AC table 0: one symbol (end of block), the code "0"
+    seg(0xda, Buffer.from([1, 1, 0x00, 0, 63, 0])),
+    Buffer.alloc(((edge / 8) * (edge / 8)) / 4, 0),
+    Buffer.from([0xff, 0xd9]),
+  ]);
+};
+/** A valid lossless WebP (VP8L) of one flat colour: every prefix code has a single symbol, so the pixels take zero bits. */
+const synthWebp = (edge: number, green: number, red: number, blue: number): Buffer => {
+  const bits: number[] = [];
+  const put = (value: number, n: number): void => {
+    for (let i = 0; i < n; i++) bits.push((value >> i) & 1);
+  };
+  put(0, 1); // no transform
+  put(0, 1); // no colour cache
+  put(0, 1); // no meta prefix codes
+  for (const symbol of [green, red, blue, 255, 0]) {
+    put(1, 1); // simple code
+    put(0, 1); // one symbol
+    put(1, 1); // the symbol is 8 bits
+    put(symbol, 8);
+  }
+  while (bits.length % 8) bits.push(0);
+  const packed = Buffer.alloc(bits.length / 8);
+  bits.forEach((bit, i) => {
+    packed[i >> 3] = packed[i >> 3]! | (bit << (i & 7));
+  });
+  const head = Buffer.alloc(5);
+  head[0] = 0x2f;
+  head.writeUInt32LE((edge - 1) | ((edge - 1) << 14), 1);
+  const data = Buffer.concat([head, packed]);
+  const pad = data.length % 2 ? Buffer.from([0]) : Buffer.alloc(0);
+  const chunk = Buffer.alloc(8);
+  chunk.write('VP8L', 0, 'latin1');
+  chunk.writeUInt32LE(data.length, 4);
+  const riff = Buffer.alloc(12);
+  riff.write('RIFF', 0, 'latin1');
+  riff.writeUInt32LE(4 + chunk.length + data.length + pad.length, 4);
+  riff.write('WEBP', 8, 'latin1');
+  return Buffer.concat([riff, chunk, data, pad]);
+};
+
+// ---------------------------------------------------------------- Provider variants, add-ons and media (CAT-004)
+await check('Provider variants, add-ons and media', async () => {
+  // Variants, add-ons and photos of a provider Gig VERSION (CAT-004) end to end with REAL Keycloak tokens and a THROWAWAY customer-only identity (created through the Keycloak admin API and
+  // deleted at the end) that becomes a provider through the REAL flows, in an isolated DEV/TEST market (ZZ) with its own category, service type and Gig Template (published by admin.dev):
+  // template version 1 allows FIXED_WITH_VARIANTS and ADD_ONS and has a REQUIRED photo field (1 to 3); template version 2 (published late) allows variants only and has no photo field.
+  // Images are SYNTHETIC (generated in code, never a real photo). Photos go to the REAL private object store (SeaweedFS) through the one-object presigned PUT (S3_ENDPOINT must be
+  // reachable from this container, as in 'Provider verification'), the scanner is the DEV/TEST fake (TRUST_SCANNER=fake: the harmless EICAR string is INFECTED).
+  // Assumptions (checked against the real implementation by the lead): routes under /api/v1/provider (PUT /gigs/:id/draft/variants|add-ons|media/order, POST .../draft/media/uploads,
+  // POST|PUT|DELETE .../draft/media/:mediaId[/finalize], GET .../draft/media/:mediaId/preview, GET .../versions/:n/media/:mediaId/preview), the seeded media policy (10 MiB, JPEG/PNG/WebP,
+  // edges 200 to 12000, 50 M pixels, 200 characters of alt text, 10 variants, 20 add-ons), DATABASE_URL (read-only SELECTs), LOKI_URL, MAILPIT_URL, VALKEY_URL, KEYCLOAK_ADMIN*.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  type Json = any; // parsed response bodies are checked field by field below
+  const assert = (ok: boolean, what: string): void => {
+    if (!ok) throw new Error(what);
+  };
+  const runId = Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+  const cid = `smoke-gigmedia-${runId}`;
+  const flowStart = Date.now() * 1e6;
+  const marketCode = `devtest-gigm-${runId}`;
+  const categoryCode = `devtest_gigmc_${runId}`;
+  const serviceType = `devtest_gigms_${runId}`;
+  const tpl = `devtest_gigm_${runId}`;
+  const key = (suffix: string): string => `catalog.gig_template.${tpl}.${suffix}`;
+  const username = `cat004.${runId}`;
+  const password = `Pw-${randomBytes(9).toString('hex')}`; // secret-scan:allow throwaway DEV/TEST identity, deleted at the end
+  const email = `cat004-${runId}@bananagig.localhost`;
+  const mailpit = env('MAILPIT_URL', 'http://mailpit-email:8025');
+  const loki = env('LOKI_URL', 'http://loki-logs:3100');
+  const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  const itemKeyRe = /^[a-z][a-z0-9_]{1,39}$/;
+  const sha256 = (b: Buffer): string => createHash('sha256').update(b).digest('hex');
+  // the provider text of this run (plain text; unique per run so it can be searched for in the audit trail, the outbox and the logs)
+  const title = `Smoke Media Gig ${runId}`;
+  const text = {
+    pitch: `Smoke media pitch ${runId}`,
+    description: `Smoke media description ${runId}.`,
+    basic: `Basic wash ${runId}`,
+    basicDesc: `Basic wash description ${runId}`,
+    deluxe: `Deluxe wash ${runId}`,
+    premium: `Premium wash ${runId}`,
+    wax: `Extra wax ${runId}`,
+    waxDesc: `Extra wax description ${runId}`,
+    hair: `Pet hair removal ${runId}`,
+    shine: `Wheel shine ${runId}`,
+    altA: `Front of the car ${runId}`,
+    altA2: `Front of the car, edited ${runId}`,
+    altC: `Back of the car ${runId}`,
+    altD: `Interior ${runId}`,
+    editedDeluxe: `Deluxe wash plus ${runId}`,
+  };
+  const providerText = Object.values(text);
+  const seen: string[] = []; // every PROVIDER Gig response (body and headers) except the one-time upload authorizations and previews, which hold a signed URL by design
+  const secretsOfUrls: string[] = []; // the signature of every presigned URL handed out in this run
+  await clearLimiterBuckets('email-verification');
+  await clearLimiterBuckets('phone-verification');
+
+  type Reply = { status: number; text: string; json: Json; headers: Headers };
+  const request = async (path: string, method: string, token: string | null, body?: unknown): Promise<Reply> => {
+    const r = await get(`${api}/api/v1${path}`, {
+      method,
+      headers: {
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        [CORRELATION_HEADER]: cid,
+        ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
+      },
+      ...(body !== undefined ? { body: typeof body === 'string' ? body : JSON.stringify(body) } : {}),
+    });
+    const bodyText = await r.text();
+    let json: Json;
+    try {
+      json = JSON.parse(bodyText);
+    } catch {
+      json = undefined;
+    }
+    return { status: r.status, text: bodyText, json, headers: r.headers };
+  };
+  const mgmt = async (
+    module: 'catalog' | 'geography' | 'content',
+    admin: string,
+    method: string,
+    path: string,
+    body?: unknown,
+    okStatuses = [200, 201],
+  ): Promise<Reply> => {
+    const r = await request(`/${module}${path}`, method, admin, body);
+    assert(okStatuses.includes(r.status), `${method} /${module}${path} -> ${r.status} ${r.json?.error?.code ?? ''} ${r.json?.error?.details?.reason ?? ''}`);
+    return r;
+  };
+  /** The provider Gig API. Every response must be no-store; it is kept for the scans at the end unless `keep` is false (upload authorizations and previews carry a signed URL). */
+  const gig = async (method: 'GET' | 'POST' | 'PUT' | 'DELETE', path: string, token: string | null, body?: unknown, keep = true): Promise<Reply> => {
+    const r = await request(`/provider${path}`, method, token, body);
+    if (keep) seen.push(r.text, JSON.stringify([...r.headers]));
+    assert(
+      r.headers.get('cache-control') === 'no-store',
+      `${method} /provider${path.replace(/[0-9a-f-]{36}/g, ':id')}: every Gig response must be Cache-Control: no-store (${r.status})`,
+    );
+    return r;
+  };
+  const registration = (method: 'GET' | 'POST' | 'PUT', path: string, token: string | null, body?: unknown): Promise<Reply> =>
+    request(`/provider/registration${path}`, method, token, body);
+  const account = (token: string, path: string, method: 'GET' | 'POST' = 'GET', body?: unknown): Promise<Reply> =>
+    request(`/account${path}`, method, token, body);
+  const isCode = (wire: unknown, code: string): boolean => wire === code || wire === `GIG_${code}`;
+  const refusal = (r: Reply, statuses: number[], codes: string[], what: string): Reply => {
+    assert(
+      statuses.includes(r.status) && codes.some((c) => isCode(r.json?.error?.code, c)),
+      `${what}: expected ${statuses.join('|')} ${codes.join('|')}, got ${r.status} ${r.json?.error?.code ?? r.text.slice(0, 160)} ${r.json?.error?.details?.reason ?? ''}`,
+    );
+    const mk = r.json.error.details?.messageKey;
+    if (mk !== undefined)
+      assert(
+        codes.some((c) => mk === gigErrorKey(c as never)),
+        `${what}: the error message key ${mk} does not belong to ${codes.join('|')}`,
+      );
+    return r;
+  };
+  const hasIssue = (r: Reply, reason: string): boolean =>
+    Array.isArray(r.json?.error?.details?.issues) &&
+    r.json.error.details.issues.some((i: Json) => i.reason === reason && i.messageKey === `provider.gig.issue.${reason.toLowerCase()}`);
+  type Parser = { safeParse(v: unknown): Json };
+  /** An expected success whose body must match the published contract. Returns the `data` member. */
+  const read = (schema: Parser, r: Reply, status: number, what: string): Json => {
+    assert(r.status === status, `${what} -> ${r.status} ${r.json?.error?.code ?? r.text.slice(0, 160)} ${r.json?.error?.details?.reason ?? ''}`);
+    const p = schema.safeParse(r.json);
+    if (!p.success) throw new Error(`${what}: the response does not match its contract: ${String(p.error?.message).slice(0, 400)}`);
+    return p.data.data;
+  };
+  const reasons: Record<string, string> = {}; // the refusal reasons the API reported (allow-listed codes), echoed in the result note
+
+  // ---- Keycloak: the throwaway identity (customer realm role only; the account starts as a customer)
+  const kcToken = await kcMasterToken();
+  const kcAdmin = async (method: string, path: string, body?: unknown): Promise<{ status: number; json: Json; location: string | null }> => {
+    const res = await get(`${kcUrl}/admin/realms/bananagig${path}`, {
+      method,
+      headers: { authorization: `Bearer ${kcToken}`, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    const bodyText = await res.text();
+    let json: Json;
+    try {
+      json = bodyText ? JSON.parse(bodyText) : undefined;
+    } catch {
+      json = bodyText;
+    }
+    return { status: res.status, json, location: res.headers.get('location') };
+  };
+  let kcUserId = '';
+  const database = createDatabase(env('DATABASE_URL', ''), { role: 'tests' });
+  const valkey = new Redis(env('VALKEY_URL', 'redis://valkey-cache:6379'), { maxRetriesPerRequest: 2 });
+  valkey.on('error', () => undefined);
+  const inbox = new FakeSmsInbox(valkey);
+  let admin = '';
+  let marketCreated = false;
+  try {
+    // (1) the throwaway identity and an admin token for the catalogue
+    const created = await kcAdmin('POST', '/users', {
+      username,
+      enabled: true,
+      email: `kc-${email}`,
+      emailVerified: true,
+      firstName: 'Media',
+      lastName: 'Smoke',
+      attributes: { 'bananagig.devOnly': ['true'] },
+    });
+    assert(created.status === 201 && !!created.location, `(1) creating the throwaway Keycloak user -> ${created.status} ${JSON.stringify(created.json)}`);
+    kcUserId = created.location!.split('/').pop()!;
+    const role = await kcAdmin('GET', '/roles/customer');
+    assert(role.status === 200, `(1) the customer realm role -> ${role.status}`);
+    assert((await kcAdmin('POST', `/users/${kcUserId}/role-mappings/realm`, [role.json])).status === 204, '(1) mapping the customer realm role');
+    assert(
+      (await kcAdmin('PUT', `/users/${kcUserId}/reset-password`, { type: 'password', value: password, temporary: false })).status === 204,
+      '(1) setting the throwaway password',
+    );
+    const login = async (
+      clientId: 'bananagig-web' | 'bananagig-admin',
+      redirectUri: string,
+      creds: { username: string; password: string },
+    ): Promise<string> => {
+      const l = await authorizationCodeLogin(kc, { clientId, redirectUri, ...creds });
+      return (await exchangeAuthorizationCode({ tokenEndpoint: ep.token, clientId, redirectUri, code: l.code, codeVerifier: l.verifier })).accessToken;
+    };
+    const token = await login('bananagig-web', WEB_REDIRECT_URI, { username, password });
+    const me = AccountResponse.parse((await account(token, '/me')).json).data;
+    const accountId = me.accountId;
+    assert(uuidRe.test(accountId) && me.status === 'ACTIVE', '(1) the account is created on the first request and ACTIVE');
+    admin = await login('bananagig-admin', ADMIN_REDIRECT_URI, DEV_USERS.admin);
+    const laocBefore = (await mgmt('geography', admin, 'GET', '/markets/la-oc')).json.data.status as string;
+
+    // (2) the platform side: a DEV/TEST market, category, service type and an ACTIVE Gig Template (v1 published) offered in the market. FIXED_WITH_VARIANTS + ADD_ONS, a REQUIRED photo field (1..3).
+    await ensureDevtestGeography(admin);
+    await mgmt('geography', admin, 'POST', '/markets', {
+      code: marketCode,
+      name: `DEV/TEST gig media smoke ${runId}`,
+      countryCode: 'ZZ',
+      defaultLocale: 'qaa',
+      currencyCode: 'USD',
+      defaultTimeZone: 'America/Los_Angeles',
+      reason: 'DEV/TEST ONLY smoke market',
+    });
+    marketCreated = true;
+    const publishCopy = async (k: string, copy: string): Promise<void> => {
+      await mgmt('content', admin, 'POST', '/entries', {
+        key: k,
+        contentType: 'UI_LABEL',
+        ownerRole: 'CONTENT',
+        description: 'DEV/TEST ONLY Gig media smoke entry',
+        approvalPolicy: 'NONE',
+      });
+      const v = (await mgmt('content', admin, 'POST', `/entries/${k}/versions`, { locale: 'en-US', body: copy, reason: 'smoke test' })).json.data;
+      await mgmt('content', admin, 'POST', `/versions/${v.versionId}/submit`, {});
+      await mgmt('content', admin, 'POST', `/versions/${v.versionId}/publish`, {});
+    };
+    await publishCopy(`catalog.category.${categoryCode}.name`, `Smoke Media Category ${runId}`);
+    await publishCopy(`catalog.service_type.${serviceType}.name`, `Smoke Media Service ${runId}`);
+    await publishCopy(key('name'), `Smoke Media Template ${runId}`);
+    await mgmt('catalog', admin, 'POST', '/categories', { code: categoryCode, reason: 'DEV/TEST ONLY' });
+    await mgmt('catalog', admin, 'POST', '/service-types', { code: serviceType, categoryCode, reason: 'DEV/TEST ONLY' });
+    await mgmt('catalog', admin, 'POST', '/gig-templates', {
+      code: tpl,
+      serviceTypeCode: serviceType,
+      withDescription: false,
+      withInstructions: false,
+      reason: 'DEV/TEST ONLY smoke template',
+    });
+    await mgmt('catalog', admin, 'PUT', `/categories/${categoryCode}/status`, { status: 'ACTIVE', reason: 'launch' });
+    await mgmt('catalog', admin, 'PUT', `/service-types/${serviceType}/status`, { status: 'ACTIVE', reason: 'launch' });
+    await mgmt('catalog', admin, 'PUT', `/gig-templates/${tpl}/status`, { status: 'ACTIVE', reason: 'launch' });
+    await publishCopy(key('field.inclusions.label'), 'What is included');
+    await publishCopy(key('field.inclusions.default'), 'Exterior wash, interior vacuum, windows.');
+    await publishCopy(key('field.finish.label'), 'Finish');
+    await publishCopy(key('field.finish.option.wax.label'), 'Wax');
+    await publishCopy(key('field.finish.option.sealant.label'), 'Sealant');
+    await publishCopy(key('field.photos.label'), 'Work photos');
+    await mgmt('catalog', admin, 'POST', `/gig-templates/${tpl}/versions`, { reason: 'DEV/TEST ONLY first draft' });
+    const fieldsBase = [
+      { fieldKey: 'inclusions', fieldType: 'LONG_TEXT', section: 'INCLUSIONS', behavior: 'PLATFORM_FIXED', withDefaultText: true },
+      { fieldKey: 'finish', fieldType: 'ENUM', behavior: 'PROVIDER_REQUIRED', options: [{ optionCode: 'wax', isDefault: true }, { optionCode: 'sealant' }] },
+    ];
+    const definition = {
+      expectedRevision: 1,
+      duration: { minMinutes: 60, maxMinutes: 240, suggestedMinutes: 120 },
+      pricingModels: ['FIXED_WITH_VARIANTS', 'ADD_ONS'],
+      areaModes: ['RADIUS'],
+      fields: [...fieldsBase, { fieldKey: 'photos', fieldType: 'MEDIA', behavior: 'PROVIDER_REQUIRED', minItems: 1, maxItems: 3 }],
+      requirements: [{ requirementType: 'INSURANCE' }],
+      reason: 'DEV/TEST ONLY fields',
+    };
+    await mgmt('catalog', admin, 'PUT', `/gig-templates/${tpl}/versions/1`, definition);
+    await mgmt('catalog', admin, 'POST', `/gig-templates/${tpl}/versions/1/publish`, { expectedRevision: 2, reason: 'DEV/TEST ONLY publish' });
+    await mgmt('catalog', admin, 'PUT', `/markets/${marketCode}/categories/${categoryCode}`, { enabled: true, displayOrder: 10, reason: 'prepare' });
+    await mgmt('catalog', admin, 'PUT', `/markets/${marketCode}/service-types/${serviceType}`, { enabled: true, displayOrder: 10, reason: 'prepare' });
+    await mgmt('catalog', admin, 'PUT', `/markets/${marketCode}/gig-templates/${tpl}`, { enabled: true, displayOrder: 10, reason: 'prepare' });
+    await mgmt('geography', admin, 'POST', `/markets/${marketCode}/activation`, { active: true, reason: 'smoke test' });
+
+    // (3) before anything: every new route needs the caller's own token
+    const someGig = randomUUID();
+    const someMedia = randomUUID();
+    const newRoutes: [string, string, unknown][] = [
+      ['PUT', `/gigs/${someGig}/draft/variants`, { expectedRevision: 1, variants: [] }],
+      ['PUT', `/gigs/${someGig}/draft/add-ons`, { expectedRevision: 1, addOns: [] }],
+      ['POST', `/gigs/${someGig}/draft/media/uploads`, { expectedRevision: 1, fieldKey: 'photos', mimeType: 'image/png', sizeBytes: 100, altText: null }],
+      ['POST', `/gigs/${someGig}/draft/media/${someMedia}/finalize`, { expectedRevision: 1 }],
+      ['PUT', `/gigs/${someGig}/draft/media/${someMedia}`, { expectedRevision: 1, altText: null }],
+      ['DELETE', `/gigs/${someGig}/draft/media/${someMedia}`, { expectedRevision: 1 }],
+      ['PUT', `/gigs/${someGig}/draft/media/order`, { expectedRevision: 1, mediaIds: [] }],
+      ['GET', `/gigs/${someGig}/draft/media/${someMedia}/preview`, undefined],
+      ['GET', `/gigs/${someGig}/versions/1/media/${someMedia}/preview`, undefined],
+    ];
+    for (const [method, path, body] of newRoutes)
+      assert(
+        (await gig(method as 'GET', path, null, body)).status === 401,
+        `(3) ${method} /provider${path.replace(/[0-9a-f-]{36}/g, ':id')} without a token must be 401`,
+      );
+
+    // (4) become a provider through the real flows: verified contacts, the market and service type, consent, submit
+    assert((await account(token, '/email', 'POST', { email })).status === 200, '(4) setting the email');
+    assert((await account(token, '/email/verification/send', 'POST', {})).status === 200, '(4) sending the email verification');
+    const message = await retry(
+      async () => {
+        const found = (await (await expectOk(`${mailpit}/api/v1/search?query=${encodeURIComponent(`to:"${email}"`)}`)).json()) as {
+          messages: { ID: string }[] | null;
+        };
+        if (!found.messages?.length) throw new Error('the verification email has not arrived');
+        return (await (await expectOk(`${mailpit}/api/v1/message/${found.messages[0]!.ID}`)).json()) as { Text: string };
+      },
+      10,
+      1000,
+    );
+    const emailCode = /code is\s+([0-9]{6})\b/i.exec(message.Text)?.[1];
+    assert(!!emailCode, '(4) the email code is missing from the delivered message');
+    assert((await account(token, '/email/verification/confirm-code', 'POST', { code: emailCode })).status === 200, '(4) confirming the email code');
+    let tail = '';
+    do tail = String(Math.floor(Math.random() * 10_000)).padStart(4, '0');
+    while (['901', '902', '903', '904', '905'].includes(tail.slice(-3)));
+    const e164 = `+1202555${tail}`;
+    await inbox.clear(e164);
+    assert((await account(token, '/phone', 'POST', { phone: `(202) 555-${tail}`, country: 'US' })).status === 200, '(4) setting the phone number');
+    assert((await account(token, '/phone/verification/send', 'POST', {})).status === 200, '(4) sending the SMS');
+    const smsCode = extractSmsCode((await inbox.wait(e164, 1, 10_000))[0]!.body);
+    assert(!!smsCode, '(4) the SMS code is missing');
+    assert((await account(token, '/phone/verification/confirm-code', 'POST', { code: smsCode })).status === 200, '(4) confirming the SMS code');
+    assert((await registration('POST', '', token, {})).status === 201, '(4) starting the provider registration');
+    assert((await registration('PUT', '/market', token, { marketCode })).status === 200, '(4) choosing the test market');
+    assert((await registration('PUT', '/services', token, { serviceTypeCodes: [serviceType] })).status === 200, '(4) choosing the service type');
+    const consentReq = ConsentRequirementsResponse.parse((await account(token, '/consents/requirements')).json).data;
+    const outstanding = consentReq.requirements.filter((r) => r.status === 'OUTSTANDING' || r.status === 'REACCEPTANCE_REQUIRED');
+    assert(
+      outstanding.every((r) => r.document),
+      `(4) legal text must be in force (the Consent scenario publishes it): ${JSON.stringify(consentReq.requirements.map((r) => `${r.purposeCode}:${r.status}`))}`,
+    );
+    for (const r of outstanding) {
+      const accepted = await account(token, `/consents/${r.purposeCode}/accept`, 'POST', {
+        versionId: r.document!.versionId,
+        locale: r.document!.locale,
+        bodySha256: r.document!.bodySha256,
+      });
+      assert(accepted.status === 200, `(4) accepting ${r.purposeCode} -> ${accepted.status} ${accepted.json?.error?.code ?? ''}`);
+    }
+    const reg0 = (await registration('GET', '', token)).json.data.registration;
+    const submitted = await registration('POST', '/submit', token, { expectedRevision: reg0.revision });
+    assert(
+      submitted.status === 200 && submitted.json.data.registration.status === 'COMPLETED' && submitted.json.data.providerRole === 'ACTIVE',
+      `(4) submit -> ${submitted.status} ${submitted.json?.error?.code ?? ''} ${JSON.stringify(submitted.json?.error?.details ?? {})}`,
+    );
+
+    // (5) the Gig and its editor view: what the bound template version permits is explicit (variants, add-ons, photos with their per-field bounds)
+    const detail = async (gid: string, t = token): Promise<Json> => read(GigDetailResponse, await gig('GET', `/gigs/${gid}`, t), 200, 'GET Gig');
+    const draftOf = async (gid: string): Promise<Json> => (await detail(gid)).draftVersion;
+    const created5 = read(GigDetailResponse, await gig('POST', '/gigs', token, { gigTemplateCode: tpl }), 201, '(5) POST /gigs');
+    const gigId: string = created5.gig.gigId;
+    const d5 = created5.draftVersion;
+    const photosField = d5.fields.find((f: Json) => f.fieldKey === 'photos');
+    assert(
+      d5.constraints.variants.permitted === true &&
+        d5.constraints.variants.maxCount >= 3 &&
+        d5.constraints.addOns.permitted === true &&
+        d5.constraints.addOns.maxCount >= 3 &&
+        d5.constraints.media.permitted === true &&
+        d5.constraints.media.maxFileSizeBytes > 0 &&
+        d5.constraints.media.allowedMimeTypes.join() !== '' &&
+        d5.constraints.media.allowedMimeTypes.every((m: string) => ['image/jpeg', 'image/png', 'image/webp'].includes(m)) &&
+        !d5.constraints.media.allowedMimeTypes.some((m: string) => /svg|heic/.test(m)) &&
+        photosField?.fieldType === 'MEDIA' &&
+        photosField.behavior === 'PROVIDER_REQUIRED' &&
+        photosField.supported === true &&
+        photosField.minItems === 1 &&
+        photosField.maxItems === 3 &&
+        d5.variants.length === 0 &&
+        d5.addOns.length === 0 &&
+        d5.media.length === 0 &&
+        d5.children.variantCount === 0 &&
+        d5.children.addOnCount === 0 &&
+        d5.children.mediaCount === 0 &&
+        d5.children.mediaRequirementSatisfied === false,
+      `(5) the draft's constraints name the permissions and the photo bounds (${JSON.stringify({ c: d5.constraints, p: photosField, ch: d5.children })})`,
+    );
+    const maxVariants: number = d5.constraints.variants.maxCount;
+    const maxAddOns: number = d5.constraints.addOns.maxCount;
+    const altMax: number = d5.constraints.media.altTextMaxLength;
+    const maxFile: number = d5.constraints.media.maxFileSizeBytes;
+    const minEdge: number = d5.constraints.media.minEdgePixels;
+    const maxEdge: number = d5.constraints.media.maxEdgePixels;
+    const nameMax: number = d5.constraints.variants.nameMaxLength;
+    const descMax: number = d5.constraints.variants.descriptionMaxLength;
+    assert(
+      maxFile > 0 && maxFile <= 26_214_400 && minEdge <= 256 && maxEdge >= 8000,
+      `(5) this smoke assumes the seeded media policy (file ${maxFile}, edges ${minEdge}-${maxEdge})`,
+    );
+    // the base content: a draft can only be published once the photo requirement is met too
+    const saveBase = {
+      expectedRevision: 1,
+      title,
+      shortPitch: text.pitch,
+      description: text.description,
+      priceAmountMinor: 15000,
+      durationMinutes: 120,
+      fieldValues: [{ fieldKey: 'finish', value: 'wax' }],
+    };
+    const base = read(GigDetailResponse, await gig('PUT', `/gigs/${gigId}/draft`, token, saveBase), 200, '(5) PUT draft');
+    assert(
+      base.draftVersion.revision === 2 &&
+        base.draftVersion.publishable === false &&
+        base.draftVersion.issues.length === 1 &&
+        base.draftVersion.issues[0].reason === 'MEDIA_REQUIRED' &&
+        base.draftVersion.issues[0].messageKey === 'provider.gig.issue.media_required',
+      `(5) with the content saved the only thing missing is the required photo (${JSON.stringify(base.draftVersion.issues)})`,
+    );
+    // a MEDIA field is satisfied by attachments, never by a field value
+    const mediaValue = await gig('PUT', `/gigs/${gigId}/draft`, token, {
+      ...saveBase,
+      expectedRevision: 2,
+      fieldValues: [...saveBase.fieldValues, { fieldKey: 'photos', value: 'x' }],
+    });
+    refusal(mediaValue, [400], ['VALIDATION_FAILED'], '(5) a value for a MEDIA field');
+    assert(hasIssue(mediaValue, 'FIELD_MEDIA_NOT_A_VALUE'), '(5) a MEDIA field value is refused with FIELD_MEDIA_NOT_A_VALUE');
+    const menu5 = read(GigMenuResponse, await gig('GET', '/gigs', token), 200, '(5) GET /gigs');
+    const row5 = menu5.gigs.find((g: Json) => g.gig.gigId === gigId);
+    assert(
+      row5.draftVersion.children.mediaRequirementSatisfied === false &&
+        row5.draftVersion.children.variantCount === 0 &&
+        row5.draftVersion.children.mediaCount === 0 &&
+        row5.currentVersion === null,
+      `(5) the GigMenu says the photo requirement of the draft is unmet (${JSON.stringify(row5.draftVersion)})`,
+    );
+
+    // (6) VARIANTS: the whole list is replaced under the revision; every refusal changes nothing; keys are minted by the server; order is the array order
+    const putOpts = (kind: 'variants' | 'add-ons', rev: number, items: unknown, extra: Record<string, unknown> = {}): Promise<Reply> =>
+      gig('PUT', `/gigs/${gigId}/draft/${kind}`, token, { expectedRevision: rev, [kind === 'variants' ? 'variants' : 'addOns']: items, ...extra });
+    const opt = (name: string, description: string | null, priceDeltaMinor: number, durationDeltaMinutes: number, k?: string): Json => ({
+      ...(k ? { key: k } : {}),
+      name,
+      description,
+      priceDeltaMinor,
+      durationDeltaMinutes,
+    });
+    const optShape = ['description', 'displayOrder', 'durationDeltaMinutes', 'key', 'name', 'priceDeltaMinor'];
+    const stateOf = async (): Promise<string> => {
+      const d = await draftOf(gigId);
+      return JSON.stringify({ r: d.revision, v: d.variants, a: d.addOns, m: d.media.map((x: Json) => x.mediaId) });
+    };
+    const stuff = async (kind: 'variants' | 'add-ons', what: string, items: unknown, extra: Record<string, unknown>, reason?: string): Promise<void> => {
+      const before = await stateOf();
+      const rev = (await draftOf(gigId)).revision;
+      const r = await putOpts(kind, rev, items, extra);
+      if (reason) {
+        refusal(r, [400], ['VALIDATION_FAILED'], `(6) ${kind}: ${what}`);
+        assert(hasIssue(r, reason), `(6) ${kind}: ${what}: expected the issue ${reason} (${JSON.stringify(r.json?.error?.details?.issues)})`);
+      } else assert(r.status === 400, `(6) ${kind}: ${what} must be 400 (got ${r.status} ${r.json?.error?.code ?? ''})`);
+      assert((await stateOf()) === before, `(6) ${kind}: ${what} wrote something`);
+    };
+    const NFC = 'Caf' + String.fromCodePoint(0xe9);
+    const NFD = 'Cafe' + String.fromCodePoint(0x301);
+    for (const kind of ['variants', 'add-ons'] as const) {
+      const max = kind === 'variants' ? maxVariants : maxAddOns;
+      await stuff(kind, 'a blank name', [opt('   ', null, 0, 0)], {}, 'OPTION_NAME_REQUIRED');
+      await stuff(kind, 'a name beyond the configured length', [opt('N'.repeat(nameMax + 1), null, 0, 0)], {}, 'OPTION_NAME_TOO_LONG');
+      await stuff(kind, 'a description beyond the configured length', [opt('Ok name', 'D'.repeat(descMax + 1), 0, 0)], {}, 'OPTION_DESCRIPTION_TOO_LONG');
+      await stuff(kind, 'the same name twice (case and spaces)', [opt('Alpha', null, 0, 0), opt('  alpha ', null, 5, 5)], {}, 'OPTION_NAME_DUPLICATE');
+      await stuff(kind, 'the same name twice (NFC and NFD)', [opt(NFC, null, 0, 0), opt(NFD, null, 5, 5)], {}, 'OPTION_NAME_DUPLICATE');
+      await stuff(kind, 'a key the draft does not have', [opt('Alpha', null, 0, 0, 'opt_deadbeef0000')], {}, 'OPTION_KEY_INVALID');
+      await stuff(
+        kind,
+        'more items than the configured maximum',
+        Array.from({ length: max + 1 }, (_, i) => opt(`Item ${i}`, null, 0, 0)),
+        {},
+        'OPTIONS_COUNT_EXCEEDED',
+      );
+      // the coerced-body table: nothing here is a valid body
+      await stuff(kind, 'a fractional price delta', [opt('Alpha', null, 1.5, 0)], {});
+      await stuff(kind, 'a negative price delta', [opt('Alpha', null, -1, 0)], {});
+      await stuff(kind, 'a negative duration delta', [opt('Alpha', null, 0, -5)], {});
+      await stuff(kind, 'a price delta as a string', [{ ...opt('Alpha', null, 0, 0), priceDeltaMinor: '10' }], {});
+      await stuff(kind, 'a price delta of true', [{ ...opt('Alpha', null, 0, 0), priceDeltaMinor: true }], {});
+      await stuff(kind, 'a currency on an item', [{ ...opt('Alpha', null, 0, 0), currency: 'EUR' }], {});
+      await stuff(kind, 'an absolute price on an item', [{ ...opt('Alpha', null, 0, 0), priceAmountMinor: 100 }], {});
+      await stuff(kind, 'a default flag on an item', [{ ...opt('Alpha', null, 0, 0), isDefault: true }], {});
+      await stuff(kind, 'a quantity on an item', [{ ...opt('Alpha', null, 0, 0), quantity: 2 }], {});
+      await stuff(kind, 'an account id in the body', [opt('Alpha', null, 0, 0)], { accountId });
+      await stuff(kind, 'a currency in the body', [opt('Alpha', null, 0, 0)], { currency: 'EUR' });
+      await stuff(kind, 'an item that is not an object', ['Alpha'], {});
+      await stuff(kind, 'a list that is not a list', { 0: opt('Alpha', null, 0, 0) }, {});
+      await stuff(kind, 'null instead of a list', null, {});
+      await stuff(kind, 'the same key twice', [opt('Alpha', null, 0, 0, 'opt_aaaaaaaaaaaa'), opt('Beta', null, 0, 0, 'opt_aaaaaaaaaaaa')], {});
+      const rev = (await draftOf(gigId)).revision;
+      assert((await gig('PUT', `/gigs/${gigId}/draft/${kind}`, token, '[]')).status === 400, `(6) ${kind}: a body that is not an object must be 400`);
+      assert(
+        (await gig('PUT', `/gigs/${gigId}/draft/${kind}`, token, { [kind === 'variants' ? 'variants' : 'addOns']: [] })).status === 400,
+        `(6) ${kind}: a missing revision must be 400`,
+      );
+      assert((await putOpts(kind, 0, [])).status === 400, `(6) ${kind}: a revision of zero must be 400`);
+      assert((await putOpts(kind, rev + 0.5, [])).status === 400, `(6) ${kind}: a fractional revision must be 400`);
+    }
+    // a variant key is not an add-on key
+    let variantUpdates = 0;
+    let addOnUpdates = 0;
+    const dv0 = await draftOf(gigId);
+    const v1put = read(
+      GigDetailResponse,
+      await putOpts('variants', dv0.revision, [opt(text.basic, text.basicDesc, 0, 0), opt(text.deluxe, null, 2500, 30), opt(text.premium, null, 6000, 60)]),
+      200,
+      '(6) PUT variants',
+    );
+    variantUpdates++;
+    const dv1 = v1put.draftVersion;
+    assert(
+      dv1.revision === dv0.revision + 1 &&
+        dv1.variants.length === 3 &&
+        dv1.variants.map((v: Json) => v.name).join('|') === [text.basic, text.deluxe, text.premium].join('|') &&
+        dv1.variants.map((v: Json) => v.displayOrder).join() === '1,2,3' &&
+        dv1.variants.every((v: Json) => itemKeyRe.test(v.key) && Object.keys(v).sort().join() === optShape.join()) &&
+        new Set(dv1.variants.map((v: Json) => v.key)).size === 3 &&
+        dv1.variants[0].description === text.basicDesc &&
+        dv1.variants[1].description === null &&
+        dv1.variants[1].priceDeltaMinor === 2500 &&
+        dv1.variants[2].durationDeltaMinutes === 60 &&
+        dv1.price.amountMinor === 15000 && // the base price is untouched: the deltas are added on top
+        dv1.children.variantCount === 3 &&
+        dv1.children.variantsValid === true,
+      `(6) three variants saved in order, each with a server-minted key and no currency; the revision grew by exactly one (${JSON.stringify(dv1.variants)})`,
+    );
+    const key0 = Object.fromEntries(dv1.variants.map((v: Json) => [v.name, v.key])) as Record<string, string>;
+    // an exact repeat changes nothing (no new revision, no audit row), a stale revision is refused
+    const same = read(
+      GigDetailResponse,
+      await putOpts(
+        'variants',
+        dv1.revision,
+        dv1.variants.map((v: Json) => opt(v.name, v.description, v.priceDeltaMinor, v.durationDeltaMinutes, v.key)),
+      ),
+      200,
+      '(6) PUT variants (unchanged)',
+    );
+    assert(same.draftVersion.revision === dv1.revision, '(6) saving an unchanged list does not raise the revision');
+    refusal(await putOpts('variants', dv0.revision, [opt('Stale', null, 0, 0)]), [409], ['STALE_DRAFT'], '(6) a stale revision');
+    // deterministic order: the array order wins, keys stay, one item is edited in the same call
+    const reordered = read(
+      GigDetailResponse,
+      await putOpts('variants', dv1.revision, [
+        opt(text.premium, null, 6000, 60, key0[text.premium]),
+        opt(text.basic, text.basicDesc, 0, 0, key0[text.basic]),
+        opt(text.deluxe, null, 2750, 30, key0[text.deluxe]),
+      ]),
+      200,
+      '(6) PUT variants (reordered)',
+    );
+    variantUpdates++;
+    const dv2 = reordered.draftVersion;
+    assert(
+      dv2.revision === dv1.revision + 1 &&
+        dv2.variants.map((v: Json) => v.name).join('|') === [text.premium, text.basic, text.deluxe].join('|') &&
+        dv2.variants.map((v: Json) => v.displayOrder).join() === '1,2,3' &&
+        dv2.variants.every((v: Json) => v.key === key0[v.name]) &&
+        dv2.variants[2].priceDeltaMinor === 2750,
+      `(6) the array order is the display order, keys are stable, the edit is applied (${JSON.stringify(dv2.variants)})`,
+    );
+    const afterReorder = await gig('GET', `/gigs/${gigId}`, token);
+    assert(
+      JSON.stringify(read(GigDetailResponse, afterReorder, 200, '(6) GET').draftVersion.variants) === JSON.stringify(dv2.variants),
+      '(6) reading again gives the same order',
+    );
+
+    // (7) ADD-ONS: the same rules with their own list, key space and permission
+    await stuff('add-ons', 'a variant key', [opt(text.wax, null, 0, 0, key0[text.basic])], {}, 'OPTION_KEY_INVALID');
+    const da0 = await draftOf(gigId);
+    const a1 = read(
+      GigDetailResponse,
+      await putOpts('add-ons', da0.revision, [opt(text.wax, text.waxDesc, 1500, 15), opt(text.hair, null, 2000, 20)]),
+      200,
+      '(7) PUT add-ons',
+    );
+    addOnUpdates++;
+    const da1 = a1.draftVersion;
+    assert(
+      da1.revision === da0.revision + 1 &&
+        da1.addOns.length === 2 &&
+        da1.addOns.map((a: Json) => a.name).join('|') === [text.wax, text.hair].join('|') &&
+        da1.addOns.map((a: Json) => a.displayOrder).join() === '1,2' &&
+        da1.addOns.every((a: Json) => itemKeyRe.test(a.key) && Object.keys(a).sort().join() === optShape.join()) &&
+        JSON.stringify(da1.variants) === JSON.stringify(dv2.variants) && // the variants are a separate list: untouched
+        da1.children.addOnCount === 2 &&
+        da1.children.addOnsValid === true &&
+        da1.children.variantCount === 3,
+      `(7) two add-ons saved in order; the variants did not move (${JSON.stringify(da1.addOns)})`,
+    );
+    const addOnKeys = da1.addOns.map((a: Json) => a.key);
+    assert(
+      addOnKeys.every((k: string) => !Object.values(key0).includes(k)),
+      '(7) an add-on key is never a variant key',
+    );
+    const sameA = read(
+      GigDetailResponse,
+      await putOpts(
+        'add-ons',
+        da1.revision,
+        da1.addOns.map((a: Json) => opt(a.name, a.description, a.priceDeltaMinor, a.durationDeltaMinutes, a.key)),
+      ),
+      200,
+      '(7) PUT add-ons (unchanged)',
+    );
+    assert(sameA.draftVersion.revision === da1.revision, '(7) an unchanged add-on list does not raise the revision');
+    refusal(await putOpts('add-ons', da0.revision, []), [409], ['STALE_DRAFT'], '(7) a stale revision');
+
+    // (8) publishing is blocked without a photo; the issue is an identifier with its content key
+    const blocked8 = refusal(
+      await gig('POST', `/gigs/${gigId}/publish`, token, { expectedRevision: da1.revision }),
+      [409, 422],
+      ['PUBLISH_BLOCKED'],
+      '(8) publishing without the required photo',
+    );
+    assert(hasIssue(blocked8, 'MEDIA_REQUIRED'), `(8) the refusal names MEDIA_REQUIRED (${JSON.stringify(blocked8.json.error.details?.issues)})`);
+    assert((await draftOf(gigId)).revision === da1.revision, '(8) a refused publish changes nothing');
+
+    // (9) photos: the authorization is refused for everything the policy does not allow, and writes nothing
+    const png = (shade: number, label: string): Buffer => synthPng(256, 256, shade, `${label} ${runId}`);
+    const imgA = png(90, 'a');
+    const imgB = synthJpeg(256, `b ${runId}`);
+    const imgC = synthWebp(256, 128, 200, 60);
+    const imgD = synthWebp(256, 30, 90, 200);
+    const authorize = (
+      rev: number,
+      o: { mimeType: string; sizeBytes: number; fieldKey?: string; sha256?: string; altText?: string | null },
+      extra: Record<string, unknown> = {},
+    ): Promise<Reply> =>
+      gig(
+        'POST',
+        `/gigs/${gigId}/draft/media/uploads`,
+        token,
+        {
+          expectedRevision: rev,
+          fieldKey: o.fieldKey ?? 'photos',
+          mimeType: o.mimeType,
+          sizeBytes: o.sizeBytes,
+          ...(o.sha256 ? { sha256: o.sha256 } : {}),
+          altText: o.altText ?? null,
+          ...extra,
+        },
+        false,
+      );
+    const noChange = async (what: string, fn: () => Promise<Reply>, statuses: number[], codes: string[]): Promise<Reply> => {
+      const before = await stateOf();
+      const r = await fn();
+      refusal(r, statuses, codes, `(9) ${what}`);
+      if (codes.includes('MEDIA_REFUSED') && isCode(r.json?.error?.code, 'MEDIA_REFUSED')) {
+        const reason = r.json.error.details?.reason;
+        assert(
+          typeof reason === 'string' && /^[A-Z][A-Z0-9_]*$/.test(reason),
+          `(9) ${what}: a media refusal names an allow-listed reason (${JSON.stringify(r.json.error.details)})`,
+        );
+        reasons[what] = reason;
+      }
+      assert((await stateOf()) === before, `(9) ${what} wrote something`);
+      return r;
+    };
+    const rev9 = (await draftOf(gigId)).revision;
+    for (const mime of ['image/gif', 'image/svg+xml', 'text/html', 'application/pdf', 'image/heic'])
+      await noChange(`a file type that is not allowed (${mime})`, () => authorize(rev9, { mimeType: mime, sizeBytes: 1000 }), [400], ['MEDIA_REFUSED']);
+    await noChange('a size above the configured maximum', () => authorize(rev9, { mimeType: 'image/png', sizeBytes: maxFile + 1 }), [400], ['MEDIA_REFUSED']);
+    await noChange(
+      'a field that is not a photo field',
+      () => authorize(rev9, { mimeType: 'image/png', sizeBytes: 1000, fieldKey: 'finish' }),
+      [400, 404],
+      ['MEDIA_REFUSED', 'VALIDATION_FAILED'],
+    );
+    await noChange(
+      'a field the template does not have',
+      () => authorize(rev9, { mimeType: 'image/png', sizeBytes: 1000, fieldKey: 'no_such_field' }),
+      [400, 404],
+      ['MEDIA_REFUSED', 'VALIDATION_FAILED'],
+    );
+    await noChange(
+      'an alt text beyond the configured length',
+      () => authorize(rev9, { mimeType: 'image/png', sizeBytes: 1000, altText: 'x'.repeat(altMax + 1) }),
+      [400],
+      ['VALIDATION_FAILED', 'MEDIA_REFUSED'],
+    );
+    await noChange('a stale revision', () => authorize(rev9 - 1, { mimeType: 'image/png', sizeBytes: 1000 }), [409], ['STALE_DRAFT']);
+    for (const [what, extra] of [
+      ['an account id', { accountId }],
+      ['an object key', { objectKey: 'provider/gig-media/x' }],
+      ['a url', { url: 'http://example.test/x' }],
+      ['a gig version id', { gigVersionId: randomUUID() }],
+      ['a status', { status: 'READY' }],
+    ] as const)
+      assert((await authorize(rev9, { mimeType: 'image/png', sizeBytes: 1000 }, extra)).status === 400, `(9) an upload request naming ${what} must be 400`);
+    for (const [what, patch] of [
+      ['a size of zero', { sizeBytes: 0 }],
+      ['a negative size', { sizeBytes: -1 }],
+      ['a fractional size', { sizeBytes: 10.5 }],
+      ['a size above the structural ceiling', { sizeBytes: 30_000_000 }],
+      ['a size as a string', { sizeBytes: '1000' }],
+      ['a malformed hash', { sha256: 'xyz' }],
+      ['an upper-case hash', { sha256: 'A'.repeat(64) }],
+    ] as const) {
+      const body: Record<string, unknown> = { expectedRevision: rev9, fieldKey: 'photos', mimeType: 'image/png', sizeBytes: 1000, altText: null };
+      Object.assign(body, patch);
+      const r = await gig('POST', `/gigs/${gigId}/draft/media/uploads`, token, body, false);
+      assert(r.status === 400, `(9) an upload request with ${what} must be 400 (got ${r.status})`);
+    }
+    assert((await stateOf()) === JSON.stringify({ r: rev9, v: dv2.variants, a: da1.addOns, m: [] }), '(9) refused authorizations wrote nothing');
+
+    // (10) uploaded files that lie, are hostile or do not match: each is refused at finalize, and nothing of it stays in the draft. The presigned PUT goes straight to the store.
+    let authorizations = 0;
+    const putTo = async (upload: Json, bytes: Buffer, type: string): Promise<number> => {
+      const headers: Record<string, string> = {};
+      for (const [k, v] of Object.entries((upload.headers ?? {}) as Record<string, unknown>))
+        if (!['content-length', 'host'].includes(k.toLowerCase())) headers[k] = String(v);
+      if (!Object.keys(headers).some((k) => k.toLowerCase() === 'content-type')) headers['content-type'] = type;
+      const r = await fetch(upload.url, { method: 'PUT', headers, body: new Uint8Array(bytes), signal: AbortSignal.timeout(10_000) });
+      return r.status;
+    };
+    const noteUrl = (u: string): void => {
+      const url = new URL(u);
+      const sig = url.searchParams.get('X-Amz-Signature') ?? url.search.slice(1);
+      if (sig.length >= 16) secretsOfUrls.push(sig);
+    };
+    /** Authorizes an upload (201) and checks the answer; returns the pending photo and the one-time target. */
+    const authorizeOk = async (
+      bytes: Buffer,
+      mime: string,
+      altText: string | null,
+      withHash = false,
+      fieldKey = 'photos',
+    ): Promise<{ media: Json; upload: Json; revision: number }> => {
+      const rev = (await draftOf(gigId)).revision;
+      const r = await authorize(rev, { mimeType: mime, sizeBytes: bytes.length, altText, fieldKey, ...(withHash ? { sha256: sha256(bytes) } : {}) });
+      const data = read(GigMediaUploadResponse, r, 201, '(10) authorize an upload');
+      authorizations++;
+      assert(
+        data.media.status === 'UPLOADING' &&
+          data.media.fieldKey === fieldKey &&
+          data.media.mimeType === mime &&
+          data.media.sizeBytes === bytes.length &&
+          data.media.width === null &&
+          data.media.altText === altText &&
+          uuidRe.test(data.media.mediaId) &&
+          data.revision === rev + 1 &&
+          data.maxSizeBytes > 0 &&
+          typeof data.upload.url === 'string' &&
+          data.upload.url.startsWith('http') &&
+          typeof data.upload.expiresAt === 'string' &&
+          !Object.keys(data.media).some((k) => k !== 'fieldKey' && /key|sha|asset|url|hash/i.test(k)),
+        `(10) the authorization reserves a pending photo and names a one-object target (${JSON.stringify(data.media)})`,
+      );
+      noteUrl(data.upload.url);
+      return data;
+    };
+    const finalize = (mediaId: string, rev: number, sha?: string, t: string | null = token): Promise<Reply> =>
+      gig('POST', `/gigs/${gigId}/draft/media/${mediaId}/finalize`, t, { expectedRevision: rev, ...(sha ? { sha256: sha } : {}) });
+    const refusedFile = async (what: string, bytes: Buffer, mime: string, o: { sha?: string; body?: Buffer; skipPut?: boolean } = {}): Promise<void> => {
+      const a = await authorizeOk(bytes, mime, null);
+      if (!o.skipPut) assert((await putTo(a.upload, o.body ?? bytes, mime)) < 300, `(10) ${what}: the store accepts the PUT of the authorized object`);
+      const r = await finalize(a.media.mediaId, (await draftOf(gigId)).revision, o.sha);
+      refusal(r, [400], ['MEDIA_REFUSED'], `(10) ${what}`);
+      const reason = r.json.error.details?.reason;
+      assert(
+        typeof reason === 'string' && /^[A-Z][A-Z0-9_]*$/.test(reason),
+        `(10) ${what}: the refusal names an allow-listed reason (${JSON.stringify(r.json.error.details)})`,
+      );
+      reasons[what] = reason;
+      assert(!r.text.includes('gig-media/') && !r.text.includes('X-Amz'), `(10) ${what}: the refusal names no object key or link`);
+      const left = (await draftOf(gigId)).media.find((m: Json) => m.mediaId === a.media.mediaId);
+      if (left) {
+        // an object that is merely missing may stay pending (repeatable); anything else must be gone
+        assert(o.skipPut === true && left.status === 'UPLOADING', `(10) ${what}: a refused photo must not stay in the draft (${JSON.stringify(left)})`);
+        assert(
+          (await gig('DELETE', `/gigs/${gigId}/draft/media/${a.media.mediaId}`, token, { expectedRevision: (await draftOf(gigId)).revision })).status === 200,
+          `(10) ${what}: remove the pending photo`,
+        );
+      }
+    };
+    const html = Buffer.from(`<html><body>not an image ${runId}</body></html>`.padEnd(300, ' '));
+    await refusedFile('a web page declared as a PNG', html, 'image/png');
+    await refusedFile('a PNG declared as a JPEG', imgA, 'image/jpeg');
+    await refusedFile('a JPEG declared as a WebP', imgB, 'image/webp');
+    await refusedFile('a hash that differs from the stored bytes', imgA, 'image/png', { sha: '0'.repeat(64) });
+    await refusedFile('a body longer than the authorized size', imgA, 'image/png', { body: Buffer.concat([imgA, Buffer.alloc(64, 0)]) }).catch(
+      async (e: Error) => {
+        // the store may refuse the longer body itself (the signed length): then there is nothing to finalize and the pending photo is removed
+        if (!/PUT of the authorized object/.test(e.message)) throw e;
+        for (const m of (await draftOf(gigId)).media)
+          await gig('DELETE', `/gigs/${gigId}/draft/media/${m.mediaId}`, token, { expectedRevision: (await draftOf(gigId)).revision });
+      },
+    );
+    await refusedFile(
+      'an infected file (the harmless EICAR test string inside a PNG)',
+      synthPng(256, 256, 90, `EICAR X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H* ${runId}`),
+      'image/png',
+    );
+    await refusedFile('an image below the minimum edge', synthPng(16, 16, 90, `tiny ${runId}`), 'image/png');
+    await refusedFile('a header claiming an edge beyond the maximum', synthPng(maxEdge + 1000, 64, 90, `wide ${runId}`, 1), 'image/png');
+    await refusedFile('a header claiming more pixels than allowed (decompression bomb)', synthPng(8000, 8000, 90, `bomb ${runId}`, 1), 'image/png');
+    await refusedFile('an object that was never uploaded', imgA, 'image/png', { skipPut: true });
+    const afterRefusals = await draftOf(gigId);
+    assert(
+      afterRefusals.media.length === 0 && afterRefusals.children.mediaCount === 0,
+      `(10) none of the refused photos is in the draft (${JSON.stringify(afterRefusals.media)})`,
+    );
+
+    // (11) the good path: authorize, PUT the bytes to the presigned URL, finalize; the photo is READY, verified and scanned, and no object key is in any answer
+    const pendingA = await authorizeOk(imgA, 'image/png', text.altA, true);
+    const pendingState = await draftOf(gigId);
+    assert(
+      pendingState.media.length === 1 &&
+        pendingState.media[0].status === 'UPLOADING' &&
+        pendingState.children.mediaCount === 0 && // the count of the menu and of PRO-003 is READY photos only
+        pendingState.children.mediaRequirementSatisfied === false,
+      '(11) an authorized photo is pending and does not satisfy the requirement',
+    );
+    const blocked11 = refusal(
+      await gig('POST', `/gigs/${gigId}/publish`, token, { expectedRevision: pendingState.revision }),
+      [409, 422],
+      ['PUBLISH_BLOCKED'],
+      '(11) publishing with a pending photo',
+    );
+    assert(hasIssue(blocked11, 'MEDIA_NOT_READY') || hasIssue(blocked11, 'MEDIA_REQUIRED'), '(11) the refusal names the photo that is not ready');
+    assert((await putTo(pendingA.upload, imgA, 'image/png')) < 300, '(11) PUT of the PNG to the presigned URL');
+    const fin = read(GigDetailResponse, await finalize(pendingA.media.mediaId, pendingState.revision, sha256(imgA)), 200, '(11) finalize');
+    const mediaA = fin.draftVersion.media[0];
+    assert(
+      fin.draftVersion.media.length === 1 &&
+        mediaA.mediaId === pendingA.media.mediaId &&
+        mediaA.status === 'READY' &&
+        mediaA.mimeType === 'image/png' &&
+        mediaA.sizeBytes === imgA.length &&
+        mediaA.width === 256 &&
+        mediaA.height === 256 &&
+        mediaA.altText === text.altA &&
+        mediaA.displayOrder === 1 &&
+        mediaA.fieldKey === 'photos' &&
+        Object.keys(mediaA).sort().join() === ['altText', 'displayOrder', 'fieldKey', 'height', 'mediaId', 'mimeType', 'sizeBytes', 'status', 'width'].join() &&
+        fin.draftVersion.revision === pendingState.revision + 1 &&
+        fin.draftVersion.children.mediaRequirementSatisfied === true &&
+        fin.draftVersion.publishable === true,
+      `(11) the finalized photo is READY with verified size, type and dimensions; the requirement is met (${JSON.stringify(mediaA)})`,
+    );
+    const again = read(GigDetailResponse, await finalize(pendingA.media.mediaId, fin.draftVersion.revision), 200, '(11) finalize again (idempotent)');
+    assert(
+      again.draftVersion.revision === fin.draftVersion.revision && again.draftVersion.media[0].status === 'READY',
+      '(11) finalizing again changes nothing',
+    );
+    const keysOfAssets = await database.query<{
+      id: string;
+      object_key: string;
+      sha256: string | null;
+      scan_status: string;
+      status: string;
+      mime_type: string;
+      width: number | null;
+      height: number | null;
+    }>(
+      `SELECT media_asset_id::text AS id, object_key, sha256, scan_status, status, mime_type, width, height FROM provider.media_assets WHERE account_id = $1::uuid`,
+      [accountId],
+    );
+    const readyA = keysOfAssets.filter((a) => a.sha256 === sha256(imgA));
+    assert(
+      readyA.length === 1 &&
+        readyA[0]!.status === 'READY' &&
+        readyA[0]!.scan_status === 'CLEAN' &&
+        readyA[0]!.mime_type === 'image/png' &&
+        readyA[0]!.width === 256 &&
+        readyA[0]!.height === 256,
+      `(11) the stored asset is READY, scanned CLEAN, with the SHA-256 of the file (${JSON.stringify(readyA)})`,
+    );
+    assert(
+      keysOfAssets.filter((a) => a.status === 'READY').length === 1 && keysOfAssets.filter((a) => a.status === 'ABANDONED').length >= 8,
+      `(11) the refused uploads are ABANDONED and only the good one is READY (${keysOfAssets.map((a) => a.status).join()})`,
+    );
+    // the replay: the presigned PUT is still valid after finalize; other bytes of the same size and type must change nothing the owner sees (the final key is separate from the upload key)
+    const swapped = Buffer.from(imgA);
+    swapped[swapped.length - 20] = swapped[swapped.length - 20]! ^ 0xff;
+    await putTo(pendingA.upload, swapped, 'image/png').catch(() => 0);
+
+    // (12) three photos (the maximum), the fourth is refused; alt text, order, detach
+    const pendingB = await authorizeOk(imgB, 'image/jpeg', null);
+    assert((await putTo(pendingB.upload, imgB, 'image/jpeg')) < 300, '(12) PUT of the JPEG');
+    const finB = read(GigDetailResponse, await finalize(pendingB.media.mediaId, (await draftOf(gigId)).revision), 200, '(12) finalize the JPEG');
+    const mediaB = finB.draftVersion.media.find((m: Json) => m.mediaId === pendingB.media.mediaId);
+    assert(
+      mediaB.status === 'READY' && mediaB.mimeType === 'image/jpeg' && mediaB.width === 256 && mediaB.height === 256 && mediaB.displayOrder === 2,
+      `(12) the JPEG is READY at 256x256, second (${JSON.stringify(mediaB)})`,
+    );
+    const pendingC = await authorizeOk(imgC, 'image/webp', text.altC);
+    assert((await putTo(pendingC.upload, imgC, 'image/webp')) < 300, '(12) PUT of the WebP');
+    const finC = read(GigDetailResponse, await finalize(pendingC.media.mediaId, (await draftOf(gigId)).revision), 200, '(12) finalize the WebP');
+    const mediaC = finC.draftVersion.media.find((m: Json) => m.mediaId === pendingC.media.mediaId);
+    assert(
+      mediaC.status === 'READY' && mediaC.mimeType === 'image/webp' && mediaC.width === 256 && mediaC.height === 256 && mediaC.displayOrder === 3,
+      `(12) the WebP is READY at 256x256, third (${JSON.stringify(mediaC)})`,
+    );
+    assert(finC.draftVersion.media.length === 3 && finC.draftVersion.children.mediaCount === 3, '(12) three photos in the draft');
+    await noChange(
+      'a fourth photo beyond the field maximum',
+      async () => authorize((await draftOf(gigId)).revision, { mimeType: 'image/png', sizeBytes: imgA.length }),
+      [400, 409],
+      ['VALIDATION_FAILED', 'MEDIA_REFUSED'],
+    );
+    const [idA, idB, idC] = [mediaA.mediaId as string, mediaB.mediaId as string, mediaC.mediaId as string];
+    const updateAlt = (mediaId: string, rev: number, altText: string | null, extra: Record<string, unknown> = {}): Promise<Reply> =>
+      gig('PUT', `/gigs/${gigId}/draft/media/${mediaId}`, token, { expectedRevision: rev, altText, ...extra });
+    let rev12 = (await draftOf(gigId)).revision;
+    refusal(await updateAlt(idA, rev12 - 1, text.altA2), [409], ['STALE_DRAFT'], '(12) alt text with a stale revision');
+    assert((await updateAlt(idA, rev12, 'x'.repeat(altMax + 1))).status === 400, '(12) an alt text beyond the configured length must be 400');
+    assert((await updateAlt(idA, rev12, text.altA2, { sha256: '0'.repeat(64) })).status === 400, '(12) an alt text request naming a hash must be 400');
+    assert((await updateAlt(idA, rev12, text.altA2, { displayOrder: 1 })).status === 400, '(12) an alt text request naming a display order must be 400');
+    refusal(await updateAlt(randomUUID(), rev12, text.altA2), [404], ['MEDIA_NOT_FOUND'], '(12) alt text of a photo that does not exist');
+    const alted = read(GigDetailResponse, await updateAlt(idA, rev12, text.altA2), 200, '(12) alt text');
+    assert(
+      alted.draftVersion.revision === rev12 + 1 && alted.draftVersion.media.find((m: Json) => m.mediaId === idA).altText === text.altA2,
+      '(12) the alt text is saved and the revision grew by one',
+    );
+    rev12 = alted.draftVersion.revision;
+    // the whole order: a partial, repeated, foreign or unknown list is refused and nothing moves
+    const order = (rev: number, ids: string[], extra: Record<string, unknown> = {}): Promise<Reply> =>
+      gig('PUT', `/gigs/${gigId}/draft/media/order`, token, { expectedRevision: rev, mediaIds: ids, ...extra });
+    const orderBefore = await stateOf();
+    for (const [what, ids] of [
+      ['a list missing a photo', [idC, idA]],
+      ['a list with a photo twice', [idC, idA, idA]],
+      ['a list with an unknown photo', [idC, idA, randomUUID()]],
+      ['an empty list', []],
+    ] as const)
+      refusal(await order(rev12, [...ids]), [400, 404], ['VALIDATION_FAILED', 'MEDIA_REFUSED', 'MEDIA_NOT_FOUND'], `(12) ${what}`);
+    assert((await order(rev12, [idC, idA, idB], { displayOrder: 1 })).status === 400, '(12) an order request with extra keys must be 400');
+    refusal(await order(rev12 - 1, [idC, idA, idB]), [409], ['STALE_DRAFT'], '(12) an order with a stale revision');
+    assert((await stateOf()) === orderBefore, '(12) refused order changes wrote nothing');
+    const ordered = read(GigDetailResponse, await order(rev12, [idC, idA, idB]), 200, '(12) reorder');
+    assert(
+      ordered.draftVersion.media.map((m: Json) => m.mediaId).join() === [idC, idA, idB].join() &&
+        ordered.draftVersion.media.every((m: Json, i: number, all: Json[]) => i === 0 || all[i - 1].displayOrder < m.displayOrder) &&
+        ordered.draftVersion.revision === rev12 + 1,
+      `(12) the photos follow the submitted order, strictly increasing (${JSON.stringify(ordered.draftVersion.media.map((m: Json) => [m.mediaId === idC ? 'c' : m.mediaId === idA ? 'a' : 'b', m.displayOrder]))})`,
+    );
+    // detach the JPEG: the draft loses it; a second detach is not found; the stored asset is kept (it may be attached elsewhere) until the clean-up decides
+    const detach = (mediaId: string, rev: number, t: string | null = token, extra: Record<string, unknown> = {}): Promise<Reply> =>
+      gig('DELETE', `/gigs/${gigId}/draft/media/${mediaId}`, t, { expectedRevision: rev, ...extra });
+    refusal(await detach(idB, ordered.draftVersion.revision - 1), [409], ['STALE_DRAFT'], '(12) detach with a stale revision');
+    assert(
+      (await detach(idB, ordered.draftVersion.revision, token, { deleteObject: true })).status === 400,
+      '(12) a detach request with extra keys must be 400',
+    );
+    const detached = read(GigDetailResponse, await detach(idB, ordered.draftVersion.revision), 200, '(12) detach');
+    assert(
+      detached.draftVersion.media.map((m: Json) => m.mediaId).join() === [idC, idA].join() &&
+        detached.draftVersion.children.mediaCount === 2 &&
+        detached.draftVersion.children.mediaRequirementSatisfied === true,
+      '(12) the JPEG left the draft; two photos remain and the requirement still holds',
+    );
+    refusal(await detach(idB, detached.draftVersion.revision), [404], ['MEDIA_NOT_FOUND'], '(12) detaching it again');
+    // a pending upload that is detached is abandoned
+    const pendingGone = await authorizeOk(imgD, 'image/webp', null);
+    const detachedPending = read(
+      GigDetailResponse,
+      await detach(pendingGone.media.mediaId, (await draftOf(gigId)).revision),
+      200,
+      '(12) detach a pending photo',
+    );
+    assert(detachedPending.draftVersion.media.length === 2, '(12) a pending photo can be removed before it is finalized');
+    const orphan = await database.query<{ status: string }>(
+      `SELECT status FROM provider.media_assets WHERE account_id = $1::uuid AND sha256 IS NULL AND status = 'UPLOAD_PENDING'`,
+      [accountId],
+    );
+    assert(orphan.length === 0, `(12) no asset is left pending after the detach (${orphan.length})`);
+
+    // (13) the owner's preview: a short-lived one-object GET URL (never in the HTML or the logs), no-store; the bytes are the ones that were verified, also after the replay
+    const preview = async (path: string, t: string | null = token): Promise<Reply> => gig('GET', path, t, undefined, false);
+    const pv = read(GigMediaPreviewResponse, await preview(`/gigs/${gigId}/draft/media/${idA}/preview`), 200, '(13) preview');
+    noteUrl(pv.url);
+    const fetched = await fetch(pv.url, { signal: AbortSignal.timeout(10_000) });
+    const fetchedBytes = Buffer.from(await fetched.arrayBuffer());
+    assert(
+      fetched.status === 200 && sha256(fetchedBytes) === sha256(imgA) && (fetched.headers.get('content-type') ?? '').startsWith('image/png'),
+      `(13) the preview URL serves the verified bytes with the stored content type, not the replayed ones (${fetched.status} ${fetched.headers.get('content-type')})`,
+    );
+    refusal(await preview(`/gigs/${gigId}/draft/media/${randomUUID()}/preview`), [404], ['MEDIA_NOT_FOUND'], '(13) preview of a photo that does not exist');
+    assert((await preview(`/gigs/${gigId}/draft/media/not-a-uuid/preview`)).status === 400, '(13) a malformed media id must be 400');
+
+    // (14) publish version 1: the counts reach the audit trail and the event; the version and ALL its children are frozen
+    const rev14 = (await draftOf(gigId)).revision;
+    const published1 = read(GigDetailResponse, await gig('POST', `/gigs/${gigId}/publish`, token, { expectedRevision: rev14 }), 200, '(14) publish v1');
+    const v1 = published1.currentVersion;
+    assert(
+      published1.gig.status === 'ACTIVE' &&
+        v1.versionNumber === 1 &&
+        v1.status === 'PUBLISHED' &&
+        published1.draftVersion === null &&
+        v1.variants.length === 3 &&
+        v1.addOns.length === 2 &&
+        v1.media.length === 2 &&
+        v1.media.every((m: Json) => m.status === 'READY') &&
+        v1.children.variantCount === 3 &&
+        v1.children.addOnCount === 2 &&
+        v1.children.mediaCount === 2 &&
+        v1.children.variantsValid === true &&
+        v1.children.addOnsValid === true &&
+        v1.children.mediaRequirementSatisfied === true,
+      `(14) version 1 is PUBLISHED with its 3 variants, 2 add-ons and 2 photos (${JSON.stringify(v1.children)})`,
+    );
+    const v1Children = JSON.stringify({ v: v1.variants, a: v1.addOns, m: v1.media });
+    const v1Id = {
+      a: v1.media.find((m: Json) => m.fieldKey === 'photos' && m.altText === text.altA2).mediaId as string,
+      c: v1.media.find((m: Json) => m.altText === text.altC).mediaId as string,
+    };
+    const frozen = async (when: string, rev: number, mediaId: string): Promise<void> => {
+      const nodraft = ['NO_DRAFT', 'STALE_DRAFT'];
+      refusal(await putOpts('variants', rev, []), [409], nodraft, `${when}: replacing the variants`);
+      refusal(await putOpts('add-ons', rev, []), [409], nodraft, `${when}: replacing the add-ons`);
+      refusal(await authorize(rev, { mimeType: 'image/png', sizeBytes: imgA.length }), [409], nodraft, `${when}: authorizing a photo`);
+      refusal(await updateAlt(mediaId, rev, 'changed'), [404, 409], [...nodraft, 'MEDIA_NOT_FOUND'], `${when}: changing an alt text`);
+      refusal(await detach(mediaId, rev), [404, 409], [...nodraft, 'MEDIA_NOT_FOUND'], `${when}: detaching a photo`);
+      refusal(
+        await order(rev, [mediaId]),
+        [400, 404, 409],
+        [...nodraft, 'MEDIA_NOT_FOUND', 'VALIDATION_FAILED', 'MEDIA_REFUSED'],
+        `${when}: reordering the photos`,
+      );
+      refusal(await finalize(mediaId, rev), [404, 409], [...nodraft, 'MEDIA_NOT_FOUND'], `${when}: finalizing a photo`);
+    };
+    await frozen('(14) once published', rev14, v1Id.a);
+    const v1Read = read(GigVersionResponse, await gig('GET', `/gigs/${gigId}/versions/1`, token), 200, '(14) GET version 1');
+    assert(JSON.stringify({ v: v1Read.variants, a: v1Read.addOns, m: v1Read.media }) === v1Children, '(14) version 1 still holds exactly its children');
+    const pv1 = read(GigMediaPreviewResponse, await preview(`/gigs/${gigId}/versions/1/media/${v1Id.a}/preview`), 200, '(14) preview of a published photo');
+    noteUrl(pv1.url);
+    refusal(
+      await preview(`/gigs/${gigId}/draft/media/${v1Id.a}/preview`),
+      [404, 409],
+      ['MEDIA_NOT_FOUND', 'NO_DRAFT'],
+      '(14) the draft route does not serve a published photo',
+    );
+
+    // (15) the GigMenu: counts and facts, no links; Go-Live is never evaluated
+    const menu15 = read(GigMenuResponse, await gig('GET', '/gigs', token), 200, '(15) GET /gigs');
+    const row15 = menu15.gigs.find((g: Json) => g.gig.gigId === gigId);
+    assert(
+      row15.currentVersion.children.variantCount === 3 &&
+        row15.currentVersion.children.addOnCount === 2 &&
+        row15.currentVersion.children.mediaCount === 2 &&
+        row15.currentVersion.children.variantsValid === true &&
+        row15.currentVersion.children.addOnsValid === true &&
+        row15.currentVersion.children.mediaRequirementSatisfied === true &&
+        row15.draftVersion === null &&
+        menu15.readiness.hasPublishedGig === true &&
+        menu15.readiness.goLive.evaluated === false &&
+        menu15.readiness.goLive.eligible === false,
+      `(15) the GigMenu row carries the counts and facts of the published version (${JSON.stringify(row15.currentVersion.children)})`,
+    );
+
+    // (16) the next draft COPIES the variants and add-ons (same keys, same order) and RE-ATTACHES the same photos (no new asset); version 1 stays as it was
+    const assetCount = async (): Promise<number> =>
+      (await database.query<{ n: number }>(`SELECT count(*)::int AS n FROM provider.media_assets WHERE account_id = $1::uuid`, [accountId]))[0]!.n;
+    const assetsBeforeCopy = await assetCount();
+    const next = read(GigDetailResponse, await gig('POST', `/gigs/${gigId}/versions`, token, {}), 201, '(16) POST /versions');
+    const d2 = next.draftVersion;
+    assert(
+      d2.versionNumber === 2 &&
+        d2.revision === 1 &&
+        JSON.stringify(d2.variants) === JSON.stringify(v1.variants) &&
+        JSON.stringify(d2.addOns) === JSON.stringify(v1.addOns) &&
+        d2.media.length === 2 &&
+        d2.media.map((m: Json) => `${m.fieldKey}|${m.displayOrder}|${m.status}|${m.mimeType}|${m.sizeBytes}|${m.width}x${m.height}|${m.altText}`).join() ===
+          v1.media.map((m: Json) => `${m.fieldKey}|${m.displayOrder}|${m.status}|${m.mimeType}|${m.sizeBytes}|${m.width}x${m.height}|${m.altText}`).join() &&
+        d2.media.every((m: Json) => !v1.media.some((o: Json) => o.mediaId === m.mediaId)) && // a photo of a version is its own attachment
+        d2.children.variantCount === 3 &&
+        d2.children.addOnCount === 2 &&
+        d2.children.mediaCount === 2 &&
+        d2.children.mediaRequirementSatisfied === true &&
+        d2.publishable === true,
+      `(16) draft 2 starts with the same variants (same keys and order), add-ons and photos (${JSON.stringify(d2.children)})`,
+    );
+    assert((await assetCount()) === assetsBeforeCopy, '(16) copying the photos created no new stored asset (no binary copy)');
+    const mediaOfVersion = async (n: number): Promise<{ asset: string; order: number; alt: string | null }[]> =>
+      database.query<{ asset: string; order: number; alt: string | null }>(
+        `SELECT m.media_asset_id::text AS asset, m.display_order AS "order", m.alt_text AS alt
+           FROM provider.gig_version_media m JOIN provider.gig_versions v ON v.gig_version_id = m.gig_version_id
+          WHERE v.gig_id = $1::uuid AND v.version_number = $2::int ORDER BY m.display_order`,
+        [gigId, n],
+      );
+    const att1 = await mediaOfVersion(1);
+    const att2 = await mediaOfVersion(2);
+    assert(
+      att1.length === 2 && att2.length === 2 && att1.every((a, i) => a.asset === att2[i]!.asset),
+      `(16) both versions point at the very same stored assets (${att1.map((a) => a.asset.slice(0, 8))} / ${att2.map((a) => a.asset.slice(0, 8))})`,
+    );
+    const menu16 = read(GigMenuResponse, await gig('GET', '/gigs', token), 200, '(16) GET /gigs');
+    assert(
+      menu16.gigs[0].draftVersion.children.mediaCount === 2 &&
+        menu16.gigs[0].currentVersion.children.mediaCount === 2 &&
+        menu16.readiness.draftVersionCount === 1,
+      '(16) the menu shows the counts of the draft next to the published version',
+    );
+
+    // (17) edit draft 2: an edited variant (same key), a third add-on, an edited alt text and one more photo; version 1 does not change
+    let d2now = await draftOf(gigId);
+    const edited = read(
+      GigDetailResponse,
+      await putOpts(
+        'variants',
+        d2now.revision,
+        d2now.variants.map((v: Json) =>
+          v.name === text.deluxe ? opt(text.editedDeluxe, null, 3000, 45, v.key) : opt(v.name, v.description, v.priceDeltaMinor, v.durationDeltaMinutes, v.key),
+        ),
+      ),
+      200,
+      '(17) edit a variant in draft 2',
+    );
+    variantUpdates++;
+    d2now = edited.draftVersion;
+    assert(
+      d2now.variants.find((v: Json) => v.key === key0[text.deluxe]).name === text.editedDeluxe &&
+        d2now.variants.find((v: Json) => v.key === key0[text.deluxe]).priceDeltaMinor === 3000,
+      '(17) the variant keeps its key and takes the edit',
+    );
+    const addedA = read(
+      GigDetailResponse,
+      await putOpts('add-ons', d2now.revision, [
+        ...d2now.addOns.map((a: Json) => opt(a.name, a.description, a.priceDeltaMinor, a.durationDeltaMinutes, a.key)),
+        opt(text.shine, null, 800, 10),
+      ]),
+      200,
+      '(17) add a third add-on in draft 2',
+    );
+    addOnUpdates++;
+    d2now = addedA.draftVersion;
+    assert(
+      d2now.addOns.length === 3 && d2now.addOns.slice(0, 2).every((a: Json, i: number) => a.key === v1.addOns[i].key) && itemKeyRe.test(d2now.addOns[2].key),
+      '(17) the new add-on is last, the first two keep their keys',
+    );
+    const d2a = d2now.media.find((m: Json) => m.altText === text.altA2).mediaId as string;
+    d2now = read(GigDetailResponse, await updateAlt(d2a, d2now.revision, text.altD), 200, '(17) alt text in draft 2').draftVersion;
+    const pendingD = await authorizeOk(imgD, 'image/webp', text.altA);
+    assert((await putTo(pendingD.upload, imgD, 'image/webp')) < 300, '(17) PUT of the second WebP');
+    d2now = read(
+      GigDetailResponse,
+      await finalize(pendingD.media.mediaId, (await draftOf(gigId)).revision, sha256(imgD)),
+      200,
+      '(17) finalize the new photo',
+    ).draftVersion;
+    assert(
+      d2now.media.length === 3 && d2now.media[2].status === 'READY' && d2now.media[2].altText === text.altA && d2now.children.mediaCount === 3,
+      '(17) draft 2 holds three READY photos, the new one last',
+    );
+    const att2b = await mediaOfVersion(2);
+    const att1b = await mediaOfVersion(1);
+    assert(
+      att1b.map((a) => `${a.asset}|${a.alt}`).join() === att1.map((a) => `${a.asset}|${a.alt}`).join() &&
+        att2b.length === 3 &&
+        att2b.slice(0, 2).every((a, i) => a.asset === att1b[i]!.asset) &&
+        att2b[2]!.asset !== att1b[0]!.asset &&
+        (await assetCount()) === assetsBeforeCopy + 1,
+      '(17) the old photos are shared by both versions and only the new one is a new asset',
+    );
+    const v1After = read(GigVersionResponse, await gig('GET', `/gigs/${gigId}/versions/1`, token), 200, '(17) GET version 1');
+    assert(
+      JSON.stringify({ v: v1After.variants, a: v1After.addOns, m: v1After.media }) === v1Children && v1After.status === 'PUBLISHED',
+      '(17) version 1 is untouched by every edit of draft 2',
+    );
+
+    // (18) another account cannot see or touch any of it: 404, indistinguishable from nothing at all (customer.dev and provider.dev)
+    const nowhere = randomUUID();
+    const nowhereMedia = randomUUID();
+    for (const who of ['customer', 'provider'] as const) {
+      const other = await login('bananagig-web', WEB_REDIRECT_URI, DEV_USERS[who]);
+      const probes: [string, 'GET' | 'POST' | 'PUT' | 'DELETE', string, unknown][] = [
+        ['replace the variants', 'PUT', '/draft/variants', { expectedRevision: 1, variants: [] }],
+        ['replace the add-ons', 'PUT', '/draft/add-ons', { expectedRevision: 1, addOns: [] }],
+        [
+          'authorize an upload',
+          'POST',
+          '/draft/media/uploads',
+          { expectedRevision: 1, fieldKey: 'photos', mimeType: 'image/png', sizeBytes: 1000, altText: null },
+        ],
+        ['finalize', 'POST', `/draft/media/${pendingD.media.mediaId}/finalize`, { expectedRevision: 1 }],
+        ['alt text', 'PUT', `/draft/media/${pendingD.media.mediaId}`, { expectedRevision: 1, altText: null }],
+        ['detach', 'DELETE', `/draft/media/${pendingD.media.mediaId}`, { expectedRevision: 1 }],
+        ['reorder', 'PUT', '/draft/media/order', { expectedRevision: 1, mediaIds: [] }],
+        ['preview a draft photo', 'GET', `/draft/media/${pendingD.media.mediaId}/preview`, undefined],
+        ['preview a published photo', 'GET', `/versions/1/media/${v1Id.a}/preview`, undefined],
+      ];
+      for (const [what, method, suffix, body] of probes) {
+        const theirs = refusal(
+          await gig(method, `/gigs/${gigId}${suffix}`, other, body, false),
+          [404],
+          ['GIG_NOT_FOUND', 'GIG_VERSION_NOT_FOUND', 'MEDIA_NOT_FOUND', 'NO_DRAFT'],
+          `(18) ${who}.dev: ${what}`,
+        );
+        const none = await gig(
+          method,
+          `/gigs/${nowhere}${suffix.split(pendingD.media.mediaId).join(nowhereMedia).split(v1Id.a).join(nowhereMedia)}`,
+          other,
+          body,
+          false,
+        );
+        assert(
+          none.status === theirs.status && none.json?.error?.code === theirs.json?.error?.code,
+          `(18) ${who}.dev: ${what}: someone else's Gig must answer exactly like one that does not exist (${theirs.json?.error?.code} vs ${none.json?.error?.code})`,
+        );
+        assert(
+          !theirs.text.includes(gigId) && !theirs.text.includes(pendingD.media.mediaId) && !theirs.text.includes(text.basic),
+          `(18) ${who}.dev: ${what}: the refusal must not echo the Gig or the photo`,
+        );
+      }
+    }
+    assert(JSON.stringify(await draftOf(gigId)) === JSON.stringify(d2now), '(18) the refused calls changed nothing in draft 2');
+    // the owner naming a photo that is not in this draft is just as unknown
+    refusal(await finalize(randomUUID(), d2now.revision), [404], ['MEDIA_NOT_FOUND'], '(18) the owner finalizing an unknown photo');
+    refusal(await detach(v1Id.c, d2now.revision), [404], ['MEDIA_NOT_FOUND'], '(18) a published version photo is not a draft photo');
+
+    // (19) the web pages behind Caddy (server-rendered, signed in with the same throwaway identity): the draft editor shows the sections, no link or key is rendered, and the thumbnail
+    // route answers with a redirect to a short-lived URL for the owner only
+    type Hop = { status: number; location: string | undefined; body: string; cookies: string[]; cacheControl: string | undefined };
+    const caddy = (method: 'GET', path: string, cookieHeader?: string): Promise<Hop> =>
+      new Promise((resolve, reject) => {
+        const req = http.request(
+          { host: 'caddy-proxy', port: 80, path, method, headers: { host: 'app.localhost', ...(cookieHeader ? { cookie: cookieHeader } : {}) } },
+          (res) => {
+            let body = '';
+            res.setEncoding('utf8');
+            res.on('data', (chunk) => (body += chunk));
+            res.on('end', () =>
+              resolve({
+                status: res.statusCode ?? 0,
+                location: res.headers.location,
+                body,
+                cookies: res.headers['set-cookie'] ?? [],
+                cacheControl: res.headers['cache-control'],
+              }),
+            );
+          },
+        );
+        req.setTimeout(20_000, () => req.destroy(new Error(`${method} ${path} through Caddy timed out`)));
+        req.on('error', reject);
+        req.end();
+      });
+    const jar = new Map<string, string>();
+    const absorb = (h: Hop): void => {
+      for (const line of h.cookies) {
+        const [pair] = line.split(';');
+        const i = pair!.indexOf('=');
+        const name = pair!.slice(0, i);
+        const value = pair!.slice(i + 1);
+        if (!value || /max-age=0/i.test(line)) jar.delete(name);
+        else jar.set(name, value);
+      }
+    };
+    const cookie = (): string => [...jar].map(([k, v]) => `${k}=${v}`).join('; ');
+    const start = await caddy('GET', '/auth/login?returnTo=/provider/gigs');
+    absorb(start);
+    assert(start.status === 302 && (start.location ?? '').includes('code_challenge_method=S256'), `(19) web login did not start a PKCE flow (${start.status})`);
+    const callbackUrl = await completeLogin(kc, start.location!, { redirectUri: `${webPublic}/auth/callback`, username, password });
+    const callback = await caddy('GET', `/auth/callback${new URL(callbackUrl).search}`, cookie());
+    absorb(callback);
+    assert(callback.status === 302 && jar.has('bg_session'), `(19) web callback failed (${callback.status} ${callback.location})`);
+    const webPage = async (path: string): Promise<string> => {
+      const p = await caddy('GET', path, cookie());
+      assert(p.status === 200, `(19) GET ${path.replace(gigId, ':gigId')} -> ${p.status}`);
+      assert(
+        !/eyJ[A-Za-z0-9_-]{10,}\./.test(p.body) && !p.body.includes(token) && !p.body.includes(accountId) && !p.body.includes(email) && !p.body.includes(e164),
+        `(19) ${path.replace(gigId, ':gigId')} leaked a token, the account id or a contact`,
+      );
+      assert(!/gig-media\/|X-Amz|\.upload\b/.test(p.body), `(19) ${path.replace(gigId, ':gigId')} renders an object key or a signed link`);
+      assert(![imgA, imgB, imgC, imgD].some((b) => p.body.includes(sha256(b))), `(19) ${path.replace(gigId, ':gigId')} renders a file hash`);
+      return p.body;
+    };
+    const editorPage = await webPage(`/provider/gigs/${gigId}`);
+    assert(
+      editorPage.includes(text.editedDeluxe) && editorPage.includes(text.shine) && editorPage.includes(text.wax) && editorPage.includes(text.premium),
+      '(19) the draft editor lists the variants and add-ons by name (plain text)',
+    );
+    const versionPage = await webPage(`/provider/gigs/${gigId}/versions/1`);
+    assert(
+      versionPage.includes(text.deluxe) && !versionPage.includes(text.editedDeluxe) && !versionPage.includes(text.shine),
+      '(19) the page of version 1 shows version 1 only',
+    );
+    const menuPage = await webPage('/provider/gigs');
+    assert(menuPage.includes(title), '(19) the GigMenu page lists the Gig');
+    const thumb = await caddy('GET', `/provider/gigs/${gigId}/media/${d2now.media[2].mediaId}`, cookie());
+    assert(
+      thumb.status === 303 && /^https?:\/\//.test(thumb.location ?? '') && (thumb.cacheControl ?? '').includes('no-store'),
+      `(19) the thumbnail route answers 303 with no-store (${thumb.status} ${thumb.cacheControl})`,
+    );
+    noteUrl(thumb.location!);
+    const thumbV1 = await caddy('GET', `/provider/gigs/${gigId}/media/${v1Id.a}?version=1`, cookie());
+    assert(thumbV1.status === 303 && /^https?:\/\//.test(thumbV1.location ?? ''), `(19) the thumbnail of a published photo answers 303 (${thumbV1.status})`);
+    noteUrl(thumbV1.location!);
+    const thumbAnon = await caddy('GET', `/provider/gigs/${gigId}/media/${d2now.media[2].mediaId}`);
+    assert(
+      thumbAnon.status !== 303 && !thumbAnon.location?.includes('X-Amz') && !thumbAnon.body.includes('X-Amz'),
+      `(19) a signed-out visitor gets no redirect to the photo (${thumbAnon.status})`,
+    );
+    const thumbUnknown = await caddy('GET', `/provider/gigs/${gigId}/media/${randomUUID()}`, cookie());
+    assert(thumbUnknown.status === 404, `(19) an unknown photo is 404 (${thumbUnknown.status})`);
+
+    // (20) publish version 2: version 1 is SUPERSEDED with the children it was published with; the new counts are on the version; the children are frozen again
+    const published2 = read(
+      GigDetailResponse,
+      await gig('POST', `/gigs/${gigId}/publish`, token, { expectedRevision: d2now.revision }),
+      200,
+      '(20) publish v2',
+    );
+    const v2 = published2.currentVersion;
+    assert(
+      v2.versionNumber === 2 &&
+        v2.status === 'PUBLISHED' &&
+        v2.variants.length === 3 &&
+        v2.addOns.length === 3 &&
+        v2.media.length === 3 &&
+        v2.children.variantCount === 3 &&
+        v2.children.addOnCount === 3 &&
+        v2.children.mediaCount === 3 &&
+        published2.versions.find((v: Json) => v.versionNumber === 1).status === 'SUPERSEDED',
+      `(20) version 2 is PUBLISHED with 3 variants, 3 add-ons and 3 photos; version 1 is SUPERSEDED (${JSON.stringify(v2.children)})`,
+    );
+    const v1Final = read(GigVersionResponse, await gig('GET', `/gigs/${gigId}/versions/1`, token), 200, '(20) GET version 1');
+    assert(
+      v1Final.status === 'SUPERSEDED' && JSON.stringify({ v: v1Final.variants, a: v1Final.addOns, m: v1Final.media }) === v1Children,
+      '(20) the superseded version 1 still holds exactly the children it was published with',
+    );
+    await frozen('(20) once version 2 is published', v2.revision, v2.media[0].mediaId);
+    noteUrl(
+      read(GigMediaPreviewResponse, await preview(`/gigs/${gigId}/versions/2/media/${v2.media[0].mediaId}/preview`), 200, '(20) preview of a version 2 photo')
+        .url,
+    );
+    const menu20 = read(GigMenuResponse, await gig('GET', '/gigs', token), 200, '(20) GET /gigs');
+    assert(
+      menu20.gigs[0].currentVersion.children.variantCount === 3 &&
+        menu20.gigs[0].currentVersion.children.addOnCount === 3 &&
+        menu20.gigs[0].currentVersion.children.mediaCount === 3 &&
+        menu20.gigs[0].draftVersion === null &&
+        menu20.readiness.goLive.evaluated === false &&
+        menu20.readiness.goLive.eligible === false,
+      `(20) the GigMenu counts follow the published version; Go-Live stays not evaluated (${JSON.stringify(menu20.gigs[0].currentVersion.children)})`,
+    );
+
+    // (21) a template version without the permissions: a Gig built on it is refused variants/add-ons/photos the template does not allow. Template version 2 allows variants only, no photo field.
+    await mgmt('catalog', admin, 'POST', `/gig-templates/${tpl}/versions`, { copyFromVersion: 1, reason: 'DEV/TEST ONLY second draft' });
+    await mgmt('catalog', admin, 'PUT', `/gig-templates/${tpl}/versions/2`, {
+      ...definition,
+      expectedRevision: 1,
+      pricingModels: ['FIXED_WITH_VARIANTS'],
+      fields: fieldsBase,
+      reason: 'DEV/TEST ONLY second definition',
+    });
+    await mgmt('catalog', admin, 'POST', `/gig-templates/${tpl}/versions/2/publish`, { expectedRevision: 2, reason: 'DEV/TEST ONLY publish 2' });
+    const gigB = read(GigDetailResponse, await gig('POST', '/gigs', token, { gigTemplateCode: tpl }), 201, '(21) POST /gigs (template version 2)');
+    const gigBId: string = gigB.gig.gigId;
+    const dB = gigB.draftVersion;
+    assert(
+      dB.template.gigTemplateVersionNumber === 2 &&
+        dB.constraints.variants.permitted === true &&
+        dB.constraints.addOns.permitted === false &&
+        dB.constraints.media.permitted === false &&
+        !dB.fields.some((f: Json) => f.fieldType === 'MEDIA'),
+      `(21) the constraints of a Gig on template version 2 allow variants only (${JSON.stringify({ v: dB.constraints.variants, a: dB.constraints.addOns, m: dB.constraints.media })})`,
+    );
+    const putB = (kind: 'variants' | 'add-ons', rev: number, items: unknown): Promise<Reply> =>
+      gig('PUT', `/gigs/${gigBId}/draft/${kind}`, token, { expectedRevision: rev, [kind === 'variants' ? 'variants' : 'addOns']: items });
+    const addOnsB = refusal(
+      await putB('add-ons', dB.revision, [opt(text.wax, null, 100, 5)]),
+      [400],
+      ['VALIDATION_FAILED'],
+      '(21) add-ons on a template that does not allow them',
+    );
+    assert(hasIssue(addOnsB, 'OPTIONS_NOT_PERMITTED'), `(21) the refusal names OPTIONS_NOT_PERMITTED (${JSON.stringify(addOnsB.json.error.details?.issues)})`);
+    const photoB = await gig(
+      'POST',
+      `/gigs/${gigBId}/draft/media/uploads`,
+      token,
+      { expectedRevision: dB.revision, fieldKey: 'photos', mimeType: 'image/png', sizeBytes: imgA.length, altText: null },
+      false,
+    );
+    refusal(photoB, [400, 404], ['MEDIA_REFUSED', 'VALIDATION_FAILED'], '(21) a photo on a template that has no photo field');
+    assert((await detail(gigBId)).draftVersion.revision === dB.revision, '(21) the refused calls changed nothing');
+    const variantB = read(GigDetailResponse, await putB('variants', dB.revision, [opt(text.basic, null, 0, 0)]), 200, '(21) a variant on template version 2');
+    assert(
+      variantB.draftVersion.variants.length === 1 && variantB.draftVersion.revision === dB.revision + 1,
+      '(21) variants are accepted where the template allows them',
+    );
+    // the same names in another Gig are fine (names are unique within one list only), and Gig B's photos cannot be Gig A's
+    refusal(
+      await gig('PUT', `/gigs/${gigBId}/draft/media/${v1Id.a}`, token, { expectedRevision: 2, altText: null }, false),
+      [404],
+      ['MEDIA_NOT_FOUND'],
+      '(21) a photo of another Gig by id',
+    );
+
+    // (22) the database: exact rows, the audit trail and outbox hold counts only, nothing of the provider's text, keys, hashes or links is stored in them
+    const events = await database.query<{ payload_json: Json }>(
+      `SELECT payload_json FROM integration.outbox_events WHERE event_type = 'bananagig.provider.gig-version-published.v1' AND payload_json->>'accountId' = $1::text ORDER BY created_at`,
+      [accountId],
+    );
+    const published = events
+      .filter((e) => e.payload_json.gigId === gigId)
+      .map((e) => `${e.payload_json.versionNumber}:${e.payload_json.variantCount}/${e.payload_json.addOnCount}/${e.payload_json.mediaCount}`);
+    assert(published.join() === '1:3/2/2,2:3/3/3', `(22) the publish events carry the counts and nothing else (${published.join()})`);
+    assert(
+      events.every(
+        (e) =>
+          Object.keys(e.payload_json).sort().join() ===
+          [
+            'accountId',
+            'addOnCount',
+            'gigId',
+            'gigTemplateVersionId',
+            'gigVersionId',
+            'mediaCount',
+            'supersededGigVersionId',
+            'variantCount',
+            'versionNumber',
+          ].join(),
+      ),
+      '(22) the publish event payload has exactly the contract fields',
+    );
+    const audit = await database.query<{ action: string; n: number }>(
+      `SELECT action, count(*)::int AS n FROM provider.gig_audit_events WHERE account_id = $1::uuid GROUP BY action`,
+      [accountId],
+    );
+    const a = Object.fromEntries(audit.map((r) => [r.action, r.n])) as Record<string, number>;
+    assert(
+      a.GIG_VARIANTS_UPDATED === variantUpdates + 1 && // + the variant saved on Gig B
+        a.GIG_ADD_ONS_UPDATED === addOnUpdates &&
+        a.GIG_MEDIA_UPLOAD_AUTHORIZED === authorizations &&
+        (a.GIG_MEDIA_ATTACHED ?? 0) >= 4 &&
+        (a.GIG_MEDIA_UPLOAD_REFUSED ?? 0) >= 8 &&
+        (a.GIG_MEDIA_DETACHED ?? 0) >= 1 &&
+        (a.GIG_MEDIA_REORDERED ?? 0) === 1 &&
+        (a.GIG_MEDIA_UPDATED ?? 0) >= 2 &&
+        a.GIG_VERSION_PUBLISHED === 2,
+      `(22) the audit trail holds each change as often as it happened; refused calls wrote nothing (${JSON.stringify(a)}; expected variants ${variantUpdates + 1}, add-ons ${addOnUpdates}, authorizations ${authorizations})`,
+    );
+    const assets = await database.query<{ id: string; object_key: string; sha256: string | null; status: string; scan_status: string }>(
+      `SELECT media_asset_id::text AS id, object_key, sha256, status, scan_status FROM provider.media_assets WHERE account_id = $1::uuid`,
+      [accountId],
+    );
+    const ready = assets.filter((x) => x.status === 'READY');
+    assert(
+      ready.length === 4 &&
+        ready.every((x) => x.scan_status === 'CLEAN') &&
+        assets.filter((x) => x.status === 'UPLOAD_PENDING').length === 0 &&
+        assets.every((x) => x.status !== 'DELETED'),
+      `(22) four verified assets (PNG, JPEG, two WebP) are READY and CLEAN; nothing is pending or deleted (${assets.map((x) => x.status).join()})`,
+    );
+    const shas = [imgA, imgB, imgC, imgD].map(sha256);
+    assert(
+      shas.every((s) => ready.some((x) => x.sha256 === s)),
+      '(22) every READY asset carries the SHA-256 of its file',
+    );
+    const attachments = await database.query<{ n: number; d: number }>(
+      `SELECT count(*)::int AS n, count(DISTINCT m.media_asset_id)::int AS d FROM provider.gig_version_media m JOIN provider.gig_versions v ON v.gig_version_id = m.gig_version_id WHERE v.gig_id = $1::uuid`,
+      [gigId],
+    );
+    assert(
+      attachments[0]!.n === 5 && attachments[0]!.d === 3,
+      `(22) five attachments over three assets: the photos are shared across versions, not copied (${JSON.stringify(attachments[0])})`,
+    );
+    const children = await database.query<{ v: number; a: number }>(
+      `SELECT (SELECT count(*)::int FROM provider.gig_version_variants x JOIN provider.gig_versions g ON g.gig_version_id = x.gig_version_id WHERE g.gig_id = $1::uuid) AS v,
+              (SELECT count(*)::int FROM provider.gig_version_add_ons x JOIN provider.gig_versions g ON g.gig_version_id = x.gig_version_id WHERE g.gig_id = $1::uuid) AS a`,
+      [gigId],
+    );
+    assert(
+      children[0]!.v === 6 && children[0]!.a === 5,
+      `(22) the children of Gig A are stored per version (variants 3+3, add-ons 2+3): ${JSON.stringify(children[0])}`,
+    );
+    const noCurrency = await database.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM information_schema.columns WHERE table_schema = 'provider' AND table_name IN ('gig_version_variants', 'gig_version_add_ons') AND column_name ~* 'currency|quantity|default'`,
+    );
+    assert(noCurrency[0]!.n === 0, '(22) variants and add-ons store no currency, quantity or default flag (the currency belongs to the version)');
+    const stored = await database.query<{ s: string }>(
+      `SELECT coalesce((SELECT string_agg(changes::text, ' ') FROM provider.gig_audit_events WHERE account_id = $1::uuid), '') || ' ' ||
+              coalesce((SELECT string_agg(payload_json::text, ' ') FROM integration.outbox_events WHERE event_type LIKE 'bananagig.provider.gig-%' AND payload_json->>'accountId' = $1::text), '') AS s`,
+      [accountId],
+    );
+    const objectKeys = assets.map((x) => x.object_key);
+    const assetIds = assets.map((x) => x.id);
+    assert(objectKeys.length >= 10 && objectKeys.every((k) => k.length > 8), '(22) every upload reserved an object key (kept for the scans)');
+    for (const needle of [...providerText, ...objectKeys, ...assetIds, ...shas, ...secretsOfUrls, 'X-Amz', 'gig-media/'])
+      assert(!stored[0]!.s.includes(needle), `(22) the audit trail or the outbox holds a name, alt text, key, hash or link: ${needle.slice(0, 24)}`);
+    assert(!stored[0]!.s.includes(email) && !stored[0]!.s.includes(e164), '(22) no contact in the audit trail or the outbox');
+
+    // (23) nothing leaked into any Gig response: no object key, asset id, hash or link outside the two documented answers; no later-checkpoint field; Go-Live never evaluated; la-oc untouched
+    const everything = seen.join('\n');
+    for (const needle of [...objectKeys, ...assetIds, ...shas, ...secretsOfUrls, 'X-Amz', 'gig-media/', accountId, email, e164, token, password])
+      assert(!everything.includes(needle), `(23) a Gig API response contains a key, asset id, hash, link, contact or token: ${needle.slice(0, 24)}`);
+    const forbiddenKeys =
+      /^(objectKey|object_key|storageKey|bucket|sha256|bodySha256|mediaAssetId|assetId|scanStatus|serviceAreas?|serviceArea|radius|availability|capacity|bookings?|cart|quantity|searchRank|ranking|live|isLive|bookable|goLiveEligible|dropEligible)$/i;
+    const walk = (value: Json, found: string[]): string[] => {
+      if (Array.isArray(value)) value.forEach((v) => walk(v, found));
+      else if (value && typeof value === 'object')
+        for (const [k, v] of Object.entries(value)) {
+          if (forbiddenKeys.test(k)) found.push(k);
+          walk(v, found);
+        }
+      return found;
+    };
+    let goLiveSeen = 0;
+    for (let i = 0; i < seen.length; i += 2) {
+      let body: Json;
+      try {
+        body = JSON.parse(seen[i]!);
+      } catch {
+        continue;
+      }
+      const bad = walk(body, []);
+      assert(bad.length === 0, `(23) a Gig response contains a field that does not belong to a default payload: ${bad.join()}`);
+      const stack: Json[] = [body];
+      while (stack.length) {
+        const cur = stack.pop();
+        if (Array.isArray(cur)) stack.push(...cur);
+        else if (cur && typeof cur === 'object') {
+          if ('goLive' in cur) {
+            goLiveSeen++;
+            assert(cur.goLive.evaluated === false && cur.goLive.eligible === false, '(23) Go-Live must never be evaluated or eligible');
+          }
+          stack.push(...Object.values(cur));
+        }
+      }
+    }
+    assert(goLiveSeen >= 1, '(23) the GigMenu readiness carries the Go-Live fact');
+    const req23 = (await registration('GET', '/requirements', token)).json.data;
+    assert(req23.overall.goLive.evaluated === false && req23.overall.goLive.eligible === false, '(23) the registration still does not evaluate Go-Live');
+    const laocAfter = (await mgmt('geography', admin, 'GET', '/markets/la-oc')).json.data.status as string;
+    assert(laocAfter === laocBefore, `(23) la-oc must stay as it was (${laocBefore} -> ${laocAfter})`);
+    const query = async (q: string) =>
+      (await (
+        await expectOk(`${loki}/loki/api/v1/query_range?query=${encodeURIComponent(q)}&start=${flowStart}&end=${Date.now() * 1e6 + 60e9}&limit=5`)
+      ).json()) as { data: { result: unknown[] } };
+    await retry(
+      async () => {
+        if ((await query(`{service_name="bananagig-api"} | correlationId = \`${cid}\``)).data.result.length < 1)
+          throw new Error('this flow is not in Loki yet');
+      },
+      12,
+      2000,
+    );
+    await sleep(6000);
+    const logNeedles: [string, string][] = [
+      ['variant name', text.basic],
+      ['add-on name', text.wax],
+      ['alt text', text.altA],
+      ['Gig title', title],
+      ['email', email],
+      ['phone', e164],
+      ['access token', token],
+      ...objectKeys.slice(0, 6).map((k): [string, string] => ['object key', k]),
+      ...assetIds.slice(0, 4).map((k): [string, string] => ['asset id', k]),
+      ...shas.map((k): [string, string] => ['file hash', k]),
+      ...secretsOfUrls.slice(0, 8).map((k): [string, string] => ['URL signature', k]),
+      ['signed URL parameter', 'X-Amz-Signature'],
+    ];
+    for (const [what, needle] of logNeedles)
+      assert((await query(`{service_name=~"bananagig-.+"} |= \`${needle}\``)).data.result.length === 0, `(23) the ${what} appears in the logs`);
+
+    return (
+      `throwaway provider (registration COMPLETED through the real flows) in a DEV/TEST market; template v1 FIXED_WITH_VARIANTS + ADD_ONS + required photos 1..3: variants and add-ons replaced as whole lists under the revision ` +
+      `(server-minted keys, array order, ${variantUpdates} + ${addOnUpdates} effective saves, no-op saves do not move the revision, every invalid body refused without a write); publish blocked without a READY photo, then allowed; ` +
+      `PNG, JPEG and WebP uploaded through the presigned PUT, verified (type, signature, header dimensions, SHA-256), scanned CLEAN, no key/URL/hash in any response; refused: ${Object.entries(reasons).filter(([k]) => /declared|hash|longer|infected|below|beyond|claiming|never/.test(k)).length} hostile or mismatching files ` +
+      `(reasons: ${[...new Set(Object.values(reasons))].sort().join(',')}); 4th photo, alt text, order and detach rules; replay after finalize cannot change the stored bytes; children frozen once published; ` +
+      `next draft copies options and re-attaches the SAME stored assets (no binary copy), edits never touch v1; another account gets 404 on every route; template v2 (variants only, no photo field) refuses add-ons and photos; ` +
+      `GigMenu counts and facts, Go-Live not evaluated, la-oc ${laocBefore} untouched; audit/outbox/logs hold counts only (no names, alt text, keys, hashes or links)`
+    );
+  } finally {
+    // cleanup: the Gig template, service type and category are RETIRED and the DEV/TEST market deactivated (entities are never deleted; Gigs stay as history); the throwaway user is removed
+    try {
+      if (admin && marketCreated) {
+        await request(`/catalog/gig-templates/${tpl}/status`, 'PUT', admin, { status: 'RETIRED', reason: 'smoke cleanup' });
         await request(`/catalog/service-types/${serviceType}/status`, 'PUT', admin, { status: 'RETIRED', reason: 'smoke cleanup' });
         await request(`/catalog/categories/${categoryCode}/status`, 'PUT', admin, { status: 'RETIRED', reason: 'smoke cleanup' });
         await request(`/geography/markets/${marketCode}/activation`, 'POST', admin, { active: false, reason: 'smoke cleanup' });

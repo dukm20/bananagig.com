@@ -50,7 +50,8 @@ export const GIG_TEMPLATE_REQUIREMENT_TYPES = ['SKILL', 'EQUIPMENT', 'LICENSE', 
 export const GigTemplateRequirementType = z.enum(GIG_TEMPLATE_REQUIREMENT_TYPES);
 export type GigTemplateRequirementType = z.infer<typeof GigTemplateRequirementType>;
 
-export const PRICING_MODELS = ['FIXED', 'FIXED_WITH_VARIANTS', 'BUNDLE_ELIGIBLE', 'DROP_ELIGIBLE'] as const;
+/** `ADD_ONS` (CAT-004) is a permission, not a base price: it lets a Gig built on the version carry add-ons; a base model (FIXED or FIXED_WITH_VARIANTS) is still required. */
+export const PRICING_MODELS = ['FIXED', 'FIXED_WITH_VARIANTS', 'BUNDLE_ELIGIBLE', 'DROP_ELIGIBLE', 'ADD_ONS'] as const;
 export const PricingModel = z.enum(PRICING_MODELS);
 export type PricingModel = z.infer<typeof PricingModel>;
 export const AREA_MODES = ['RADIUS', 'POSTAL_CODES', 'POLYGON'] as const;

@@ -71,6 +71,8 @@ import {
 } from './gig-template';
 
 const migration = readFileSync(fileURLToPath(new URL('../../../db/migrations/0016_gig_templates.sql', import.meta.url)), 'utf8');
+/** CAT-004 adds the ADD_ONS permission column to the version row. */
+const addOnsMigration = readFileSync(fileURLToPath(new URL('../../../db/migrations/0021_gig_variants_addons_media.sql', import.meta.url)), 'utf8');
 
 // ---------------------------------------------------------------- helpers (zod shape walker, same technique as catalog.test.ts)
 type Def = { type: string; shape?: Record<string, unknown>; innerType?: unknown; element?: unknown };
@@ -196,7 +198,7 @@ describe('vocabularies equal the migration CHECK lists', () => {
       expect((FIXED_CAPABLE_FIELD_TYPES as readonly string[]).includes(t), t).toBe(false);
   });
   it('the pricing models and area modes are the flag columns of the version row', () => {
-    expect([...PRICING_MODELS]).toEqual(['FIXED', 'FIXED_WITH_VARIANTS', 'BUNDLE_ELIGIBLE', 'DROP_ELIGIBLE']);
+    expect([...PRICING_MODELS]).toEqual(['FIXED', 'FIXED_WITH_VARIANTS', 'BUNDLE_ELIGIBLE', 'DROP_ELIGIBLE', 'ADD_ONS']);
     expect([...AREA_MODES]).toEqual(['RADIUS', 'POSTAL_CODES', 'POLYGON']);
     for (const c of [
       'pricing_fixed',
@@ -208,6 +210,9 @@ describe('vocabularies equal the migration CHECK lists', () => {
       'area_polygon',
     ])
       expect(migration, c).toMatch(new RegExp(`\\n  ${c}\\s+boolean`));
+  });
+  it('ADD_ONS is the pricing_add_ons column added by CAT-004 (boolean, default false: existing versions do not carry the permission)', () => {
+    expect(addOnsMigration).toMatch(/ALTER TABLE catalog\.gig_template_versions\s+ADD COLUMN pricing_add_ons\s+boolean\s+NOT NULL\s+DEFAULT false/i);
   });
   it('the audit actions of the migration are the ones the service writes', () => {
     for (const a of [
@@ -946,6 +951,13 @@ describe('request schemas: strict, with a mandatory reason, nothing coerced', ()
       expect(ok(ReplaceGigTemplateDraftRequest, r({ pricingModels: ['FIXED_WITH_VARIANTS'] }))).toBe(true);
       expect(ok(ReplaceGigTemplateDraftRequest, r({ pricingModels: ['BUNDLE_ELIGIBLE', 'DROP_ELIGIBLE', 'FIXED_WITH_VARIANTS', 'FIXED'] }))).toBe(true);
       expect(ok(ReplaceGigTemplateDraftRequest, r({ pricingModels: ['DROP_ELIGIBLE', 'FIXED'] }))).toBe(true);
+      // ADD_ONS is a permission on top of a base model, never a base model itself
+      expect(ok(ReplaceGigTemplateDraftRequest, r({ pricingModels: ['FIXED', 'ADD_ONS'] }))).toBe(true);
+      expect(ok(ReplaceGigTemplateDraftRequest, r({ pricingModels: ['ADD_ONS', 'FIXED_WITH_VARIANTS'] }))).toBe(true);
+      expect(ok(ReplaceGigTemplateDraftRequest, r({ pricingModels: [...PRICING_MODELS] }))).toBe(true);
+      expect(issuePaths(ReplaceGigTemplateDraftRequest, r({ pricingModels: ['ADD_ONS'] }))).toEqual(['pricingModels']);
+      expect(issuePaths(ReplaceGigTemplateDraftRequest, r({ pricingModels: ['ADD_ONS', 'DROP_ELIGIBLE', 'BUNDLE_ELIGIBLE'] }))).toEqual(['pricingModels']);
+      expect(issuePaths(ReplaceGigTemplateDraftRequest, r({ pricingModels: ['FIXED', 'ADD_ONS', 'ADD_ONS'] }))).toEqual(['pricingModels']);
       expect(issuePaths(ReplaceGigTemplateDraftRequest, r({ pricingModels: ['BUNDLE_ELIGIBLE'] }))).toEqual(['pricingModels']);
       expect(issuePaths(ReplaceGigTemplateDraftRequest, r({ pricingModels: ['DROP_ELIGIBLE', 'BUNDLE_ELIGIBLE'] }))).toEqual(['pricingModels']);
       expect(ok(ReplaceGigTemplateDraftRequest, r({ pricingModels: [] }))).toBe(false);
@@ -953,9 +965,9 @@ describe('request schemas: strict, with a mandatory reason, nothing coerced', ()
       expect(ok(ReplaceGigTemplateDraftRequest, r({ pricingModels: ['HOURLY'] }))).toBe(false);
       expect(ok(ReplaceGigTemplateDraftRequest, r({ pricingModels: ['fixed'] }))).toBe(false);
       expect(ok(ReplaceGigTemplateDraftRequest, r({ pricingModels: 'FIXED' }))).toBe(false);
-      expect(ok(ReplaceGigTemplateDraftRequest, r({ pricingModels: ['FIXED', 'FIXED_WITH_VARIANTS', 'BUNDLE_ELIGIBLE', 'DROP_ELIGIBLE', 'FIXED'] }))).toBe(
-        false,
-      );
+      expect(
+        ok(ReplaceGigTemplateDraftRequest, r({ pricingModels: ['FIXED', 'FIXED_WITH_VARIANTS', 'BUNDLE_ELIGIBLE', 'DROP_ELIGIBLE', 'ADD_ONS', 'FIXED'] })),
+      ).toBe(false);
     });
     it('the area needs at least one mode; unique; known', () => {
       for (const m of [['RADIUS'], ['POSTAL_CODES'], ['POLYGON'], ['RADIUS', 'POSTAL_CODES', 'POLYGON']])

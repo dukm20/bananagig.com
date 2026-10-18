@@ -1485,8 +1485,8 @@ describe('getRequirements: the composition of the owning domains', () => {
     const f = await ready();
     await svc.submitRegistration(f.accountId, { expectedRevision: f.revision });
     const cols = await q<{ table_name: string; column_name: string }>(
-      // the REGISTRATION tables (the Gig tables of CAT-003 are their own domain state and are checked in gig.itest.ts)
-      `SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'provider' AND table_name NOT LIKE 'gig%' ORDER BY table_name, ordinal_position`,
+      // the REGISTRATION tables (the Gig tables of CAT-003 and the variant, add-on and photo tables of CAT-004, media_assets included, are their own domain state and are checked in gig.itest.ts and gig-options-media-model.itest.ts)
+      `SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'provider' AND table_name NOT LIKE 'gig%' AND table_name <> 'media_assets' ORDER BY table_name, ordinal_position`,
     );
     expect(cols.map((c) => `${c.table_name}.${c.column_name}`).join(' ')).not.toMatch(
       /email|phone|consent|verif|subscri|payment|document|first_name|last_name|address|token|secret|legal|profile|gig/,

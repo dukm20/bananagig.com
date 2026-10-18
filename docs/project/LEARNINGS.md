@@ -1535,3 +1535,103 @@ Compare database timestamps with each other (or build the instant in SQL with `c
 
 ### Evidence
 `packages/content/src/content.itest.ts` (`CLOCK_SKEW_MS` and the SQL `clock_timestamp()` form); the measured offset of about 20 ms between `docker exec ... clock_timestamp()` and the host; the two failed finalize runs and the two clean standalone runs.
+
+## LRN-0062 — Deleting objects after a commit is best effort and leaks forever unless the row records that the objects are gone and a sweep retries
+
+Date: 2026-10-18
+Checkpoint: CAT-004
+Domain: platform / database
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0047
+Related skill: skills/provider/SKILL.md
+
+### Context
+The provider photo flow (and TRUST-001 before it) commits the state change ("asset abandoned", "asset deleted") and then deletes the stored objects, swallowing a failure. Two independent reviews found the consequence: once the row is terminal nothing looks at it again, so a store outage, a crash between commit and delete, or a replayed presigned PUT that recreated the `.upload` object left bytes in the bucket permanently. The same review found that deleting the upload key right after finalize is not enough, because the presigned PUT is still valid until its authorization expires and can recreate it.
+
+### Learning
+A state change in PostgreSQL and a delete in the object store are two systems; the second must be driven by recorded state. Store a one-way marker on the row (`objects_removed_at`, `upload_key_removed_at`), set it only after the delete succeeded (and, for the upload key, only after the authorization has expired), and have a scheduled sweep select terminal rows whose marker is NULL and delete again. Object deletes are idempotent, so the retry is safe.
+
+### Why it matters
+Without the marker, leaks are invisible and unbounded: private, unscanned bytes accumulate and there is no query that finds them.
+
+### Reuse rule
+For any feature that owns objects: terminal rows carry a "removed" marker, every close path deletes after commit and then marks, the sweep re-deletes unmarked terminal rows, and a test makes the store fail once and checks that the next sweep completes (a test that only asserts "a warning was logged" proves nothing).
+
+### Evidence
+`db/migrations/0022_gig_media_hardening.sql` (the markers and their one-way guard), the sweep passes in `packages/provider/src/gig-media.ts` (`cleanup`), the "store outage then a healthy second sweep" cases in `packages/provider/src/gig-media.itest.ts`, and the two CAT-004 reviews.
+
+## LRN-0063 — A marker file from an earlier checkpoint looks like a fresh "ready" signal: name coordination files by checkpoint and delete the old ones first
+
+Date: 2026-10-18
+Checkpoint: CAT-004
+Domain: testing / process
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/testing/SKILL.md
+
+### Context
+Parallel agents coded against a migration that one agent was still writing, and waited for `.checkpoint/MIGRATION_READY` before running integration tests. The file left by CAT-003 (git-ignored, still on disk) was already there, so an agent that saw it early believed the new migration was applied. The database agent had to delete it and re-create it after `pnpm migrate`; the later hardening migrations used `MIGRATION_0022_READY` style names.
+
+### Learning
+A readiness file is only a signal if it cannot be stale. `.checkpoint/` is git-ignored and survives checkpoints.
+
+### Why it matters
+A stale signal makes integration tests run against the previous schema and report confusing failures (or pass for the wrong reason).
+
+### Reuse rule
+At the start of a multi-agent checkpoint the lead deletes every `.checkpoint/MIGRATION_*READY` file; the migration owner creates a signal whose name contains the migration number (`MIGRATION_0021_READY`) only after `pnpm migrate` succeeds. Consumers also check `pnpm migrate --check` for the number they need.
+
+### Evidence
+The CAT-004 database agent's report (stale marker dated 17:40 found at start), `.checkpoint/MIGRATION_0022_READY`.
+
+## LRN-0064 — A DEFERRABLE unique constraint is checked at the end of the statement: one UPDATE can swap positions, a row-by-row swap cannot
+
+Date: 2026-10-18
+Checkpoint: CAT-004
+Domain: database
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0047
+Related skill: skills/database/SKILL.md
+
+### Context
+`uq_gig_version_media__order` (unique `(gig_version_id, display_order)`) is `DEFERRABLE INITIALLY IMMEDIATE` so a whole-order change can be done in one statement. The first implementation parked every row at `display_order + 1000000` and renumbered, and its comment claimed the constraint was "checked row by row"; the review showed both the comment and the parking were unnecessary: a non-deferrable unique constraint is enforced per row (a swap fails), while a deferrable one, even initially immediate, is checked at the end of the statement.
+
+### Learning
+For reorder operations, make the unique constraint deferrable and swap all positions in ONE `UPDATE … FROM unnest(…) WITH ORDINALITY`. Row-by-row updates still fail unless `SET CONSTRAINTS … DEFERRED` is issued. A deferrable constraint cannot be the arbiter of `ON CONFLICT`, so only use it where reordering is the point.
+
+### Why it matters
+Parking values is a workaround that hides intent, can collide with real data and leaves the table in an odd state if the transaction is inspected mid-way.
+
+### Reuse rule
+Unique ordering columns that are reordered as a set: deferrable constraint plus one UPDATE; test both the single-statement swap (passes) and the row-by-row swap (fails).
+
+### Evidence
+`db/migrations/0021_gig_variants_addons_media.sql` (`uq_gig_version_media__order`), the reorder in `packages/provider/src/gig-media.ts` and its test asserting exactly one UPDATE, and the swap tests in `packages/testing/src/gig-options-media-model.itest.ts`.
+
+## LRN-0065 — A documentation checkpoint can land while another checkpoint is mid-flight: commit it from a clean git worktree and fast-forward `main`
+
+Date: 2026-10-18
+Checkpoint: PRD-TRP-001
+Domain: process
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/infrastructure/SKILL.md
+
+### Context
+PRD-TRP-001 (documentation only) was requested while CAT-004 had uncommitted code, a newer migration applied to the shared dev database and agents still writing. `checkpoint:start` and `checkpoint:commit` need a clean tree, and `project-state:check` / `data-model:check` compare the files with the latest migration, so they fail in the dirty tree for reasons unrelated to the documentation.
+
+### Learning
+Do the documentation in a separate `git worktree` at `HEAD` (symlink `node_modules`), run the governance scripts that need no database there, commit on a branch, then in the primary tree move aside only the files the commit touches (check `git status` first), `git merge --ff-only` the branch, delete the worktree and the branch. The in-flight checkpoint's files are untouched and its own history stays linear after the documentation commit. `data-model:check` cannot run in the isolated copy when the shared dev database already has a newer migration: state that instead of weakening the check.
+
+### Why it matters
+It avoids stashing under running agents (a shared stash stack is unsafe) and avoids mixing two checkpoints in one commit.
+
+### Reuse rule
+Only for documentation-only checkpoints that touch files no agent is editing; verify with `git status` on those paths before the fast-forward.
+
+### Evidence
+Commit `eab5764` (PRD-TRP-001) landing between CAT-003 and the uncommitted CAT-004 work; `docs/project/IMPLEMENTATION_HISTORY.md` entry PRD-TRP-001.

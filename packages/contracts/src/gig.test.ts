@@ -20,10 +20,13 @@ import {
   UpdateGigDraftRequest,
   gigErrorKey,
   gigIssueKey,
+  GIG_MEDIA_REFUSAL_REASONS,
+  gigMediaRefusedKey,
   gigStatusKey,
   gigVersionStatusKey,
   gigWireCode,
   isGigFieldTypeSupported,
+  isGigFieldValueType,
   isGigStatusTransitionAllowed,
   isGigVersionStatusTransitionAllowed,
   normalizeProviderText,
@@ -44,9 +47,11 @@ describe('state machines', () => {
 });
 
 describe('field type support matrix', () => {
-  it('supports exactly the seven typed kinds; MONEY, MEDIA and the references are deferred', () => {
+  it('supports the seven typed kinds as values and MEDIA as attachments; MONEY and the references are deferred', () => {
     for (const t of ['TEXT', 'LONG_TEXT', 'INTEGER', 'DECIMAL', 'BOOLEAN', 'ENUM', 'DURATION']) expect(isGigFieldTypeSupported(t)).toBe(true);
-    for (const t of ['MONEY', 'MEDIA', 'EQUIPMENT_REFERENCE', 'SKILL_REFERENCE', 'nope']) expect(isGigFieldTypeSupported(t)).toBe(false);
+    expect(isGigFieldTypeSupported('MEDIA')).toBe(true); // photos are attachments (CAT-004), never a field value
+    expect(isGigFieldValueType('MEDIA')).toBe(false);
+    for (const t of ['MONEY', 'EQUIPMENT_REFERENCE', 'SKILL_REFERENCE', 'nope']) expect(isGigFieldTypeSupported(t)).toBe(false);
   });
 });
 
@@ -178,8 +183,13 @@ describe('content keys, events and errors', () => {
     ]);
     for (const c of GIG_ERROR_CODES) expect(gigErrorKey(c)).toBe(`provider.gig.error.${c.toLowerCase()}`);
     for (const r of GIG_ISSUE_REASONS) expect(gigIssueKey(r)).toBe(`provider.gig.issue.${r.toLowerCase()}`);
-    expect(GIG_ERROR_CODES).toHaveLength(15);
-    expect(GIG_ISSUE_REASONS).toHaveLength(24);
+    expect(GIG_ERROR_CODES).toHaveLength(19);
+    expect(GIG_ISSUE_REASONS).toHaveLength(43);
+  });
+  it('photo refusal reasons are a closed set of 13 with one registry key each', () => {
+    expect(GIG_MEDIA_REFUSAL_REASONS).toHaveLength(13);
+    expect(new Set(GIG_MEDIA_REFUSAL_REASONS.map(gigMediaRefusedKey)).size).toBe(13);
+    expect(gigMediaRefusedKey('OBJECT_MISSING')).toBe('provider.gig.media.refused.object_missing');
   });
   it('events are versioned bananagig.provider.* types', () => {
     for (const t of Object.values(GIG_EVENTS)) expect(t).toMatch(EVENT_TYPE_PATTERN);

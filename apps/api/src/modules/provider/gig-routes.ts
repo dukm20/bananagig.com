@@ -9,20 +9,29 @@ import type { FastifyInstance, FastifyRequest, preValidationAsyncHookHandler } f
 import {
   CreateGigRequest,
   CreateGigVersionRequest,
+  DetachGigMediaRequest,
+  FinalizeGigMediaRequest,
   GigDetailResponse,
+  GigMediaPreviewResponse,
+  GigMediaUploadResponse,
   GigMenuResponse,
   GigTemplateChoicesResponse,
   GigVersionResponse,
   PublishGigRequest,
+  ReorderGigMediaRequest,
+  ReplaceGigAddOnsRequest,
+  ReplaceGigVariantsRequest,
+  RequestGigMediaUploadRequest,
   RetireGigRequest,
   UpdateGigDraftRequest,
+  UpdateGigMediaRequest,
 } from '@bananagig/contracts';
 import type { ProviderGigService } from '@bananagig/provider';
 import { requireAccount } from '../../plugins/account';
 import { parseBody as parse } from '../../plugins/strict-body';
 import { integerParamSchema, strictIntegerParams } from '../../plugins/strict-params';
 import { authErrorResponses, errorResponses, errorSchema, schemaOf } from '../../schema';
-import { choicesDto, detailDto, menuDto, toAppError, versionDto } from './gig-dto';
+import { choicesDto, detailDto, mediaPreviewDto, mediaUploadDto, menuDto, toAppError, versionDto } from './gig-dto';
 
 const bearer = [{ bearerAuth: [] }];
 /** 401 (missing or invalid token), 400, 403 (not an eligible provider, suspended or closed account), 404, 409, 503. */
@@ -37,6 +46,8 @@ const run = <T>(fn: () => Promise<T>): Promise<T> => fn().catch(toAppError);
 export const GIG_BODY_LIMIT = 1_048_576;
 /** The small bodies (create, publish, next draft, retire). */
 export const GIG_SMALL_BODY_LIMIT = 4096;
+/** The photo requests (CAT-004): an alt text of up to 2000 characters as escaped JSON, or the whole order of up to 200 media ids. No file ever travels through the API. */
+export const GIG_MEDIA_BODY_LIMIT = 16_384;
 
 const UUID_PATTERN = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
 const gigParams = {
@@ -51,6 +62,22 @@ const versionParams = {
   type: 'object',
   properties: { gigId: { type: 'string', pattern: UUID_PATTERN }, version: integerParamSchema(VERSION_BOUNDS) },
   required: ['gigId', 'version'],
+  additionalProperties: false,
+} as const;
+const mediaParams = {
+  type: 'object',
+  properties: { gigId: { type: 'string', pattern: UUID_PATTERN }, mediaId: { type: 'string', pattern: UUID_PATTERN } },
+  required: ['gigId', 'mediaId'],
+  additionalProperties: false,
+} as const;
+const versionMediaParams = {
+  type: 'object',
+  properties: {
+    gigId: { type: 'string', pattern: UUID_PATTERN },
+    version: integerParamSchema(VERSION_BOUNDS),
+    mediaId: { type: 'string', pattern: UUID_PATTERN },
+  },
+  required: ['gigId', 'version', 'mediaId'],
   additionalProperties: false,
 } as const;
 const noQuery = { type: 'object', properties: {}, additionalProperties: false } as const;
@@ -77,6 +104,7 @@ export async function providerGigRoutes(app: FastifyInstance, deps: ProviderGigR
   const tags = ['gigs'];
   const accountId = (req: FastifyRequest): string => req.account!.accountId;
   const gigId = (req: FastifyRequest): string => (req.params as { gigId: string }).gigId;
+  const mediaId = (req: FastifyRequest): string => (req.params as { mediaId: string }).mediaId;
   const versionNumber = (req: FastifyRequest): number => Number((req.params as { version: string | number }).version);
   const guard = requireAccount({ honorActiveRoleHeader: false });
   // the responses concern one person's offers: never stored by a shared cache or the browser
@@ -250,5 +278,194 @@ export async function providerGigRoutes(app: FastifyInstance, deps: ProviderGigR
       },
     },
     async (req) => ({ data: detailDto(await run(() => svc.retire(accountId(req), gigId(req), bodyOf<RetireGigRequest>(req)))), meta: meta(req) }),
+  );
+
+  // ---------------------------------------------------------------- CAT-004: variants, add-ons and photos of the DRAFT (version-owned; a published version never changes)
+  app.put(
+    '/gigs/:gigId/draft/variants',
+    {
+      bodyLimit: GIG_BODY_LIMIT,
+      preValidation: [guard, strictParsed(ReplaceGigVariantsRequest)],
+      schema: {
+        operationId: 'replaceProviderGigDraftVariants',
+        summary:
+          'Replace the WHOLE list of variants of the DRAFT (array order is the display order; an omitted variant is removed). Variants are mutually exclusive alternatives that add a non-negative price delta (minor units of the Gig currency, never sent) and non-negative minutes to the base price and duration. Allowed only when the bound template version allows FIXED_WITH_VARIANTS. An item sent with its `key` is kept, one without gets a server-minted key; names are plain text and unique within the list. `expectedRevision` must be the revision last read (409 GIG_STALE_DRAFT); a change raises the revision by exactly 1',
+        tags,
+        security: bearer,
+        params: gigParams,
+        body: schemaOf(ReplaceGigVariantsRequest),
+        response: { 200: schemaOf(GigDetailResponse), ...failures },
+      },
+    },
+    async (req) => ({
+      data: detailDto(await run(() => svc.replaceVariants(accountId(req), gigId(req), bodyOf<ReplaceGigVariantsRequest>(req)))),
+      meta: meta(req),
+    }),
+  );
+
+  app.put(
+    '/gigs/:gigId/draft/add-ons',
+    {
+      bodyLimit: GIG_BODY_LIMIT,
+      preValidation: [guard, strictParsed(ReplaceGigAddOnsRequest)],
+      schema: {
+        operationId: 'replaceProviderGigDraftAddOns',
+        summary:
+          'Replace the WHOLE list of add-ons of the DRAFT (array order is the display order). Add-ons are independent optional extras without a quantity, each adding a non-negative price delta and non-negative minutes to the base. Allowed only when the bound template version explicitly allows add-ons (the ADD_ONS pricing permission). Same keys, names, limits and revision rules as the variants',
+        tags,
+        security: bearer,
+        params: gigParams,
+        body: schemaOf(ReplaceGigAddOnsRequest),
+        response: { 200: schemaOf(GigDetailResponse), ...failures },
+      },
+    },
+    async (req) => ({ data: detailDto(await run(() => svc.replaceAddOns(accountId(req), gigId(req), bodyOf<ReplaceGigAddOnsRequest>(req)))), meta: meta(req) }),
+  );
+
+  app.post(
+    '/gigs/:gigId/draft/media/uploads',
+    {
+      bodyLimit: GIG_MEDIA_BODY_LIMIT,
+      preValidation: [guard, strictParsed(RequestGigMediaUploadRequest)],
+      schema: {
+        operationId: 'requestProviderGigMediaUpload',
+        summary:
+          'Authorize ONE photo upload for a MEDIA field of the template version the DRAFT is bound to: validates the type (JPEG, PNG or WebP) and size against the configured policy, the field rules and the photo limits, reserves the last place in the draft as an UPLOADING photo and raises the draft revision by 1. The answer carries a short-lived one-object PUT URL with the exact headers to send (content type and length are signed): shown once, never stored by BananaGig, never logged. The file itself never passes through the API. Finish with the finalize call; an upload not finished before it expires is closed by the server',
+        tags,
+        security: bearer,
+        params: gigParams,
+        body: schemaOf(RequestGigMediaUploadRequest),
+        response: { 201: schemaOf(GigMediaUploadResponse), ...failures },
+      },
+    },
+    async (req, reply) => {
+      const r = await run(() => svc.requestMediaUpload(accountId(req), gigId(req), bodyOf<RequestGigMediaUploadRequest>(req)));
+      return reply.status(201).send({ data: mediaUploadDto(r.upload), meta: meta(req) });
+    },
+  );
+
+  app.post(
+    '/gigs/:gigId/draft/media/:mediaId/finalize',
+    {
+      bodyLimit: GIG_MEDIA_BODY_LIMIT,
+      preValidation: [guard, strictParsed(FinalizeGigMediaRequest)],
+      schema: {
+        operationId: 'finalizeProviderGigMedia',
+        summary:
+          "Finish an upload: the server verifies the stored object (it exists, size and content type are the authorized ones, the signature and the image dimensions are those of the declared type and inside the configured bounds, the SHA-256 equals the one sent), scans it, promotes exactly those bytes and marks the photo READY. A refused photo (400 GIG_MEDIA_REFUSED with a reason code) is removed from the draft, except OBJECT_MISSING (the file is not in the store yet), which leaves the photo pending so the upload can be repeated and finalized again, or the photo removed with the detach call; an expired authorization is 409 GIG_MEDIA_EXPIRED; a scanner that cannot answer is 503 GIG_MEDIA_SCAN_UNAVAILABLE and the call can be repeated. Idempotent: finishing a READY photo returns the Gig. Another account's photo is 404",
+        tags,
+        security: bearer,
+        params: mediaParams,
+        body: schemaOf(FinalizeGigMediaRequest),
+        response: { 200: schemaOf(GigDetailResponse), ...failures },
+      },
+    },
+    async (req) => ({
+      data: detailDto(await run(() => svc.finalizeMedia(accountId(req), gigId(req), mediaId(req), bodyOf<FinalizeGigMediaRequest>(req)))),
+      meta: meta(req),
+    }),
+  );
+
+  // the static segment `order` wins over the `:mediaId` parameter below (find-my-way), and `order` is not a UUID anyway
+  app.put(
+    '/gigs/:gigId/draft/media/order',
+    {
+      bodyLimit: GIG_MEDIA_BODY_LIMIT,
+      preValidation: [guard, strictParsed(ReorderGigMediaRequest)],
+      schema: {
+        operationId: 'reorderProviderGigDraftMedia',
+        summary:
+          "Set the WHOLE order of the photos of the DRAFT: `mediaIds` must be exactly the draft's photos, each once (400 otherwise, nothing changes). Raises the revision by 1 when the order changed",
+        tags,
+        security: bearer,
+        params: gigParams,
+        body: schemaOf(ReorderGigMediaRequest),
+        response: { 200: schemaOf(GigDetailResponse), ...failures },
+      },
+    },
+    async (req) => ({ data: detailDto(await run(() => svc.reorderMedia(accountId(req), gigId(req), bodyOf<ReorderGigMediaRequest>(req)))), meta: meta(req) }),
+  );
+
+  app.put(
+    '/gigs/:gigId/draft/media/:mediaId',
+    {
+      bodyLimit: GIG_MEDIA_BODY_LIMIT,
+      preValidation: [guard, strictParsed(UpdateGigMediaRequest)],
+      schema: {
+        operationId: 'updateProviderGigDraftMedia',
+        summary:
+          'Set or clear the alt text of a photo of the DRAFT (plain single-line text up to the configured length; null clears it). Raises the revision by 1 when it changed',
+        tags,
+        security: bearer,
+        params: mediaParams,
+        body: schemaOf(UpdateGigMediaRequest),
+        response: { 200: schemaOf(GigDetailResponse), ...failures },
+      },
+    },
+    async (req) => ({
+      data: detailDto(await run(() => svc.updateMedia(accountId(req), gigId(req), mediaId(req), bodyOf<UpdateGigMediaRequest>(req)))),
+      meta: meta(req),
+    }),
+  );
+
+  app.delete(
+    '/gigs/:gigId/draft/media/:mediaId',
+    {
+      bodyLimit: GIG_MEDIA_BODY_LIMIT,
+      preValidation: [guard, strictParsed(DetachGigMediaRequest)],
+      schema: {
+        operationId: 'detachProviderGigDraftMedia',
+        summary:
+          'Remove a photo from the DRAFT (a JSON body carries `expectedRevision`; some intermediaries drop the body of a DELETE request, in which case the request is rejected as invalid and nothing changes). Only the attachment is removed: the stored image stays while any version, published ones included, still uses it; an unfinished upload (including one left pending by an OBJECT_MISSING refusal) is abandoned and its objects are deleted. Raises the revision by 1',
+        tags,
+        security: bearer,
+        params: mediaParams,
+        body: schemaOf(DetachGigMediaRequest),
+        response: { 200: schemaOf(GigDetailResponse), ...failures },
+      },
+    },
+    async (req) => ({
+      data: detailDto(await run(() => svc.detachMedia(accountId(req), gigId(req), mediaId(req), bodyOf<DetachGigMediaRequest>(req)))),
+      meta: meta(req),
+    }),
+  );
+
+  app.get(
+    '/gigs/:gigId/draft/media/:mediaId/preview',
+    {
+      preValidation: guard,
+      schema: {
+        operationId: 'getProviderGigDraftMediaPreview',
+        summary:
+          "A short-lived one-object GET URL (inline, `no-store`) for a READY photo of the caller's own DRAFT. Owner only; another account's photo or an unfinished upload is 404. The URL is for the owner's browser right now: never store, log or share it. Image bytes never stream through the API",
+        tags,
+        security: bearer,
+        params: mediaParams,
+        querystring: noQuery,
+        response: { 200: schemaOf(GigMediaPreviewResponse), ...failures },
+      },
+    },
+    async (req) => ({ data: mediaPreviewDto(await run(() => svc.previewMedia(accountId(req), gigId(req), null, mediaId(req)))), meta: meta(req) }),
+  );
+
+  app.get(
+    '/gigs/:gigId/versions/:version/media/:mediaId/preview',
+    {
+      preValidation: [guard, strictIntegerParams({ version: VERSION_BOUNDS })],
+      schema: {
+        operationId: 'getProviderGigVersionMediaPreview',
+        summary:
+          "A short-lived one-object GET URL (inline, `no-store`) for a READY photo of any version (draft, published, superseded or retired) of the caller's own Gig. Owner only; another account's Gig, a photo of another version or an unknown id is 404. Same URL rules as the draft preview",
+        tags,
+        security: bearer,
+        params: versionMediaParams,
+        querystring: noQuery,
+        response: { 200: schemaOf(GigMediaPreviewResponse), ...failures },
+      },
+    },
+    async (req) => ({
+      data: mediaPreviewDto(await run(() => svc.previewMedia(accountId(req), gigId(req), versionNumber(req), mediaId(req)))),
+      meta: meta(req),
+    }),
   );
 }

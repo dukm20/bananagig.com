@@ -7,8 +7,14 @@ import {
   gigsPrerequisite,
   GigError,
   UnavailablePrerequisites,
+  DisabledGigMediaScanner,
+  gigMediaPolicyKeys,
+  gigOptionsPolicyKeys,
   gigPolicyKeys,
+  parseGigMediaPolicy,
+  parseGigOptionsPolicy,
   parseGigPolicy,
+  type GigMediaScanner,
   type GigPolicyProvider,
   type GigTemplateFieldFacts,
   type GigTemplateOffer,
@@ -56,6 +62,8 @@ export function toGigTemplateStructure(d: GigTemplateVersionDetailView): GigTemp
     maxLength: f.maxLength,
     minNumber: f.minNumber,
     maxNumber: f.maxNumber,
+    minItems: f.minItems,
+    maxItems: f.maxItems,
     options: f.options.map((o) => ({ optionCode: o.optionCode, displayOrder: o.displayOrder, isDefault: o.isDefault, labelContentKey: o.labelContentKey })),
   }));
   return {
@@ -73,6 +81,8 @@ export function toGigTemplateStructure(d: GigTemplateVersionDetailView): GigTemp
     versionStatus: status as TemplateVersionStatus,
     duration: { minMinutes: d.version.duration.minMinutes, maxMinutes: d.version.duration.maxMinutes, suggestedMinutes: d.version.duration.suggestedMinutes },
     pricing: { fixed: d.version.pricingModels.includes('FIXED'), fixedWithVariants: d.version.pricingModels.includes('FIXED_WITH_VARIANTS') },
+    // CAT-004: the explicit template-version permission for add-ons (the ADD_ONS pricing model, catalog.gig_template_versions.pricing_add_ons)
+    addOnsAllowed: d.version.pricingModels.includes('ADD_ONS'),
     fields,
     requirements: d.requirements.map((r) => ({ requirementType: r.requirementType, referenceCode: r.referenceCode })),
   };
@@ -143,19 +153,49 @@ export function createGigTemplatePort(
 }
 
 /**
- * The Gig policy comes from the configuration registry (CFG-001): five typed values at PLATFORM scope, read fresh through the registry's own cache, with NO code default. A missing,
- * malformed or unreadable value is an outage of the policy (UNAVAILABLE): the operation fails closed.
+ * The Gig policy comes from the configuration registry (CFG-001): typed values at PLATFORM scope, read fresh through the registry's own cache, with NO code default. The base policy
+ * (CAT-003), the variant/add-on limits and the photo limits (CAT-004) are three independent reads, each parsed strictly. A missing, malformed or unreadable value is an outage of the
+ * policy (UNAVAILABLE): the operation fails closed.
  */
 export function createGigPolicyProvider(configuration: Pick<ConfigurationService, 'resolveMany'>): GigPolicyProvider {
+  const read = async (keys: readonly string[]): Promise<Record<string, unknown>> => {
+    try {
+      const { values } = await configuration.resolveMany([...keys]);
+      return Object.fromEntries([...values].map(([key, resolved]) => [key, resolved.value]));
+    } catch {
+      throw new GigError('UNAVAILABLE', 'the Gig policy is not available', { reason: 'POLICY_UNREADABLE' });
+    }
+  };
   return {
     async policy() {
-      let values: Map<string, { value: unknown }>;
+      return parseGigPolicy(await read(gigPolicyKeys()));
+    },
+    async options() {
+      return parseGigOptionsPolicy(await read(gigOptionsPolicyKeys()));
+    },
+    async media() {
+      return parseGigMediaPolicy(await read(gigMediaPolicyKeys()));
+    },
+  };
+}
+
+/**
+ * The photo scanner of the Gig (CAT-004). The evidence scanner of the verification domain has the same `scan({ key, size, bytes })` shape, so the SAME adapter serves both (DEV/TEST:
+ * the fake one; production: none exists yet, so the disabled adapter answers ERROR and, with clean scans required, no photo can be attached: fail closed). The adapter narrows
+ * whatever the scanner answers to the closed verdict set and turns a thrown error or an unknown answer into ERROR.
+ */
+export function createGigMediaScanner(
+  scanner: { scan(i: { key: string; size: number; bytes: Buffer }): Promise<{ status: string }> } | undefined,
+): GigMediaScanner {
+  if (scanner === undefined) return DisabledGigMediaScanner;
+  return {
+    async scan(i) {
       try {
-        values = (await configuration.resolveMany([...gigPolicyKeys()])).values;
+        const { status } = await scanner.scan(i);
+        return { status: status === 'CLEAN' || status === 'INFECTED' ? status : 'ERROR' };
       } catch {
-        throw new GigError('UNAVAILABLE', 'the Gig policy is not available', { reason: 'POLICY_UNREADABLE' });
+        return { status: 'ERROR' };
       }
-      return parseGigPolicy(Object.fromEntries([...values].map(([key, resolved]) => [key, resolved.value])));
     },
   };
 }

@@ -15,7 +15,11 @@ import { GIG_EVENTS, type GigDetailDto, type GigIssueDto, type ProviderGigPolicy
 import { sql, TransactionOptionError, type Database } from '@bananagig/database';
 import { runWithCorrelation } from '@bananagig/observability';
 import { createIsolatedDatabase, createTestPool, rejection, sleep, type IsolatedDatabase } from '@bananagig/testing';
+import { MemoryObjectStore } from '@bananagig/platform';
 import {
+  DEFAULT_GIG_MEDIA_POLICY,
+  DisabledGigMediaScanner,
+  DEFAULT_GIG_OPTIONS_POLICY,
   GigError,
   ProviderError,
   ProviderGigService,
@@ -146,6 +150,7 @@ class FakeTemplates implements GigTemplatePort {
       versionStatus: v.status as GigTemplateStructure['versionStatus'],
       duration: { minMinutes: num(v.min_duration_minutes), maxMinutes: num(v.max_duration_minutes), suggestedMinutes: num(v.suggested_duration_minutes) },
       pricing: { fixed: v.pricing_fixed === true, fixedWithVariants: v.pricing_fixed_with_variants === true },
+      addOnsAllowed: v.pricing_add_ons === true,
       fields: fields.map((f): GigTemplateFieldFacts => {
         const mine = options.filter((o) => o.gig_template_field_id === f.gig_template_field_id);
         return {
@@ -166,6 +171,8 @@ class FakeTemplates implements GigTemplatePort {
           maxLength: num(f.max_length),
           minNumber: num(f.min_number),
           maxNumber: num(f.max_number),
+          minItems: num(f.min_items),
+          maxItems: num(f.max_items),
           options: mine.map((o) => ({
             optionCode: o.option_code as string,
             displayOrder: Number(o.display_order),
@@ -254,6 +261,8 @@ beforeEach(() => {
   setPolicy({});
   policyProvider.failure = undefined;
   policyProvider.reads = 0;
+  policyProvider.optionsValue = { ...DEFAULT_GIG_OPTIONS_POLICY };
+  policyProvider.mediaValue = { ...DEFAULT_GIG_MEDIA_POLICY };
   templates.overrides.clear();
   accounts.hook = undefined;
   accounts.calls = 0;
@@ -479,15 +488,16 @@ interface TplField {
   defaultOption?: string;
   withDefaultText?: boolean;
   minItems?: number;
+  maxItems?: number;
 }
 interface TplSpec {
   fields?: TplField[];
   /** [min, max, suggested]; null = no duration guidance at all. */
   duration?: [number | null, number | null, number | null] | null;
-  pricing?: { fixed?: boolean; variants?: boolean };
+  pricing?: { fixed?: boolean; variants?: boolean; addOns?: boolean };
   requirements?: { type: string; ref?: string }[];
 }
-/** The standard template: required text, optional enum / decimal / boolean / duration / long text, a fixed long text, a required integer and an optional unsupported MEDIA field. */
+/** The standard template: required text, optional enum / decimal / boolean / duration / long text, a fixed long text, a required integer and an optional MEDIA field (CAT-004: satisfied by photos). */
 const stdSpec = (): TplSpec => ({
   duration: [60, 240, 120],
   pricing: { fixed: true },
@@ -531,8 +541,8 @@ async function addVersion(code: string, spec: TplSpec): Promise<string> {
   ).gig_template_version_id;
   const d = spec.duration === undefined ? ([60, 240, 120] as const) : (spec.duration ?? ([null, null, null] as const));
   await q(
-    `UPDATE catalog.gig_template_versions SET min_duration_minutes = $2, max_duration_minutes = $3, suggested_duration_minutes = $4, pricing_fixed = $5, pricing_fixed_with_variants = $6 WHERE gig_template_version_id = $1`,
-    [versionId, d[0], d[1], d[2], spec.pricing?.fixed ?? true, spec.pricing?.variants ?? false],
+    `UPDATE catalog.gig_template_versions SET min_duration_minutes = $2, max_duration_minutes = $3, suggested_duration_minutes = $4, pricing_fixed = $5, pricing_fixed_with_variants = $6, pricing_add_ons = $7 WHERE gig_template_version_id = $1`,
+    [versionId, d[0], d[1], d[2], spec.pricing?.fixed ?? true, spec.pricing?.variants ?? false, spec.pricing?.addOns ?? false],
   );
   let order = 0;
   for (const f of spec.fields ?? []) {
@@ -540,8 +550,8 @@ async function addVersion(code: string, spec: TplSpec): Promise<string> {
     const label = `${stem(code)}.field.${f.key}.label`;
     const fieldId = (
       await one<{ gig_template_field_id: string }>(
-        `INSERT INTO catalog.gig_template_fields (gig_template_version_id, field_key, field_type, behavior, display_order, label_content_key, default_content_key, min_length, max_length, min_number, max_number, min_items)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING gig_template_field_id`,
+        `INSERT INTO catalog.gig_template_fields (gig_template_version_id, field_key, field_type, behavior, display_order, label_content_key, default_content_key, min_length, max_length, min_number, max_number, min_items, max_items)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING gig_template_field_id`,
         [
           versionId,
           f.key,
@@ -555,6 +565,7 @@ async function addVersion(code: string, spec: TplSpec): Promise<string> {
           f.minNumber ?? null,
           f.maxNumber ?? null,
           f.minItems ?? null,
+          f.maxItems ?? null,
         ],
       )
     ).gig_template_field_id;
@@ -735,6 +746,9 @@ const gigHash = async (accountId: string): Promise<string> =>
         (SELECT coalesce(jsonb_agg(to_jsonb(g) ORDER BY g.gig_id), '[]') FROM provider.gigs g WHERE g.account_id = $1)::text,
         (SELECT coalesce(jsonb_agg(to_jsonb(v) ORDER BY v.gig_version_id), '[]') FROM provider.gig_versions v JOIN provider.gigs g USING (gig_id) WHERE g.account_id = $1)::text,
         (SELECT coalesce(jsonb_agg(to_jsonb(f) ORDER BY f.gig_version_id, f.gig_template_field_id), '[]') FROM provider.gig_version_field_values f JOIN provider.gig_versions v USING (gig_version_id) JOIN provider.gigs g USING (gig_id) WHERE g.account_id = $1)::text,
+        (SELECT coalesce(jsonb_agg(to_jsonb(c) - 'variant_id' ORDER BY c.gig_version_id, c.display_order), '[]') FROM provider.gig_version_variants c JOIN provider.gig_versions v USING (gig_version_id) JOIN provider.gigs g USING (gig_id) WHERE g.account_id = $1)::text,
+        (SELECT coalesce(jsonb_agg(to_jsonb(c) - 'add_on_id' ORDER BY c.gig_version_id, c.display_order), '[]') FROM provider.gig_version_add_ons c JOIN provider.gig_versions v USING (gig_version_id) JOIN provider.gigs g USING (gig_id) WHERE g.account_id = $1)::text,
+        (SELECT coalesce(jsonb_agg(to_jsonb(c) ORDER BY c.gig_version_id, c.display_order), '[]') FROM provider.gig_version_media c JOIN provider.gig_versions v USING (gig_version_id) JOIN provider.gigs g USING (gig_id) WHERE g.account_id = $1)::text,
         (SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.audit_event_id), '[]') FROM provider.gig_audit_events a WHERE a.account_id = $1)::text,
         (SELECT coalesce(jsonb_agg(to_jsonb(e) - 'created_at' ORDER BY e.outbox_event_id), '[]') FROM integration.outbox_events e WHERE e.payload_json->>'accountId' = ($1::uuid)::text AND e.event_type LIKE 'bananagig.provider.gig-%')::text)) AS h`,
       [accountId],
@@ -782,8 +796,8 @@ const issueKeys = (e: GigError): string[] => issuesOf(e).map((i) => `${i.target}
 
 // ====================================================================== 0. the harness
 describe('the test harness', () => {
-  it('migration 0020 is applied, the five Gig policy parameters are seeded, and no Gig exists', async () => {
-    expect((await one<{ n: number }>("SELECT count(*)::int AS n FROM configuration.parameters WHERE key LIKE 'provider.gig.%'")).n).toBe(5);
+  it('migrations 0020 and 0021 are applied, the five Gig and the fifteen variant, add-on and photo policy parameters are seeded, and no Gig exists', async () => {
+    expect((await one<{ n: number }>("SELECT count(*)::int AS n FROM configuration.parameters WHERE key LIKE 'provider.gig.%'")).n).toBe(20);
     expect(await totals()).toEqual({ gigs: 0, versions: 0, audits: 0, events: 0 });
   });
 
@@ -893,7 +907,23 @@ describe('createGig', () => {
       description: { maxLength: 5000 },
       price: { permitted: true, required: true, currency: p.currency },
       duration: { permitted: true, required: true, minMinutes: 60, maxMinutes: 240, suggestedMinutes: 120 },
+      // CAT-004: the standard template allows neither variants nor add-ons and has one optional MEDIA field
+      variants: { permitted: false, maxCount: 10, nameMaxLength: 80, descriptionMaxLength: 500 },
+      addOns: { permitted: false, maxCount: 20, nameMaxLength: 80, descriptionMaxLength: 500 },
+      media: {
+        permitted: true,
+        maxItems: 50,
+        maxFileSizeBytes: 10_485_760,
+        allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp'],
+        minEdgePixels: 200,
+        maxEdgePixels: 12_000,
+        altTextMaxLength: 200,
+      },
     });
+    expect(d.variants).toEqual([]);
+    expect(d.addOns).toEqual([]);
+    expect(d.media).toEqual([]);
+    expect(d.children).toEqual({ variantCount: 0, addOnCount: 0, mediaCount: 0, variantsValid: true, addOnsValid: true, mediaRequirementSatisfied: true });
     expect(d.fields.map((f) => [f.fieldKey, f.supported, f.required, f.fixed])).toEqual([
       ['notes', true, true, false],
       ['finish', true, false, false],
@@ -903,7 +933,7 @@ describe('createGig', () => {
       ['extra_time', true, false, false],
       ['details', true, false, false],
       ['intro', true, false, true],
-      ['photos', false, false, false],
+      ['photos', true, false, false],
     ]);
     expect(d.issues.map((i) => `${i.target}:${i.reason}`)).toEqual([
       'title:TITLE_REQUIRED',
@@ -1269,7 +1299,7 @@ describe('updateDraft', () => {
       }),
       'VALIDATION_FAILED',
     );
-    expect(issueKeys(e)).toEqual(['field:intro:FIELD_NOT_PROVIDER_EDITABLE', 'field:photos:FIELD_TYPE_NOT_SUPPORTED', 'field:ghost:FIELD_UNKNOWN']);
+    expect(issueKeys(e)).toEqual(['field:intro:FIELD_NOT_PROVIDER_EDITABLE', 'field:photos:FIELD_MEDIA_NOT_A_VALUE', 'field:ghost:FIELD_UNKNOWN']);
     expect(
       (await q('SELECT 1 FROM provider.gig_version_field_values v JOIN provider.gig_versions x USING (gig_version_id) WHERE x.gig_id = $1', [gigId])).length,
     ).toBe(0);
@@ -1451,9 +1481,9 @@ describe('publish', () => {
     expect(d.draftVersion!.issues.map((i) => i.reason)).toEqual(['TITLE_REQUIRED', 'PRICE_NOT_POSITIVE', 'DURATION_REQUIRED', 'FIELD_REQUIRED']);
   });
 
-  it('a required field of an unsupported type blocks publishing (FIELD_TYPE_NOT_SUPPORTED); an optional unsupported field does not', async () => {
+  it('a required field of an unsupported type blocks publishing (FIELD_TYPE_NOT_SUPPORTED); an optional MEDIA field does not', async () => {
     const spec = stdSpec();
-    spec.fields!.push({ key: 'licence_scan', type: 'MEDIA', behavior: 'PROVIDER_REQUIRED', minItems: 1 });
+    spec.fields!.push({ key: 'licence_scan', type: 'EQUIPMENT_REFERENCE', behavior: 'PROVIDER_REQUIRED', minItems: 1 });
     const blocked = await mkProvider({ spec });
     const { gigId, revision } = await complete(blocked);
     const e = await expectError(svc.publish(blocked.accountId, gigId, { expectedRevision: revision }), 'PUBLISH_BLOCKED');
@@ -1656,7 +1686,17 @@ describe('createNextDraft', () => {
     expect((await valueRows(rows[1]!.gig_version_id)).length).toBe(3);
     const audit = (await gigAudits(gigId)).at(-1)!;
     expect(audit).toMatchObject({ action: 'GIG_DRAFT_CREATED', gig_version_id: rows[1]!.gig_version_id, correlation_id: 'cid-next' });
-    expect(audit.changes).toEqual({ versionNumber: 2, revision: 1, copiedFromVersion: 1, fieldValueCount: 3, priceCopied: true });
+    expect(audit.changes).toEqual({
+      versionNumber: 2,
+      revision: 1,
+      copiedFromVersion: 1,
+      fieldValueCount: 3,
+      priceCopied: true,
+      optionsCopied: true,
+      variantCount: 0,
+      addOnCount: 0,
+      mediaCount: 0,
+    });
     expect((await gigEvents(gigId)).length).toBe(eventsBefore);
     // editing the copy does not touch version 1
     await save(p.accountId, gigId, 1, { title: 'Changed' });
@@ -1899,7 +1939,7 @@ describe('listProviderGigs (GigMenu)', () => {
     expect(small.result.gigs).toHaveLength(1);
     expect(big.result.gigs).toHaveLength(7);
     expect(big.svc.length).toBe(small.svc.length);
-    expect(big.svc.length).toBeLessThanOrEqual(5);
+    expect(big.svc.length).toBeLessThanOrEqual(7);
     expect(big.port.length).toBe(small.port.length);
     expect(portCalls.filter((c) => c.port.startsWith('templates.') && c.inTransaction)).toEqual([]);
     const lastTemplateCalls = portCalls.length;
@@ -2271,14 +2311,28 @@ describe('provider text never leaks', () => {
     );
     const keySets: Record<string, string[]> = {
       [GIG_EVENTS.gigCreated]: ['accountId', 'gigId', 'gigTemplateVersionId', 'gigVersionId'],
-      [GIG_EVENTS.gigVersionPublished]: ['accountId', 'gigId', 'gigTemplateVersionId', 'gigVersionId', 'supersededGigVersionId', 'versionNumber'],
+      [GIG_EVENTS.gigVersionPublished]: [
+        'accountId',
+        'addOnCount',
+        'gigId',
+        'gigTemplateVersionId',
+        'gigVersionId',
+        'mediaCount',
+        'supersededGigVersionId',
+        'variantCount',
+        'versionNumber',
+      ],
       [GIG_EVENTS.gigRetired]: ['accountId', 'gigId'],
     };
     expect(new Set(events.map((e) => e.event_type))).toEqual(new Set(Object.keys(keySets)));
     const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
     for (const e of events) {
       expect(Object.keys(e.payload_json).sort(), e.event_type).toEqual(keySets[e.event_type]);
-      for (const [k, v] of Object.entries(e.payload_json)) if (typeof v === 'string') expect(v, k).toMatch(uuid);
+      for (const [k, v] of Object.entries(e.payload_json)) {
+        if (typeof v === 'string') expect(v, k).toMatch(uuid);
+        // the only numbers an event carries are the version number and the CAT-004 counts
+        else if (typeof v === 'number') expect(['versionNumber', 'variantCount', 'addOnCount', 'mediaCount'], k).toContain(k);
+      }
       expect(e).toMatchObject({ event_version: 1, aggregate_type: 'provider-gig', actor_type: 'user' });
     }
   });
@@ -2296,8 +2350,25 @@ describe('shape: the Gig tables hold only Gig state', () => {
     const cols = await q<{ table_name: string; column_name: string }>(
       `SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'provider' AND table_name LIKE 'gig%' ORDER BY table_name, ordinal_position`,
     );
-    expect([...new Set(cols.map((c) => c.table_name))].sort()).toEqual(['gig_audit_events', 'gig_version_field_values', 'gig_versions', 'gigs']);
-    expect(cols.map((c) => `${c.table_name}.${c.column_name}`).join(' ')).not.toMatch(
+    // CAT-004 added three version-owned child tables; the Gig identity and its versions still hold only Gig state
+    expect([...new Set(cols.map((c) => c.table_name))].sort()).toEqual([
+      'gig_audit_events',
+      'gig_version_add_ons',
+      'gig_version_field_values',
+      'gig_version_media',
+      'gig_version_variants',
+      'gig_versions',
+      'gigs',
+    ]);
+    const childCols = cols.filter((c) => ['gig_version_variants', 'gig_version_add_ons', 'gig_version_media'].includes(c.table_name));
+    // the price is a delta of the version's currency (no currency column on a child), and an attachment never stores bytes facts (those belong to the asset)
+    expect(childCols.map((c) => `${c.table_name}.${c.column_name}`).join(' ')).not.toMatch(/currency|object_key|sha256|mime|size_bytes|url/);
+    expect(
+      cols
+        .filter((c) => !childCols.includes(c))
+        .map((c) => `${c.table_name}.${c.column_name}`)
+        .join(' '),
+    ).not.toMatch(
       /email|phone|consent|verif|subscri|payment|document|first_name|last_name|address|token|secret|legal|profile|market|service_type|variant|addon|add_on|media|radius|area|capacity|search|rank|live|bookable|credit|discount/,
     );
     const gigCols = cols.filter((c) => c.table_name === 'gigs').map((c) => c.column_name);
@@ -2307,8 +2378,6 @@ describe('shape: the Gig tables hold only Gig state', () => {
 
 // ====================================================================== 12b. robustness found in review
 describe('the market currency changes under stored prices (geography.markets.currency_code is mutable)', () => {
-  const changeCurrency = async (market: string, to: string) => q('UPDATE geography.markets SET currency_code = $2 WHERE code = $1', [market, to]);
-
   it('the next draft does not carry a price in the old currency: the price is left empty (PRICE_REQUIRED), v1 keeps its price, no raw guard error', async () => {
     const eur = await otherCurrency();
     const p = await mkProvider();
@@ -2329,6 +2398,30 @@ describe('the market currency changes under stored prices (geography.markets.cur
       versionNumber: 2,
       price: { currency: eur },
     });
+  });
+
+  it('the next draft does NOT copy variants and add-ons when the price was dropped (their deltas are minor units of the old currency); photos are copied as usual', async () => {
+    const eur = await otherCurrency();
+    const p = await mkProvider({ spec: photoSpec(1, 3) });
+    const { gigId, revision } = await complete(p);
+    const a = (await replaceV(p, gigId, revision, [opt('A'), opt('B')])).draftVersion!;
+    const b = (await replaceA(p, gigId, a.revision, [opt('X')])).draftVersion!;
+    await attachPhoto(p, gigId, 'gallery', await mkAsset(p.accountId), 'Front');
+    await svc.publish(p.accountId, gigId, { expectedRevision: (await draftOf(p, gigId)).revision });
+    await changeCurrency(p.market, eur);
+    const d = (await svc.createNextDraft(p.accountId, gigId, {})).draftVersion!;
+    expect(d).toMatchObject({ price: null, variants: [], addOns: [] });
+    expect(d.children).toMatchObject({ variantCount: 0, addOnCount: 0, mediaCount: 1 });
+    expect(d.media.map((m) => m.altText)).toEqual(['Front']);
+    const v2Id = (await verRows(gigId))[1]!.gig_version_id;
+    expect(await variantRows(v2Id)).toEqual([]);
+    expect(await addOnRows(v2Id)).toEqual([]);
+    expect((await gigAudits(gigId)).at(-1)!.changes).toMatchObject({ priceCopied: false, optionsCopied: false, variantCount: 0, addOnCount: 0, mediaCount: 1 });
+    // version 1 keeps its options; the provider enters the price and the options again
+    expect((await svc.getGigVersion(p.accountId, gigId, 1)).variants).toHaveLength(2);
+    expect(b.variants).toHaveLength(2);
+    const saved = await save(p.accountId, gigId, d.revision);
+    expect(saved.draftVersion!.price).toEqual({ amountMinor: 12_500, currency: eur });
   });
 
   it('the next draft still carries the price when the currency did not change', async () => {
@@ -2572,5 +2665,922 @@ describe('atomicity: the change, its audit row and its event commit together or 
       await q('DROP TRIGGER trg_gig_test_fail2 ON integration.outbox_events');
       await q('DROP FUNCTION public.gig_test_fail2()');
     }
+  });
+});
+
+// ====================================================================== CAT-004: variants, add-ons and the photos in the version
+const changeCurrency = async (market: string, to: string) => q('UPDATE geography.markets SET currency_code = $2 WHERE code = $1', [market, to]);
+const optSpec = (over: TplSpec = {}): TplSpec => ({ ...stdSpec(), pricing: { fixed: true, variants: true, addOns: true }, ...over });
+/** The standard template plus a MEDIA field `gallery` (required unless said otherwise). */
+const photoSpec = (min = 1, max = 3, behavior: 'PROVIDER_REQUIRED' | 'PROVIDER_CONFIGURABLE' = 'PROVIDER_REQUIRED'): TplSpec => {
+  const base = optSpec();
+  return { ...base, fields: [...base.fields!, { key: 'gallery', type: 'MEDIA', behavior, minItems: min, maxItems: max }] };
+};
+const opt = (name: string, over: Record<string, unknown> = {}) => ({ name, description: null, priceDeltaMinor: 500, durationDeltaMinutes: 15, ...over });
+const variantRows = (versionId: string) =>
+  q<Row>(
+    'SELECT item_key, name, description, price_delta_minor, duration_delta_minutes, display_order FROM provider.gig_version_variants WHERE gig_version_id = $1 ORDER BY display_order',
+    [versionId],
+  );
+const addOnRows = (versionId: string) =>
+  q<Row>(
+    'SELECT item_key, name, description, price_delta_minor, duration_delta_minutes, display_order FROM provider.gig_version_add_ons WHERE gig_version_id = $1 ORDER BY display_order',
+    [versionId],
+  );
+const mediaRowsDb = (versionId: string) =>
+  q<Row>(
+    'SELECT gig_version_media_id, media_asset_id, display_order, alt_text FROM provider.gig_version_media WHERE gig_version_id = $1 ORDER BY display_order',
+    [versionId],
+  );
+const draftOf = async (p: Provider, gigId: string) => (await svc.getGig(p.accountId, gigId)).draftVersion!;
+/** A Gig with a complete draft; returns the ids and the draft revision. */
+const draftWithOptions = async (p: Provider) => {
+  const { gigId, revision } = await complete(p);
+  return { gigId, revision, versionId: (await verRows(gigId))[0]!.gig_version_id };
+};
+const replaceV = (p: Provider, gigId: string, revision: number, variants: unknown[]) =>
+  svc.replaceVariants(p.accountId, gigId, { expectedRevision: revision, variants });
+const replaceA = (p: Provider, gigId: string, revision: number, addOns: unknown[]) =>
+  svc.replaceAddOns(p.accountId, gigId, { expectedRevision: revision, addOns });
+
+/** An asset of the account, READY (verified) or still UPLOAD_PENDING; photos are attached through the draft primitive exactly like the media service does. */
+async function mkAsset(accountId: string, ready = true): Promise<string> {
+  const id = randomUUID();
+  await q(
+    `INSERT INTO provider.media_assets (media_asset_id, account_id, object_key, mime_type, size_bytes, upload_expires_at) VALUES ($1, $2, $3, 'image/png', 1000, now() + interval '1 hour')`,
+    [id, accountId, `provider/gig-media/${id}`],
+  );
+  if (ready)
+    await q(
+      `UPDATE provider.media_assets SET status = 'READY', sha256 = $2, width = 640, height = 480, scan_status = 'CLEAN', ready_at = now() WHERE media_asset_id = $1`,
+      [id, 'a'.repeat(64)],
+    );
+  return id;
+}
+async function attachPhoto(p: Provider, gigId: string, fieldKey: string, assetId: string, alt: string | null = null): Promise<string> {
+  const before = await svc.readDraft(p.accountId, gigId);
+  const r = await svc.mutateDraft(p.accountId, gigId, before.draft.revision, async (ctx) => {
+    const row = await sql<Row>`INSERT INTO provider.gig_version_media (gig_version_id, media_asset_id, gig_template_field_id, display_order, alt_text)
+        SELECT ${ctx.draft.gigVersionId}::uuid, ${assetId}::uuid, f.gig_template_field_id,
+               COALESCE((SELECT max(display_order) FROM provider.gig_version_media WHERE gig_version_id = ${ctx.draft.gigVersionId}::uuid), 0) + 1, ${alt}
+          FROM catalog.gig_template_fields f WHERE f.gig_template_version_id = ${ctx.draft.gigTemplateVersionId}::uuid AND f.field_key = ${fieldKey}
+        RETURNING gig_version_media_id`.execute(ctx.trx);
+    return { changed: true, value: row.rows[0]!.gig_version_media_id as string };
+  });
+  return r.value;
+}
+
+describe('CAT-004: the draft-mutation primitive', () => {
+  it('readDraft returns the draft context of the owner without a lock or a write; foreign, unknown, retired and draftless Gigs are refused', async () => {
+    const p = await mkProvider({ spec: optSpec() });
+    const gigId = gigIdOf((await create(p)).detail);
+    const before = await gigHash(p.accountId);
+    const ctx = await svc.readDraft(p.accountId, gigId);
+    expect(ctx).toMatchObject({
+      gigId,
+      gigStatus: 'DRAFT',
+      draft: { versionNumber: 1, revision: 1, gigTemplateVersionId: p.tpl.versionId },
+      currency: p.currency,
+    });
+    expect(ctx.structure).toMatchObject({ gigTemplateVersionId: p.tpl.versionId, addOnsAllowed: true, pricing: { fixedWithVariants: true } });
+    expect(ctx.draft.gigVersionId).toBe((await verRows(gigId))[0]!.gig_version_id);
+    expect(await gigHash(p.accountId)).toBe(before);
+    const intruder = await mkNeighbour(p);
+    const foreign = await err(svc.readDraft(intruder, gigId));
+    expect(surface(foreign!)).toBe(surface((await err(svc.readDraft(intruder, randomUUID())))!));
+    expect(foreign!.code).toBe('GIG_NOT_FOUND');
+    await expectError(svc.readDraft(p.accountId, 'not-a-uuid'), 'GIG_NOT_FOUND');
+    const g2 = await published(p);
+    await expectError(svc.readDraft(p.accountId, g2), 'NO_DRAFT');
+    await svc.retire(p.accountId, g2, {});
+    await expectError(svc.readDraft(p.accountId, g2), 'GIG_RETIRED');
+  });
+
+  it('mutateDraft: no change keeps the revision, a change raises it by exactly one, the answer is the detail read after the commit, the context carries the transaction and the correlation id', async () => {
+    const p = await mkProvider({ spec: optSpec() });
+    const { gigId, revision } = await draftWithOptions(p);
+    const seen: { inTx: boolean; cid: string; revision: number }[] = [];
+    const noop = await runWithCorrelation('cid-mutate', () =>
+      svc.mutateDraft(p.accountId, gigId, revision, async (ctx) => {
+        seen.push({ inTx: iso.database.inTransaction, cid: ctx.cid, revision: ctx.draft.revision });
+        return { changed: false, value: 'unchanged' };
+      }),
+    );
+    expect(noop.value).toBe('unchanged');
+    expect(noop.detail.draftVersion!.revision).toBe(revision);
+    const changed = await runWithCorrelation('cid-mutate', () => svc.mutateDraft(p.accountId, gigId, revision, async () => ({ changed: true, value: 42 })));
+    expect(changed.value).toBe(42);
+    expect(changed.detail.draftVersion!.revision).toBe(revision + 1);
+    expect((await verRows(gigId))[0]!.revision).toBe(revision + 1);
+    expect(seen).toEqual([{ inTx: true, cid: 'cid-mutate', revision }]);
+  });
+
+  it('mutateDraft: a stale revision is STALE_DRAFT before the callback runs; a failing callback rolls everything back (no revision bump, no rows)', async () => {
+    const p = await mkProvider({ spec: optSpec() });
+    const { gigId, revision, versionId } = await draftWithOptions(p);
+    let ran = 0;
+    await expectError(
+      svc.mutateDraft(p.accountId, gigId, revision - 1, async () => {
+        ran++;
+        return { changed: true, value: 1 };
+      }),
+      'STALE_DRAFT',
+    );
+    expect(ran).toBe(0);
+    const before = await gigHash(p.accountId);
+    const boom = new Error('boom inside the callback');
+    const e = await rejection(
+      svc.mutateDraft(p.accountId, gigId, revision, async (ctx) => {
+        await sql`INSERT INTO provider.gig_version_variants (gig_version_id, item_key, name, price_delta_minor, duration_delta_minutes, display_order) VALUES (${versionId}::uuid, 'opt_rollback', 'Rolled back', 1, 0, 1)`.execute(
+          ctx.trx,
+        );
+        throw boom;
+      }),
+    );
+    expect(e).toBe(boom);
+    expect(await gigHash(p.accountId)).toBe(before);
+    expect(await variantRows(versionId)).toEqual([]);
+  });
+
+  it('mutateDraft: the foreign account sees GIG_NOT_FOUND and the callback never runs; an inactive account is refused under the lock', async () => {
+    const p = await mkProvider({ spec: optSpec() });
+    const { gigId, revision } = await draftWithOptions(p);
+    const intruder = await mkNeighbour(p);
+    let ran = 0;
+    const run = async () => (ran++, { changed: true, value: 1 });
+    await expectError(svc.mutateDraft(intruder, gigId, revision, run), 'GIG_NOT_FOUND');
+    expect(ran).toBe(0);
+    await setAccountStatus(p.accountId, 'SUSPENDED');
+    const e = await err(svc.mutateDraft(p.accountId, gigId, revision, run));
+    expect(e).toBeInstanceOf(GigError);
+    expect(ran).toBe(0);
+  });
+});
+
+describe('CAT-004: variants and add-ons (replaceVariants / replaceAddOns)', () => {
+  it('replaces the whole set: keys minted, display order = array order, one revision bump, one audit row with counts only, no event, price and duration as deltas of the Gig currency', async () => {
+    const p = await mkProvider({ spec: optSpec() });
+    const { gigId, revision, versionId } = await draftWithOptions(p);
+    const eventsBefore = (await gigEvents(gigId)).length;
+    const d = await runWithCorrelation('cid-var', () =>
+      replaceV(p, gigId, revision, [
+        opt('Small car', { priceDeltaMinor: 0, durationDeltaMinutes: 0 }),
+        opt('SUV', { description: 'Bigger\nvehicles', priceDeltaMinor: 2500, durationDeltaMinutes: 30 }),
+      ]),
+    );
+    const v = d.draftVersion!;
+    expect(v.revision).toBe(revision + 1);
+    expect(v.variants.map((x) => [x.name, x.description, x.priceDeltaMinor, x.durationDeltaMinutes, x.displayOrder])).toEqual([
+      ['Small car', null, 0, 0, 1],
+      ['SUV', 'Bigger\nvehicles', 2500, 30, 2],
+    ]);
+    for (const x of v.variants) expect(x.key).toMatch(/^opt_[0-9a-f]{12}$/);
+    expect(v.addOns).toEqual([]);
+    expect(v.children).toMatchObject({ variantCount: 2, addOnCount: 0, variantsValid: true, addOnsValid: true });
+    const rows = await variantRows(versionId);
+    expect(rows.map((r) => [r.item_key, r.name, Number(r.price_delta_minor), r.duration_delta_minutes, r.display_order])).toEqual([
+      [v.variants[0]!.key, 'Small car', 0, 0, 1],
+      [v.variants[1]!.key, 'SUV', 2500, 30, 2],
+    ]);
+    // the Gig base price is untouched: a variant adds to it, nothing replaces it
+    expect(v.price).toEqual({ amountMinor: 12_500, currency: p.currency });
+    const audits = (await gigAudits(gigId)).filter((a) => a.action === 'GIG_VARIANTS_UPDATED');
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({ gig_version_id: versionId, correlation_id: 'cid-var', actor: `account:${p.accountId}` });
+    expect(audits[0]!.changes).toEqual({ count: [0, 2], added: 2, removed: 0, revision: [revision, revision + 1], versionNumber: 1 });
+    expect((await gigEvents(gigId)).length).toBe(eventsBefore);
+  });
+
+  it('add-ons are a separate list with their own audit action and permission; both lists coexist', async () => {
+    const p = await mkProvider({ spec: optSpec() });
+    const { gigId, revision, versionId } = await draftWithOptions(p);
+    const a = await replaceA(p, gigId, revision, [opt('Interior', { priceDeltaMinor: 1000 }), opt('Wax')]);
+    const b = await replaceV(p, gigId, a.draftVersion!.revision, [opt('Interior')]);
+    expect(b.draftVersion!.addOns.map((x) => x.name)).toEqual(['Interior', 'Wax']);
+    expect(b.draftVersion!.variants.map((x) => x.name)).toEqual(['Interior']);
+    // the same name in two lists is fine, and the same key never crosses lists
+    expect(b.draftVersion!.variants[0]!.key).not.toBe(b.draftVersion!.addOns[0]!.key);
+    expect((await addOnRows(versionId)).length).toBe(2);
+    expect((await gigAudits(gigId)).map((x) => x.action).filter((x) => /VARIANTS|ADD_ONS/.test(x))).toEqual(['GIG_ADD_ONS_UPDATED', 'GIG_VARIANTS_UPDATED']);
+    const addOnAudit = (await gigAudits(gigId)).find((x) => x.action === 'GIG_ADD_ONS_UPDATED')!;
+    expect(addOnAudit.changes).toEqual({ count: [0, 2], added: 2, removed: 0, revision: [revision, revision + 1], versionNumber: 1 });
+  });
+
+  it('keeps an item by key (its key survives a reorder and an edit), drops what is missing, adds what is new; the audit counts it', async () => {
+    const p = await mkProvider({ spec: optSpec() });
+    const { gigId, revision, versionId } = await draftWithOptions(p);
+    const first = (await replaceV(p, gigId, revision, [opt('A'), opt('B'), opt('C')])).draftVersion!;
+    const [a, b, c] = first.variants;
+    const second = (
+      await replaceV(p, gigId, first.revision, [{ ...opt('C renamed', { priceDeltaMinor: 7 }), key: c!.key }, { ...opt('A'), key: a!.key }, opt('D new')])
+    ).draftVersion!;
+    expect(second.variants.map((x) => [x.key === c!.key || x.key === a!.key ? x.key : 'new', x.name, x.displayOrder])).toEqual([
+      [c!.key, 'C renamed', 1],
+      [a!.key, 'A', 2],
+      ['new', 'D new', 3],
+    ]);
+    expect(second.variants.map((x) => x.key)).not.toContain(b!.key);
+    expect((await variantRows(versionId)).map((r) => r.name)).toEqual(['C renamed', 'A', 'D new']);
+    const audit = (await gigAudits(gigId)).filter((x) => x.action === 'GIG_VARIANTS_UPDATED').at(-1)!;
+    expect(audit.changes).toMatchObject({ count: [3, 3], added: 1, removed: 1 });
+  });
+
+  it('the same set again is a no-op: no revision bump, no audit row, nothing written (semantic comparison, after normalisation)', async () => {
+    const p = await mkProvider({ spec: optSpec() });
+    const { gigId, revision } = await draftWithOptions(p);
+    const first = (await replaceV(p, gigId, revision, [opt('A', { description: 'x' }), opt('B')])).draftVersion!;
+    const again = first.variants.map((v) => ({
+      key: v.key,
+      name: ` ${v.name} `,
+      description: v.description,
+      priceDeltaMinor: v.priceDeltaMinor,
+      durationDeltaMinutes: v.durationDeltaMinutes,
+    }));
+    const hash = await gigHash(p.accountId);
+    const d = await replaceV(p, gigId, first.revision, again);
+    expect(d.draftVersion!.revision).toBe(first.revision);
+    expect(await gigHash(p.accountId)).toBe(hash);
+    // an empty list on an empty kind is a no-op too
+    const e = await replaceA(p, gigId, first.revision, []);
+    expect(e.draftVersion!.revision).toBe(first.revision);
+    expect(await gigHash(p.accountId)).toBe(hash);
+  });
+
+  it('emptying a list is a change (audit count [n,0])', async () => {
+    const p = await mkProvider({ spec: optSpec() });
+    const { gigId, revision, versionId } = await draftWithOptions(p);
+    const one1 = (await replaceA(p, gigId, revision, [opt('A')])).draftVersion!;
+    const none = (await replaceA(p, gigId, one1.revision, [])).draftVersion!;
+    expect(none.addOns).toEqual([]);
+    expect(none.revision).toBe(one1.revision + 1);
+    expect(await addOnRows(versionId)).toEqual([]);
+    expect((await gigAudits(gigId)).filter((x) => x.action === 'GIG_ADD_ONS_UPDATED').at(-1)!.changes).toMatchObject({ count: [1, 0], added: 0, removed: 1 });
+  });
+
+  it('a stale revision is STALE_DRAFT and writes nothing; so is a revision from the future', async () => {
+    const p = await mkProvider({ spec: optSpec() });
+    const { gigId, revision } = await draftWithOptions(p);
+    await replaceV(p, gigId, revision, [opt('A')]);
+    const hash = await gigHash(p.accountId);
+    await expectError(replaceV(p, gigId, revision, [opt('B')]), 'STALE_DRAFT');
+    await expectError(replaceA(p, gigId, revision + 5, [opt('B')]), 'STALE_DRAFT');
+    expect(await gigHash(p.accountId)).toBe(hash);
+  });
+
+  it('a draft save needs the new revision after an options change (every child mutation raises the revision)', async () => {
+    const p = await mkProvider({ spec: optSpec() });
+    const { gigId, revision } = await draftWithOptions(p);
+    await replaceV(p, gigId, revision, [opt('A')]);
+    await expectError(save(p.accountId, gigId, revision), 'STALE_DRAFT');
+    expect((await save(p.accountId, gigId, revision + 1, { title: 'Next' })).draftVersion!.variants).toHaveLength(1);
+  });
+
+  it('the template decides: no variants without FIXED_WITH_VARIANTS, no add-ons without the explicit permission; emptying is always allowed; independent of each other', async () => {
+    const plain = await mkProvider();
+    const a = await draftWithOptions(plain);
+    const hash = await gigHash(plain.accountId);
+    const eV = await expectError(replaceV(plain, a.gigId, a.revision, [opt('A')]), 'VALIDATION_FAILED', 'DRAFT_INVALID');
+    expect(issueKeys(eV)).toEqual(['variants:OPTIONS_NOT_PERMITTED']);
+    const eA = await expectError(replaceA(plain, a.gigId, a.revision, [opt('A')]), 'VALIDATION_FAILED', 'DRAFT_INVALID');
+    expect(issueKeys(eA)).toEqual(['addOns:OPTIONS_NOT_PERMITTED']);
+    expect(await gigHash(plain.accountId)).toBe(hash);
+    expect((await replaceV(plain, a.gigId, a.revision, [])).draftVersion!.revision).toBe(a.revision);
+    const variantsOnly = await mkProvider({ spec: optSpec({ pricing: { fixed: true, variants: true } }) });
+    const b = await draftWithOptions(variantsOnly);
+    expect((await replaceV(variantsOnly, b.gigId, b.revision, [opt('A')])).draftVersion!.variants).toHaveLength(1);
+    expect(issueKeys(await expectError(replaceA(variantsOnly, b.gigId, b.revision + 1, [opt('A')]), 'VALIDATION_FAILED'))).toEqual([
+      'addOns:OPTIONS_NOT_PERMITTED',
+    ]);
+    const addOnsOnly = await mkProvider({ spec: optSpec({ pricing: { fixed: true, addOns: true } }) });
+    const c = await draftWithOptions(addOnsOnly);
+    expect((await replaceA(addOnsOnly, c.gigId, c.revision, [opt('A')])).draftVersion!.addOns).toHaveLength(1);
+    expect(issueKeys(await expectError(replaceV(addOnsOnly, c.gigId, c.revision + 1, [opt('A')]), 'VALIDATION_FAILED'))).toEqual([
+      'variants:OPTIONS_NOT_PERMITTED',
+    ]);
+    const dto = (await svc.getGig(addOnsOnly.accountId, c.gigId)).draftVersion!;
+    expect(dto.constraints.variants.permitted).toBe(false);
+    expect(dto.constraints.addOns.permitted).toBe(true);
+  });
+
+  it('the database backstop answers when the template port lies: VALIDATION_FAILED with the guard rule, nothing written, the revision unchanged', async () => {
+    const p = await mkProvider();
+    const { gigId, revision } = await draftWithOptions(p);
+    templates.overrides.set(p.tpl.code, (s) => ({ ...s, addOnsAllowed: true, pricing: { fixed: true, fixedWithVariants: true } }));
+    const hash = await gigHash(p.accountId);
+    const eA = await expectError(replaceA(p, gigId, revision, [opt('A')]), 'VALIDATION_FAILED', 'ADD_ONS_NOT_PERMITTED');
+    expect(issueKeys(eA)).toEqual(['addOns:OPTIONS_NOT_PERMITTED']);
+    const eV = await expectError(replaceV(p, gigId, revision, [opt('A')]), 'VALIDATION_FAILED', 'VARIANTS_NOT_PERMITTED');
+    expect(issueKeys(eV)).toEqual(['variants:OPTIONS_NOT_PERMITTED']);
+    expect(await gigHash(p.accountId)).toBe(hash);
+    expect(surface(eA)).not.toMatch(/provider_rule|gig_version|violates/);
+  });
+
+  it('limits come from configuration: count, name length and description length are enforced, zero is a valid maximum, and every problem is reported at once', async () => {
+    const p = await mkProvider({ spec: optSpec() });
+    const { gigId, revision } = await draftWithOptions(p);
+    policyProvider.optionsValue = { variantMaxCount: 2, addOnMaxCount: 0, nameMaxLength: 5, descriptionMaxLength: 8 };
+    const hash = await gigHash(p.accountId);
+    const e = await expectError(
+      replaceV(p, gigId, revision, [opt('toolong'), opt('ok', { description: 'x'.repeat(9) }), opt('third')]),
+      'VALIDATION_FAILED',
+      'DRAFT_INVALID',
+    );
+    expect(issueKeys(e).sort()).toEqual(['variants:OPTIONS_COUNT_EXCEEDED', 'variants:OPTION_DESCRIPTION_TOO_LONG', 'variants:OPTION_NAME_TOO_LONG']);
+    expect(issueKeys(await expectError(replaceA(p, gigId, revision, [opt('a')]), 'VALIDATION_FAILED'))).toEqual(['addOns:OPTIONS_COUNT_EXCEEDED']);
+    expect(await gigHash(p.accountId)).toBe(hash);
+    expect((await replaceV(p, gigId, revision, [opt('😀😀😀😀😀'), opt('ok')])).draftVersion!.variants).toHaveLength(2);
+  });
+
+  it('text rules: names are single-line plain text, markup and control characters are refused, duplicate names (NFC, case-insensitive) are refused, unknown and repeated keys are refused', async () => {
+    const p = await mkProvider({ spec: optSpec() });
+    const { gigId, revision } = await draftWithOptions(p);
+    const reasons = async (items: unknown[]) => issueKeys(await expectError(replaceV(p, gigId, revision, items), 'VALIDATION_FAILED')).sort();
+    expect(await reasons([opt('<b>x</b>')])).toEqual(['variants:HTML_NOT_ALLOWED']);
+    expect(await reasons([opt('a\u0000b')])).toEqual(['variants:FORBIDDEN_CHARACTER']);
+    expect(await reasons([opt('   ')])).toEqual(['variants:OPTION_NAME_REQUIRED']);
+    expect(await reasons([opt('Wax'), opt(' wAx ')])).toEqual(['variants:OPTION_NAME_DUPLICATE']);
+    expect(await reasons([opt('Café'), opt('CAFÉ')])).toEqual(['variants:OPTION_NAME_DUPLICATE']);
+    expect(await reasons([{ ...opt('A'), key: 'opt_unknownkey1' }])).toEqual(['variants:OPTION_KEY_INVALID']);
+    expect(await reasons([opt('A', { description: '<script>' })])).toEqual(['variants:HTML_NOT_ALLOWED']);
+    const stored = (await replaceV(p, gigId, revision, [opt('  Deep \n clean  ', { description: '  d1\r\nd2  ' })])).draftVersion!.variants[0]!;
+    expect(stored).toMatchObject({ name: 'Deep clean', description: 'd1\nd2' });
+    // a key of the add-ons list is unknown to the variants list
+    const addOnKey = (await replaceA(p, gigId, revision + 1, [opt('Extra')])).draftVersion!.addOns[0]!.key;
+    expect(issueKeys(await expectError(replaceV(p, gigId, revision + 2, [{ ...opt('Extra'), key: addOnKey }]), 'VALIDATION_FAILED'))).toEqual([
+      'variants:OPTION_KEY_INVALID',
+    ]);
+  });
+
+  it("another Gig's keys are unknown: a key can never reach into somebody else's draft", async () => {
+    const p = await mkProvider({ spec: optSpec() });
+    const mine = await draftWithOptions(p);
+    const other = await draftWithOptions(p);
+    const theirKey = (await replaceV(p, other.gigId, other.revision, [opt('Theirs')])).draftVersion!.variants[0]!.key;
+    const hash = await gigHash(p.accountId);
+    const e = await expectError(replaceV(p, mine.gigId, mine.revision, [{ ...opt('Theirs'), key: theirKey }]), 'VALIDATION_FAILED');
+    expect(issueKeys(e)).toEqual(['variants:OPTION_KEY_INVALID']);
+    expect(await gigHash(p.accountId)).toBe(hash);
+  });
+
+  it('IDOR: another provider gets GIG_NOT_FOUND (identical to an unknown Gig), cannot read or change the children, and nothing is written', async () => {
+    const p = await mkProvider({ spec: optSpec() });
+    const { gigId, revision } = await draftWithOptions(p);
+    await replaceV(p, gigId, revision, [opt('Mine')]);
+    const intruder = await mkNeighbour(p);
+    const hash = await gigHash(p.accountId);
+    for (const call of [
+      (id: string) => svc.replaceVariants(intruder, id, { expectedRevision: revision + 1, variants: [opt('Hijack')] }),
+      (id: string) => svc.replaceAddOns(intruder, id, { expectedRevision: revision + 1, addOns: [] }),
+    ]) {
+      const theirs = await err(call(gigId));
+      const unknown = await err(call(randomUUID()));
+      expect(theirs!.code).toBe('GIG_NOT_FOUND');
+      expect(surface(theirs!)).toBe(surface(unknown!));
+    }
+    expect(await gigHash(p.accountId)).toBe(hash);
+  });
+
+  it('wrong state: no draft is NO_DRAFT, a retired Gig is GIG_RETIRED, an inactive account is refused; nothing is written', async () => {
+    const p = await mkProvider({ spec: optSpec() });
+    const g = await published(p);
+    await expectError(replaceV(p, g, 2, [opt('A')]), 'NO_DRAFT');
+    const draft = await svc.createNextDraft(p.accountId, g, {});
+    await svc.retire(p.accountId, g, {});
+    await expectError(replaceV(p, g, draft.draftVersion!.revision, [opt('A')]), 'GIG_RETIRED');
+    const q2 = await draftWithOptions(p);
+    await setAccountStatus(p.accountId, 'SUSPENDED');
+    const e = await err(replaceV(p, q2.gigId, q2.revision, [opt('A')]));
+    expect(e).toBeInstanceOf(GigError);
+    expect((await variantRows(q2.versionId)).length).toBe(0);
+  });
+
+  it('publish: the variants and add-ons count in the audit row and the event; the published version is frozen (the database refuses changes and deletes)', async () => {
+    const p = await mkProvider({ spec: optSpec() });
+    const { gigId, revision, versionId } = await draftWithOptions(p);
+    const a = (await replaceV(p, gigId, revision, [opt('A'), opt('B')])).draftVersion!;
+    const b = (await replaceA(p, gigId, a.revision, [opt('X')])).draftVersion!;
+    expect(b.publishable).toBe(true);
+    await svc.publish(p.accountId, gigId, { expectedRevision: b.revision });
+    const ev = (await gigEvents(gigId, GIG_EVENTS.gigVersionPublished))[0]!;
+    expect(ev.payload_json).toMatchObject({ variantCount: 2, addOnCount: 1, mediaCount: 0 });
+    const audit = (await gigAudits(gigId)).find((x) => x.action === 'GIG_VERSION_PUBLISHED')!;
+    expect(audit.changes).toMatchObject({ variantCount: 2, addOnCount: 1, mediaCount: 0 });
+    const cur = (await svc.getGig(p.accountId, gigId)).currentVersion!;
+    expect(cur.variants.map((x) => x.name)).toEqual(['A', 'B']);
+    expect(cur.children).toMatchObject({ variantCount: 2, addOnCount: 1 });
+    for (const stmt of [
+      `UPDATE provider.gig_version_variants SET name = 'Hacked' WHERE gig_version_id = $1`,
+      `DELETE FROM provider.gig_version_variants WHERE gig_version_id = $1`,
+      `UPDATE provider.gig_version_add_ons SET price_delta_minor = 1 WHERE gig_version_id = $1`,
+      `DELETE FROM provider.gig_version_add_ons WHERE gig_version_id = $1`,
+      `INSERT INTO provider.gig_version_add_ons (gig_version_id, item_key, name, price_delta_minor, duration_delta_minutes, display_order) VALUES ($1, 'opt_late', 'Late', 1, 0, 9)`,
+    ]) {
+      const e = (await rejection(q(stmt, [versionId]))) as { detail?: string } | undefined;
+      // options are never updated (replaced as a whole set), so an UPDATE is refused outright; a delete or an insert on a frozen version is VERSION_FROZEN
+      expect(e?.detail, stmt).toContain(stmt.startsWith('UPDATE') ? 'provider_rule:NO_UPDATE' : 'provider_rule:VERSION_FROZEN');
+    }
+    expect((await variantRows(versionId)).map((r) => r.name)).toEqual(['A', 'B']);
+    await expectError(replaceV(p, gigId, 3, [opt('Late')]), 'NO_DRAFT');
+  });
+
+  it('publish re-validates the stored options: a permission the template port no longer gives, or limits that shrank, block with options issues (and the draft DTO says so)', async () => {
+    const p = await mkProvider({ spec: optSpec() });
+    const { gigId, revision } = await draftWithOptions(p);
+    const d = (await replaceA(p, gigId, revision, [opt('Alpha'), opt('Beta')])).draftVersion!;
+    expect(d.publishable).toBe(true);
+    templates.overrides.set(p.tpl.code, (s) => ({ ...s, addOnsAllowed: false }));
+    const noPerm = (await svc.getGig(p.accountId, gigId)).draftVersion!;
+    expect(noPerm.publishable).toBe(false);
+    expect(noPerm.children.addOnsValid).toBe(false);
+    expect(issueKeys(await expectError(svc.publish(p.accountId, gigId, { expectedRevision: d.revision }), 'PUBLISH_BLOCKED'))).toEqual([
+      'addOns:OPTIONS_NOT_PERMITTED',
+    ]);
+    templates.overrides.clear();
+    policyProvider.optionsValue = { ...DEFAULT_GIG_OPTIONS_POLICY, addOnMaxCount: 1, nameMaxLength: 4 };
+    const e = await expectError(svc.publish(p.accountId, gigId, { expectedRevision: d.revision }), 'PUBLISH_BLOCKED');
+    expect(issueKeys(e).sort()).toEqual(['addOns:OPTIONS_COUNT_EXCEEDED', 'addOns:OPTION_NAME_TOO_LONG']);
+    expect(
+      issuesOf(e)
+        .filter((i) => i.reason === 'OPTION_NAME_TOO_LONG')
+        .map((i) => i.itemKey),
+    ).toEqual([d.addOns[0]!.key]);
+    expect(await verStatuses(gigId)).toEqual([[1, 'DRAFT']]);
+    // fewer add-ons within the new limits make it publishable again
+    policyProvider.optionsValue = { ...DEFAULT_GIG_OPTIONS_POLICY, addOnMaxCount: 1 };
+    const fewer = (await replaceA(p, gigId, d.revision, [opt('Al')])).draftVersion!;
+    expect(fewer.publishable).toBe(true);
+    await svc.publish(p.accountId, gigId, { expectedRevision: fewer.revision });
+  });
+
+  it('next draft: the variants and add-ons are copied with the same keys and order, version 1 is never touched by edits of version 2, the audit counts the copy', async () => {
+    const p = await mkProvider({ spec: optSpec() });
+    const { gigId, revision, versionId } = await draftWithOptions(p);
+    const a = (await replaceV(p, gigId, revision, [opt('A'), opt('B', { priceDeltaMinor: 900 })])).draftVersion!;
+    const b = (await replaceA(p, gigId, a.revision, [opt('X')])).draftVersion!;
+    await svc.publish(p.accountId, gigId, { expectedRevision: b.revision });
+    const v1Variants = await variantRows(versionId);
+    const v1AddOns = await addOnRows(versionId);
+    const hashV1 = JSON.stringify([v1Variants, v1AddOns]);
+    const d2 = (await svc.createNextDraft(p.accountId, gigId, {})).draftVersion!;
+    expect(d2.variants).toEqual(b.variants);
+    expect(d2.addOns).toEqual(b.addOns);
+    expect(d2.children).toMatchObject({ variantCount: 2, addOnCount: 1 });
+    const v2Id = (await verRows(gigId))[1]!.gig_version_id;
+    expect(JSON.stringify([await variantRows(v2Id), await addOnRows(v2Id)])).toBe(hashV1);
+    const audit = (await gigAudits(gigId)).filter((x) => x.action === 'GIG_DRAFT_CREATED').at(-1)!;
+    expect(audit.changes).toMatchObject({ variantCount: 2, addOnCount: 1, mediaCount: 0 });
+    // edits of version 2 (rename, remove, add) never touch version 1
+    const keepKey = d2.variants[0]!.key;
+    const e2 = (await replaceV(p, gigId, d2.revision, [{ ...opt('A prime'), key: keepKey }, opt('C')])).draftVersion!;
+    expect(e2.variants[0]).toMatchObject({ key: keepKey, name: 'A prime' });
+    await replaceA(p, gigId, e2.revision, []);
+    expect(JSON.stringify([await variantRows(versionId), await addOnRows(versionId)])).toBe(hashV1);
+    const cur = (await svc.getGig(p.accountId, gigId)).currentVersion!;
+    expect(cur.variants.map((x) => x.name)).toEqual(['A', 'B']);
+    expect(cur.addOns.map((x) => x.name)).toEqual(['X']);
+    // publishing version 2 supersedes version 1 with its children intact and readable
+    const rev2 = (await draftOf(p, gigId)).revision;
+    await svc.publish(p.accountId, gigId, { expectedRevision: rev2 });
+    const v1 = await svc.getGigVersion(p.accountId, gigId, 1);
+    expect(v1.status).toBe('SUPERSEDED');
+    expect(v1.variants.map((x) => x.name)).toEqual(['A', 'B']);
+    expect(v1.addOns.map((x) => x.name)).toEqual(['X']);
+  });
+
+  it('a retired Gig keeps its children readable and frozen', async () => {
+    const p = await mkProvider({ spec: optSpec() });
+    const { gigId, revision, versionId } = await draftWithOptions(p);
+    await replaceV(p, gigId, revision, [opt('A')]);
+    await svc.retire(p.accountId, gigId, {});
+    const v = await svc.getGigVersion(p.accountId, gigId, 1);
+    expect(v.status).toBe('RETIRED');
+    expect(v.variants.map((x) => x.name)).toEqual(['A']);
+    expect(((await rejection(q(`DELETE FROM provider.gig_version_variants WHERE gig_version_id = $1`, [versionId]))) as { detail?: string }).detail).toContain(
+      'VERSION_FROZEN',
+    );
+  });
+
+  it('MEDIA fields are satisfied by photos, never by a value: a value is FIELD_MEDIA_NOT_A_VALUE, a required MEDIA field is not FIELD_REQUIRED and not FIELD_TYPE_NOT_SUPPORTED', async () => {
+    const p = await mkProvider({ spec: photoSpec() });
+    const { gigId, revision } = await complete(p);
+    const e = await expectError(
+      svc.updateDraft(p.accountId, gigId, { expectedRevision: revision, ...editable({ fieldValues: [{ fieldKey: 'gallery', value: 'x' }] }) }),
+      'VALIDATION_FAILED',
+    );
+    expect(issueKeys(e)).toEqual(['field:gallery:FIELD_MEDIA_NOT_A_VALUE']);
+    const d = (await svc.getGig(p.accountId, gigId)).draftVersion!;
+    expect(d.issues.map((i) => `${i.target}:${i.fieldKey ?? ''}:${i.reason}`)).toEqual(['media:gallery:MEDIA_REQUIRED']);
+    expect(d.fields.find((f) => f.fieldKey === 'gallery')).toMatchObject({
+      supported: true,
+      required: true,
+      fixed: false,
+      minItems: 1,
+      maxItems: 3,
+      fieldType: 'MEDIA',
+    });
+  });
+});
+
+describe('CAT-004: photos in the version (read model, publish, next draft, menu)', () => {
+  it('a required MEDIA field blocks the publish until enough READY photos are attached; an unfinished upload blocks as MEDIA_NOT_READY', async () => {
+    const p = await mkProvider({ spec: photoSpec(2, 3) });
+    const { gigId, revision } = await complete(p);
+    const e = await expectError(svc.publish(p.accountId, gigId, { expectedRevision: revision }), 'PUBLISH_BLOCKED');
+    expect(issueKeys(e)).toEqual(['media:gallery:MEDIA_REQUIRED']);
+    await attachPhoto(p, gigId, 'gallery', await mkAsset(p.accountId), 'Front view');
+    const one1 = await draftOf(p, gigId);
+    expect(one1.media).toHaveLength(1);
+    expect(one1.media[0]).toMatchObject({
+      fieldKey: 'gallery',
+      displayOrder: 1,
+      status: 'READY',
+      mimeType: 'image/png',
+      sizeBytes: 1000,
+      width: 640,
+      height: 480,
+      altText: 'Front view',
+    });
+    expect(Object.keys(one1.media[0]!).sort()).toEqual([
+      'altText',
+      'displayOrder',
+      'fieldKey',
+      'height',
+      'mediaId',
+      'mimeType',
+      'sizeBytes',
+      'status',
+      'width',
+    ]);
+    expect(one1.children).toMatchObject({ mediaCount: 1, mediaRequirementSatisfied: false });
+    expect(one1.publishable).toBe(false);
+    await attachPhoto(p, gigId, 'gallery', await mkAsset(p.accountId, false));
+    const pending = await draftOf(p, gigId);
+    expect(pending.media.map((m) => m.status)).toEqual(['READY', 'UPLOADING']);
+    expect(pending.media[1]).toMatchObject({ width: null, height: null });
+    expect(pending.issues.map((i) => `${i.target}:${i.reason}`).sort()).toEqual(['media:MEDIA_NOT_READY', 'media:MEDIA_REQUIRED']);
+    const blocked = await expectError(svc.publish(p.accountId, gigId, { expectedRevision: pending.revision }), 'PUBLISH_BLOCKED');
+    expect(issuesOf(blocked).find((i) => i.reason === 'MEDIA_NOT_READY')!.itemKey).toBe(pending.media[1]!.mediaId);
+    expect(await verStatuses(gigId)).toEqual([[1, 'DRAFT']]);
+  });
+
+  it('publish with the required photos: the event and the audit row count them; the next draft RE-ATTACHES the same assets (order, field, alt text), version 1 is untouched, unfinished uploads are not copied', async () => {
+    const p = await mkProvider({ spec: photoSpec(2, 3) });
+    const { gigId, revision } = await complete(p);
+    const assetA = await mkAsset(p.accountId);
+    const assetB = await mkAsset(p.accountId);
+    await attachPhoto(p, gigId, 'gallery', assetA, 'Front');
+    await attachPhoto(p, gigId, 'gallery', assetB);
+    const d = await draftOf(p, gigId);
+    expect(d.publishable).toBe(true);
+    expect(d.revision).toBe(revision + 2);
+    await svc.publish(p.accountId, gigId, { expectedRevision: d.revision });
+    expect((await gigEvents(gigId, GIG_EVENTS.gigVersionPublished))[0]!.payload_json).toMatchObject({ mediaCount: 2, variantCount: 0, addOnCount: 0 });
+    expect((await gigAudits(gigId)).find((x) => x.action === 'GIG_VERSION_PUBLISHED')!.changes).toMatchObject({ mediaCount: 2 });
+    const v1Id = (await verRows(gigId))[0]!.gig_version_id;
+    const v1Media = await mediaRowsDb(v1Id);
+    const d2 = (await svc.createNextDraft(p.accountId, gigId, {})).draftVersion!;
+    const v2Id = (await verRows(gigId))[1]!.gig_version_id;
+    const v2Media = await mediaRowsDb(v2Id);
+    expect(v2Media.map((r) => [r.media_asset_id, r.display_order, r.alt_text])).toEqual(v1Media.map((r) => [r.media_asset_id, r.display_order, r.alt_text]));
+    expect(v2Media.map((r) => r.gig_version_media_id)).not.toEqual(v1Media.map((r) => r.gig_version_media_id));
+    expect(d2.media.map((m) => [m.displayOrder, m.altText, m.status])).toEqual([
+      [1, 'Front', 'READY'],
+      [2, null, 'READY'],
+    ]);
+    expect(d2.children).toMatchObject({ mediaCount: 2, mediaRequirementSatisfied: true });
+    expect((await gigAudits(gigId)).filter((x) => x.action === 'GIG_DRAFT_CREATED').at(-1)!.changes).toMatchObject({ mediaCount: 2 });
+    // the same media ids are NOT shared: each version has its own attachments, both point at the same bytes
+    expect((await svc.getGig(p.accountId, gigId)).currentVersion!.media.map((m) => m.mediaId)).toEqual(v1Media.map((r) => r.gig_version_media_id));
+    // removing a photo from the draft leaves version 1 and the asset alone
+    const before = await svc.readDraft(p.accountId, gigId);
+    await svc.mutateDraft(p.accountId, gigId, before.draft.revision, async (ctx) => {
+      await sql`DELETE FROM provider.gig_version_media WHERE gig_version_id = ${ctx.draft.gigVersionId}::uuid AND media_asset_id = ${assetB}::uuid`.execute(
+        ctx.trx,
+      );
+      return { changed: true, value: undefined };
+    });
+    expect((await mediaRowsDb(v1Id)).length).toBe(2);
+    expect((await mediaRowsDb(v2Id)).length).toBe(1);
+    expect((await one<{ status: string }>('SELECT status FROM provider.media_assets WHERE media_asset_id = $1', [assetB])).status).toBe('READY');
+    const nowDraft = await draftOf(p, gigId);
+    expect(nowDraft.publishable).toBe(false);
+    expect(nowDraft.issues.map((i) => i.reason)).toEqual(['MEDIA_REQUIRED']);
+  });
+
+  it('an unfinished upload of the published version is never copied into the next draft', async () => {
+    // a published version cannot hold an unfinished upload (the guard), so the unfinished one lives on the draft only
+    const p = await mkProvider({ spec: photoSpec(1, 3, 'PROVIDER_REQUIRED') });
+    const { gigId } = await complete(p);
+    await attachPhoto(p, gigId, 'gallery', await mkAsset(p.accountId));
+    const rev = (await draftOf(p, gigId)).revision;
+    await svc.publish(p.accountId, gigId, { expectedRevision: rev });
+    const d2 = (await svc.createNextDraft(p.accountId, gigId, {})).draftVersion!;
+    await attachPhoto(p, gigId, 'gallery', await mkAsset(p.accountId, false));
+    const now = await draftOf(p, gigId);
+    expect(now.media.map((m) => m.status)).toEqual(['READY', 'UPLOADING']);
+    expect(now.revision).toBe(d2.revision + 1);
+  });
+
+  it('the GigMenu carries the children facts of the current and the draft version, with the same statements for one Gig and for seven', async () => {
+    const p = await mkProvider({ spec: photoSpec(1, 3) });
+    const make = async (photos: number, variants: number) => {
+      const { gigId } = await complete(p);
+      for (let i = 0; i < photos; i++) await attachPhoto(p, gigId, 'gallery', await mkAsset(p.accountId));
+      if (variants > 0)
+        await replaceV(
+          p,
+          gigId,
+          (await draftOf(p, gigId)).revision,
+          Array.from({ length: variants }, (_, i) => opt(`V${i}`)),
+        );
+      return gigId;
+    };
+    const g1 = await make(1, 2);
+    await svc.publish(p.accountId, g1, { expectedRevision: (await draftOf(p, g1)).revision });
+    const draft = (await svc.createNextDraft(p.accountId, g1, {})).draftVersion!;
+    await replaceA(p, g1, draft.revision, [opt('Extra')]);
+    const small = await counting(() => svc.listProviderGigs(p.accountId));
+    const item = small.result.gigs[0]!;
+    expect(item.currentVersion!.children).toEqual({
+      variantCount: 2,
+      addOnCount: 0,
+      mediaCount: 1,
+      variantsValid: true,
+      addOnsValid: true,
+      mediaRequirementSatisfied: true,
+    });
+    expect(item.draftVersion!.children).toEqual({
+      variantCount: 2,
+      addOnCount: 1,
+      mediaCount: 1,
+      variantsValid: true,
+      addOnsValid: true,
+      mediaRequirementSatisfied: true,
+    });
+    for (let i = 0; i < 6; i++) await make(i % 3, i % 2);
+    const big = await counting(() => svc.listProviderGigs(p.accountId));
+    expect(big.result.gigs).toHaveLength(7);
+    expect(big.svc.length).toBe(small.svc.length);
+    expect(big.port.length).toBe(small.port.length);
+    const noPhoto = big.result.gigs.find((g) => g.draftVersion && g.draftVersion.children.mediaCount === 0 && g.currentVersion === null)!;
+    expect(noPhoto.draftVersion!.children.mediaRequirementSatisfied).toBe(false);
+    // no URL, key or hash anywhere in the menu
+    expect(JSON.stringify(big.result)).not.toMatch(/https?:|object_key|sha256|provider\/gig-media/);
+    // and the menu never calls the template port
+    expect(portCalls.filter((c) => c.port.startsWith('templates.') && c.inTransaction)).toEqual([]);
+  });
+});
+
+/** A store that can be told to fail deletions. */
+class RetireStore extends MemoryObjectStore {
+  failDelete = false;
+  override async delete(key: string): Promise<void> {
+    if (this.failDelete) throw new Error('store down');
+    return super.delete(key);
+  }
+}
+describe('CAT-004: retire closes the unfinished photo uploads', () => {
+  const withStore = (store?: RetireStore) =>
+    new ProviderGigService({
+      database: iso.database,
+      accounts,
+      templates,
+      policy: policyProvider,
+      ...(store ? { store, scanner: DisabledGigMediaScanner } : {}),
+    });
+  /** An authorized, uploaded but not finalized photo; returns the asset row and puts bytes at the upload key (the browser's PUT). */
+  async function pendingPhoto(service: ProviderGigService, store: RetireStore, p: Provider, gigId: string, revision: number) {
+    await service.requestMediaUpload(p.accountId, gigId, {
+      expectedRevision: revision,
+      fieldKey: 'gallery',
+      mimeType: 'image/png',
+      sizeBytes: 5000,
+      altText: null,
+    });
+    const asset = await one<{ media_asset_id: string; object_key: string }>(
+      'SELECT media_asset_id, object_key FROM provider.media_assets WHERE account_id = $1 AND status = $2',
+      [p.accountId, 'UPLOAD_PENDING'],
+    );
+    store.put(`${asset.object_key}.upload`, Buffer.alloc(5000, 1), 'image/png');
+    return asset;
+  }
+
+  it('the pending attachment is removed, its asset ABANDONED, its objects deleted after the commit, the audit holds the reason code only; a READY photo is kept', async () => {
+    const store = new RetireStore();
+    const service = withStore(store);
+    const p = await mkProvider({ spec: photoSpec(1, 3, 'PROVIDER_CONFIGURABLE') });
+    const { gigId, revision } = await complete(p);
+    await attachPhoto(p, gigId, 'gallery', await mkAsset(p.accountId));
+    const pending = await pendingPhoto(service, store, p, gigId, revision + 1);
+    expect(await store.head(`${pending.object_key}.upload`)).not.toBeNull();
+    const versionId = (await verRows(gigId))[0]!.gig_version_id;
+    expect(await mediaRowsDb(versionId)).toHaveLength(2);
+    const d = await runWithCorrelation('cid-retire-media', () => service.retire(p.accountId, gigId, {}));
+    expect(d.gig.status).toBe('RETIRED');
+    expect((await mediaRowsDb(versionId)).length).toBe(1);
+    expect((await one<{ status: string }>('SELECT status FROM provider.media_assets WHERE media_asset_id = $1', [pending.media_asset_id])).status).toBe(
+      'ABANDONED',
+    );
+    expect(await store.head(`${pending.object_key}.upload`)).toBeNull();
+    expect(await store.head(pending.object_key)).toBeNull();
+    const refused = (await gigAudits(gigId)).filter((a) => a.action === 'GIG_MEDIA_UPLOAD_REFUSED');
+    expect(refused).toHaveLength(1);
+    expect(refused[0]).toMatchObject({ correlation_id: 'cid-retire-media', gig_version_id: versionId });
+    expect(refused[0]!.changes).toMatchObject({ reason: 'GIG_RETIRED' });
+    expect(JSON.stringify(refused)).not.toContain('provider/gig-media');
+    expect((await gigAudits(gigId)).at(-1)!.action).toBe('GIG_RETIRED');
+    // the READY photo of the retired draft stays attached (frozen with the version)
+    expect(d.versions.map((v) => v.status)).toEqual(['RETIRED']);
+  });
+
+  it('a store outage after the commit never fails the retire; the asset is ABANDONED and the objects are left for the clean-up', async () => {
+    const store = new RetireStore();
+    const service = withStore(store);
+    const p = await mkProvider({ spec: photoSpec(1, 3, 'PROVIDER_CONFIGURABLE') });
+    const { gigId, revision } = await complete(p);
+    const pending = await pendingPhoto(service, store, p, gigId, revision);
+    store.failDelete = true;
+    expect((await service.retire(p.accountId, gigId, {})).gig.status).toBe('RETIRED');
+    expect((await one<{ status: string }>('SELECT status FROM provider.media_assets WHERE media_asset_id = $1', [pending.media_asset_id])).status).toBe(
+      'ABANDONED',
+    );
+    expect(await store.head(`${pending.object_key}.upload`)).not.toBeNull();
+    // nothing marks the objects as removed, so the clean-up sweep (media service, objects_removed_at IS NULL) finds them later
+    expect(
+      (
+        await one<{ n: number }>('SELECT count(*)::int AS n FROM provider.media_assets WHERE media_asset_id = $1 AND objects_removed_at IS NULL', [
+          pending.media_asset_id,
+        ])
+      ).n,
+    ).toBe(1);
+  });
+
+  it('without a store the retire still works (media operations are UNAVAILABLE, the pending asset is ABANDONED)', async () => {
+    const store = new RetireStore();
+    const p = await mkProvider({ spec: photoSpec(1, 3, 'PROVIDER_CONFIGURABLE') });
+    const { gigId, revision } = await complete(p);
+    const pending = await pendingPhoto(withStore(store), store, p, gigId, revision);
+    expect((await svc.retire(p.accountId, gigId, {})).gig.status).toBe('RETIRED');
+    expect((await one<{ status: string }>('SELECT status FROM provider.media_assets WHERE media_asset_id = $1', [pending.media_asset_id])).status).toBe(
+      'ABANDONED',
+    );
+  });
+
+  it('a Gig without a draft, or whose draft has no pending photo, retires as before', async () => {
+    const p = await mkProvider({ spec: photoSpec(1, 3, 'PROVIDER_CONFIGURABLE') });
+    const g = await published(p);
+    expect((await svc.retire(p.accountId, g, {})).gig.status).toBe('RETIRED');
+    expect((await gigAudits(g)).filter((a) => a.action === 'GIG_MEDIA_UPLOAD_REFUSED')).toEqual([]);
+    expect((await svc.retire(p.accountId, g, {})).gig.status).toBe('RETIRED');
+  });
+});
+
+describe('CAT-004: the GigMenu counts the options in SQL', () => {
+  it('the menu statements aggregate the options and never select their names or descriptions', async () => {
+    const p = await mkProvider({ spec: optSpec() });
+    const { gigId, revision } = await draftWithOptions(p);
+    await replaceV(p, gigId, revision, [opt('Menu canary variant', { description: 'menu canary description' })]);
+    const r = await counting(() => svc.listProviderGigs(p.accountId));
+    expect(r.result.gigs[0]!.draftVersion!.children).toMatchObject({ variantCount: 1, variantsValid: true });
+    const optionStatements = r.svc.filter((x) => /gig_version_variants|gig_version_add_ons/.test(x));
+    expect(optionStatements).toHaveLength(1);
+    expect(optionStatements[0]).toMatch(/count\(\*\)/);
+    // only aggregates over the text columns, never the columns themselves
+    expect(optionStatements[0]!.replace(/max\(char_length\(\w+\)\)/g, '')).not.toMatch(/\b(name|description|item_key)\b/);
+    expect(JSON.stringify(r.result)).not.toContain('canary');
+  });
+  it('limits that shrank make the menu say invalid, from the aggregates', async () => {
+    const p = await mkProvider({ spec: optSpec() });
+    const { gigId, revision } = await draftWithOptions(p);
+    await replaceA(p, gigId, revision, [opt('Alpha'), opt('Beta')]);
+    policyProvider.optionsValue = { ...DEFAULT_GIG_OPTIONS_POLICY, nameMaxLength: 4 };
+    expect((await svc.listProviderGigs(p.accountId)).gigs[0]!.draftVersion!.children).toMatchObject({ addOnCount: 2, addOnsValid: false, variantsValid: true });
+    policyProvider.optionsValue = { ...DEFAULT_GIG_OPTIONS_POLICY, addOnMaxCount: 1 };
+    expect((await svc.listProviderGigs(p.accountId)).gigs[0]!.draftVersion!.children.addOnsValid).toBe(false);
+  });
+});
+
+describe('CAT-004: concurrency and fail-closed policies', () => {
+  it("two simultaneous variant replacements at the same revision: exactly one wins (STALE_DRAFT for the other), the revision grows by one, the rows are the winner's", async () => {
+    const p = await mkProvider({ spec: optSpec() });
+    const { gigId, revision, versionId } = await draftWithOptions(p);
+    const rs = await Promise.allSettled(Array.from({ length: 5 }, (_, i) => replaceV(p, gigId, revision, [opt(`Set ${i} a`), opt(`Set ${i} b`)])));
+    expect(rs.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    for (const r of rs.filter((x) => x.status === 'rejected')) expect(((r as PromiseRejectedResult).reason as GigError).code).toBe('STALE_DRAFT');
+    expect((await verRows(gigId))[0]!.revision).toBe(revision + 1);
+    const rows = await variantRows(versionId);
+    expect(rows).toHaveLength(2);
+    expect(String(rows[0]!.name).replace(/ a$/, '')).toBe(String(rows[1]!.name).replace(/ b$/, ''));
+    expect((await gigAudits(gigId)).filter((x) => x.action === 'GIG_VARIANTS_UPDATED')).toHaveLength(1);
+  });
+
+  it('a variant replacement racing an add-on replacement at the same revision: one wins, never both on one revision', async () => {
+    const p = await mkProvider({ spec: optSpec() });
+    const { gigId, revision } = await draftWithOptions(p);
+    const [v, a] = await Promise.allSettled([replaceV(p, gigId, revision, [opt('V')]), replaceA(p, gigId, revision, [opt('A')])]);
+    expect([v.status, a.status].filter((s) => s === 'fulfilled')).toHaveLength(1);
+    expect((await verRows(gigId))[0]!.revision).toBe(revision + 1);
+  });
+
+  it('replace racing publish: either the replacement wins and the publish is STALE_DRAFT, or the publish wins and the replacement finds no draft; the published children are never altered', async () => {
+    for (let round = 0; round < 4; round++) {
+      const p = await mkProvider({ spec: optSpec() });
+      const { gigId, revision, versionId } = await draftWithOptions(p);
+      const base = (await replaceV(p, gigId, revision, [opt('Base')])).draftVersion!;
+      const [pub, rep] = await Promise.allSettled([
+        svc.publish(p.accountId, gigId, { expectedRevision: base.revision }),
+        replaceV(p, gigId, base.revision, [opt('Late 1'), opt('Late 2')]),
+      ]);
+      const names = (await variantRows(versionId)).map((r) => r.name);
+      if (pub.status === 'fulfilled') {
+        expect(rep.status).toBe('rejected');
+        expect(['NO_DRAFT', 'STALE_DRAFT', 'CONFLICT']).toContain(((rep as PromiseRejectedResult).reason as GigError).code);
+        expect(names).toEqual(['Base']);
+        expect(await verStatuses(gigId)).toEqual([[1, 'PUBLISHED']]);
+      } else {
+        expect(((pub as PromiseRejectedResult).reason as GigError).code).toBe('STALE_DRAFT');
+        expect(rep.status).toBe('fulfilled');
+        expect(names).toEqual(['Late 1', 'Late 2']);
+        expect(await verStatuses(gigId)).toEqual([[1, 'DRAFT']]);
+      }
+    }
+  });
+
+  it('replace racing retire: the Gig ends RETIRED, the children are frozen from then on, nobody gets an untyped failure', async () => {
+    for (let round = 0; round < 4; round++) {
+      const p = await mkProvider({ spec: optSpec() });
+      const { gigId, revision, versionId } = await draftWithOptions(p);
+      const [rep, ret] = await Promise.allSettled([replaceV(p, gigId, revision, [opt('Racer')]), svc.retire(p.accountId, gigId, {})]);
+      expect(ret.status).toBe('fulfilled');
+      if (rep.status === 'rejected')
+        expect(['GIG_RETIRED', 'NO_DRAFT', 'STALE_DRAFT', 'CONFLICT']).toContain(((rep as PromiseRejectedResult).reason as GigError).code);
+      expect((await gigRows(p.accountId))[0]!.status).toBe('RETIRED');
+      expect(await verStatuses(gigId)).toEqual([[1, 'RETIRED']]);
+      const before = await variantRows(versionId);
+      const e = (await rejection(q(`DELETE FROM provider.gig_version_variants WHERE gig_version_id = $1`, [versionId]))) as { detail?: string } | undefined;
+      if (before.length > 0) expect(e?.detail).toContain('VERSION_FROZEN');
+    }
+  });
+
+  it('policy.options() failing closed: the replacement is UNAVAILABLE before any statement, nothing is written; reads of a Gig fail closed too', async () => {
+    const p = await mkProvider({ spec: optSpec() });
+    const { gigId, revision } = await draftWithOptions(p);
+    const hash = await gigHash(p.accountId);
+    const spy = vi
+      .spyOn(policyProvider, 'options')
+      .mockRejectedValue(new GigError('UNAVAILABLE', 'the Gig policy is not available', { reason: 'POLICY_INVALID' }));
+    try {
+      const before = svcStatements.length;
+      const e = await expectError(replaceV(p, gigId, revision, [opt('A')]), 'UNAVAILABLE', 'POLICY_INVALID');
+      expect(svcStatements.length).toBe(before);
+      expect(surface(e)).not.toContain('SECRET');
+      await expectError(svc.getGig(p.accountId, gigId), 'UNAVAILABLE', 'POLICY_INVALID');
+      await expectError(svc.listProviderGigs(p.accountId), 'UNAVAILABLE', 'POLICY_INVALID');
+      await expectError(svc.publish(p.accountId, gigId, { expectedRevision: revision }), 'UNAVAILABLE', 'POLICY_INVALID');
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await gigHash(p.accountId)).toBe(hash);
+  });
+
+  it('policy.media() failing closed: a view, the menu and the publish are UNAVAILABLE, nothing is published', async () => {
+    const p = await mkProvider({ spec: optSpec() });
+    const { gigId, revision } = await draftWithOptions(p);
+    const hash = await gigHash(p.accountId);
+    const spy = vi
+      .spyOn(policyProvider, 'media')
+      .mockRejectedValue(new GigError('UNAVAILABLE', 'the Gig policy is not available', { reason: 'POLICY_INVALID' }));
+    try {
+      await expectError(svc.getGig(p.accountId, gigId), 'UNAVAILABLE', 'POLICY_INVALID');
+      await expectError(svc.getGigVersion(p.accountId, gigId, 1), 'UNAVAILABLE', 'POLICY_INVALID');
+      await expectError(svc.listProviderGigs(p.accountId), 'UNAVAILABLE', 'POLICY_INVALID');
+      await expectError(svc.publish(p.accountId, gigId, { expectedRevision: revision }), 'UNAVAILABLE', 'POLICY_INVALID');
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await gigHash(p.accountId)).toBe(hash);
+  });
+
+  it('provider text of variants and add-ons never reaches an audit row, an event, a log line or an error', async () => {
+    const p = await mkProvider({ spec: optSpec() });
+    const { gigId, revision } = await draftWithOptions(p);
+    const canaryName = 'Quokka Canary Name';
+    const canaryDesc = 'quokka canary description';
+    const lines0 = logSink.lines.length;
+    const errors: string[] = [];
+    errors.push(surface((await err(replaceV(p, gigId, revision, [opt(canaryName, { description: canaryDesc, priceDeltaMinor: -1 })])))!));
+    errors.push(surface((await err(replaceV(p, gigId, revision, [opt(canaryName), opt(canaryName.toUpperCase())])))!));
+    errors.push(surface((await err(replaceA(p, gigId, revision, [{ ...opt(canaryName), key: 'opt_nope_nope' }])))!));
+    const a = (await replaceV(p, gigId, revision, [opt(canaryName, { description: canaryDesc })])).draftVersion!;
+    await replaceA(p, gigId, a.revision, [opt(canaryName, { description: canaryDesc })]);
+    await svc.publish(p.accountId, gigId, { expectedRevision: a.revision + 1 });
+    await svc.createNextDraft(p.accountId, gigId, {});
+    const everything = JSON.stringify([
+      await gigAudits(gigId),
+      await q("SELECT * FROM integration.outbox_events WHERE event_type LIKE 'bananagig.provider.gig-%'"),
+      logSink.lines.slice(lines0),
+      errors,
+    ]);
+    for (const c of [canaryName, canaryName.toLowerCase(), canaryDesc, 'Quokka', 'quokka']) expect(everything).not.toContain(c);
   });
 });

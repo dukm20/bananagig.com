@@ -9,17 +9,17 @@ Read and change the PLATFORM-OWNED taxonomy of what can be sold: categories (Aut
 - A feature needs the list of categories or service types of a market (onboarding, the GigMenu, discovery, search, admin), or must reference a service type from another table (a Gig).
 - Adding or retiring a category, a service type or a prohibited service, changing its availability or order in a market, or touching the `catalog` schema, its API, events or cache.
 - Referencing a CATEGORY scope from configuration, or keying a policy (verification, fees) by category.
-- A feature builds on a Gig Template: the provider Gig builder (CAT-003, built), template adoption, CAT-004 (variants, add-ons, media), the requirements checkpoints (TRUST-001, SV-09), template administration, or anything that must reference "the structure a Gig was built from".
+- A feature builds on a Gig Template: the provider Gig builder (CAT-003 and CAT-004, built), template adoption, the requirements checkpoints (TRUST-001, SV-09), template administration, or anything that must reference "the structure a Gig was built from".
 - Anything that is tempted to store a category or service name, a category list or a menu order in code, configuration or a Gig table.
 
 ## Canonical files
 
-- `db/migrations/0015_catalog.sql`, `db/migrations/0016_gig_templates.sql`, `docs/data/DATA_DICTIONARY.md`, `docs/data/NORMALIZATION_LOG.md`
+- `db/migrations/0015_catalog.sql`, `db/migrations/0016_gig_templates.sql`, `db/migrations/0021_gig_variants_addons_media.sql` (the `pricing_add_ons` column and its frozen-structure guard), `docs/data/DATA_DICTIONARY.md`, `docs/data/NORMALIZATION_LOG.md`
 - `packages/contracts/src/catalog.ts`, `packages/contracts/src/gig-template.ts`
 - `packages/catalog/src/service.ts`, `gig-template-service.ts`, `gig-template-types.ts`, `cache.ts`, `scope-validator.ts`, `types.ts`, `errors.ts`
 - `apps/api/src/modules/catalog/{routes,gig-template-routes,dto,gig-template-dto,common,wiring}.ts`, `apps/api/src/plugins/auth.ts` (`CATALOG_PERMISSIONS`), `apps/api/src/index.ts`
 - `packages/testing/src/catalog-model.itest.ts`, `packages/catalog/src/catalog.itest.ts`, `apps/api/src/catalog.itest.ts`, `packages/testing/src/gig-template-model.itest.ts`, `packages/catalog/src/gig-template.itest.ts`, `apps/api/src/gig-template.itest.ts`
-- `docs/engineering/CATALOG.md`, `docs/engineering/GIG_TEMPLATES.md`, `docs/engineering/PROVIDER_GIGS.md`, `docs/architecture/ADR-0040-platform-owned-taxonomy-with-stable-identities-and-status-based-retirement.md`, `docs/architecture/ADR-0041-versioned-platform-gig-templates-referenced-immutably-by-provider-gigs.md`, `docs/architecture/ADR-0046-provider-gig-versions-bind-immutably-to-exact-gig-template-versions.md`
+- `docs/engineering/CATALOG.md`, `docs/engineering/GIG_TEMPLATES.md`, `docs/engineering/PROVIDER_GIGS.md`, `docs/architecture/ADR-0040-platform-owned-taxonomy-with-stable-identities-and-status-based-retirement.md`, `docs/architecture/ADR-0041-versioned-platform-gig-templates-referenced-immutably-by-provider-gigs.md`, `docs/architecture/ADR-0046-provider-gig-versions-bind-immutably-to-exact-gig-template-versions.md`, `docs/architecture/ADR-0047-gig-variants-add-ons-and-photos-are-version-owned-provider-data-with-immutable-media-assets-in-private-storage.md`
 
 ## Architecture rules
 
@@ -39,18 +39,18 @@ Read and change the PLATFORM-OWNED taxonomy of what can be sold: categories (Aut
 
 ### Gig Templates (CAT-002)
 
-- **Three levels, three owners.** Service type (platform, what is sold: Car Detailing) > Gig Template (platform, the approved structure: Full Detail) > Gig (provider, what one provider sells: price, chosen duration, pitch, description and the values of the provider-editable fields in CAT-003; floor price, radius or area, photos, capacity, variants, add-ons, booking mode later). Never put a provider value in a template row and never read the mutable template to learn what a Gig was built from.
+- **Three levels, three owners.** Service type (platform, what is sold: Car Detailing) > Gig Template (platform, the approved structure: Full Detail) > Gig (provider, what one provider sells: price, chosen duration, pitch, description and the values of the provider-editable fields in CAT-003; floor price, radius or area, photos, capacity, variants, add-ons, booking mode later). Never put a provider value in a template row and never read the mutable template to learn what a Gig was built from. Since CAT-004 the Gig version also owns variants, add-ons and photo attachments (`provider.*`); the template only constrains what it may hold (below) and never contains them.
 - **Identity and version are separate.** `gig_templates` = immutable code and service type, derived copy keys, status; `gig_template_versions` = the structure. A provider Gig version stores `gig_template_version_id` (CAT-003) and validates against THAT frozen version. A published version and its field, option and requirement rows are frozen by guards; the fix for a mistake is a new version copied from it (`copyFromVersion`).
 - **Version lifecycle.** `DRAFT` -> `ACTIVE` (publish) | `RETIRED` (discard); `ACTIVE` -> `SUPERSEDED` (automatic, only by publishing a newer version) | `RETIRED` (done by the retirement of the template; the machine allows it, the service offers no direct withdraw). One DRAFT and one ACTIVE per template, contiguous numbers, never deleted. No `IN_REVIEW` (no reviewer exists yet).
 - **Editing is whole-draft and token-guarded.** `PUT .../versions/:n` replaces the WHOLE definition with `expectedRevision`; a different revision is 409 `STALE_DRAFT`; an equal definition writes nothing. Publish takes the same token and is a no-op when repeated on an ACTIVE version with that revision.
-- **Fields are typed rows, not JSON.** 11 types, behaviour `PLATFORM_FIXED` / `PROVIDER_CONFIGURABLE` / `PROVIDER_REQUIRED` ("editable" and "required" are derived), sections, per-type metadata under a CHECK matrix (a column that does not belong to the type is NULL), enum options as rows, MONEY without numeric metadata (limits are configuration). A photo rule is a MEDIA field (`max_items = 0` = no photos, required = `PROVIDER_REQUIRED` with a minimum).
+- **Fields are typed rows, not JSON.** 11 types, behaviour `PLATFORM_FIXED` / `PROVIDER_CONFIGURABLE` / `PROVIDER_REQUIRED` ("editable" and "required" are derived), sections, per-type metadata under a CHECK matrix (a column that does not belong to the type is NULL), enum options as rows, MONEY without numeric metadata (limits are configuration). A photo rule is a MEDIA field with `min_items` / `max_items` (CAT-004 reads them): `max_items = 0` = no photos, `PROVIDER_REQUIRED` = at least `min_items` READY photos at publish, `max_items` caps that field's attachments; a version without a MEDIA field takes no photos. The rule is read from the bound version at use time and never copied onto the Gig.
 - **Copy is content with DERIVED keys shared by all versions**: `catalog.gig_template.<code>.name|description|instructions`, `...field.<field_key>.label|help|default`, `...field.<field_key>.option.<option_code>.label`. The entries must EXIST before a draft names them (400 `CONTENT_ENTRY_MISSING` lists the keys) and be published (as the content resolver reads it) in the platform default locale before publication (409 `CONTENT_NOT_PUBLISHED` lists the keys). A field whose meaning changes gets a NEW field key; wording is not frozen per version (DEBT-0084).
-- **Pricing and area models are metadata**, not prices: FIXED, FIXED_WITH_VARIANTS (at least one base model), BUNDLE_ELIGIBLE, DROP_ELIGIBLE; RADIUS, POSTAL_CODES, POLYGON (at least one). Requirement rows (SKILL, EQUIPMENT, LICENSE, INSURANCE, BACKGROUND_CHECK) are hooks with an opaque, unvalidated reference code until TRUST-001 owns the catalogues.
+- **Pricing and area models are metadata**, not prices: FIXED, FIXED_WITH_VARIANTS (at least one of these two base models), ADD_ONS (CAT-004: the explicit permission for provider add-ons, column `pricing_add_ons`, default false for every older version, frozen with the version by the same guard as the other pricing flags; it is a permission, not a base model), BUNDLE_ELIGIBLE, DROP_ELIGIBLE; RADIUS, POSTAL_CODES, POLYGON (at least one). FIXED_WITH_VARIANTS permits provider variants and ADD_ONS permits provider add-ons on the Gig; a Gig reads them from the EXACT bound version. Requirement rows (SKILL, EQUIPMENT, LICENSE, INSURANCE, BACKGROUND_CHECK) are hooks with an opaque, unvalidated reference code until TRUST-001 owns the catalogues.
 - **Publication needs** an ACTIVE template and service type (read FOR SHARE), at least one field, options for every enum, and the published copy. **Retiring a template** discards an open draft (audited), closes the ACTIVE version, keeps every version and the code. CAT-001 guards are NOT changed: a paused service type leaves its templates ACTIVE but unreachable (the public read re-checks the chain).
 - **Locks**: the service takes the TEMPLATE row first, then the version, in every version operation; raw statements that lock a version first can deadlock (retryable conflict). Availability per market is a plain row per (market, template) with the same one-retry race policy as the taxonomy.
-- **Consumers bind the exact version and are never migrated automatically (ADR-0046).** v1 of a Gig binds the ACTIVE version; later Gig versions keep the SAME template version, so superseding a template version changes nothing for existing Gigs and a RETIRED version/template/service type only blocks NEW drafts and publishing. A template change that adds a PROVIDER_REQUIRED field of a type the Gig cannot store yet (MONEY, MEDIA, EQUIPMENT_REFERENCE, SKILL_REFERENCE) makes the template unpublishable as a Gig until CAT-004. Adoption of a newer version is a later checkpoint.
+- **Consumers bind the exact version and are never migrated automatically (ADR-0046).** v1 of a Gig binds the ACTIVE version; later Gig versions keep the SAME template version, so superseding a template version changes nothing for existing Gigs and a RETIRED version/template/service type only blocks NEW drafts and publishing. A template change that adds a PROVIDER_REQUIRED field of a type the Gig cannot store yet (MONEY, EQUIPMENT_REFERENCE, SKILL_REFERENCE) makes the template unpublishable as a Gig; MEDIA is supported since CAT-004 (satisfied by photo attachments, never by a value). A Gig version's variants, add-ons and photos freeze with it and are validated against the exact bound version (ADR-0047). Adoption of a newer version is a later checkpoint.
 - **Public vs management**: the same routes, `Vary: Authorization`; the public view carries the safe structure of the ACTIVE version with resolved copy and never the status, revision, content keys, timestamps or other versions; management responses and every mutation are `Cache-Control: private, no-store`. Events: activated, deactivated, retired, published (with the exact version id), availability changed. The snapshot cache shares the taxonomy's generation counter.
-- **Product direction (PRD-TRP-001, `docs/product/BananaGig_PRD_TRP_Alignment.md`):** the chain is Category > Service Type > Gig Template > Provider Gig > BananaDrop > Qualifying Booking > Participation > Price Tier > Price Protection. The catalogue and templates are PLATFORM-owned and only constrain what a provider may offer (allowed pricing models including `DROP_ELIGIBLE`, media rules, area modes); they carry no BananaDrop state, tier or price. Several compatible service types may later contribute to one BananaDrop with service-specific ladders, so never assume one service type per group.
+- **Product direction (PRD-TRP-001, `docs/product/BananaGig_PRD_TRP_Alignment.md`):** the chain is Category > Service Type > Gig Template > Provider Gig > BananaDrop > Qualifying Booking > Participation > Price Tier > Price Protection. The catalogue and templates are PLATFORM-owned and only constrain what a provider may offer (allowed pricing models including `DROP_ELIGIBLE`, media rules, area modes); they carry no BananaDrop state, tier or price. Several compatible service types may later contribute to one BananaDrop with service-specific ladders, so never assume one service type per group. Variants and add-ons carry no Drop flag either (the PRD's "Drop-eligible" flag is DROP-002).
 
 ## Implementation pattern
 
@@ -72,7 +72,7 @@ Read and change the PLATFORM-OWNED taxonomy of what can be sold: categories (Aut
 
 ## Data-model considerations
 
-Any change to the twelve tables or their guards needs the Data Model Review Gate and a forward migration (never edit 0015 or 0016). A new level (an alias, a requirement catalogue, a provider Gig) is a new table keyed by the stable ids, not a column here; a Gig references `gig_template_versions.gig_template_version_id` (done in CAT-003 by `provider.gig_versions`; mind its foreign keys when retiring or restructuring template rows).
+Any change to the twelve tables or their guards needs the Data Model Review Gate and a forward migration (never edit 0015, 0016 or 0021: a new template-version permission is a forward-only column added to the frozen-structure guard, as `pricing_add_ons` was). A new level (an alias, a requirement catalogue, a provider Gig) is a new table keyed by the stable ids, not a column here; a Gig references `gig_template_versions.gig_template_version_id` (done in CAT-003 by `provider.gig_versions`; mind its foreign keys when retiring or restructuring template rows).
 
 ## Common failure modes
 
@@ -90,6 +90,8 @@ Any change to the twelve tables or their guards needs the Data Model Review Gate
 - Giving a template a provider value (a price, a radius) or reading the mutable template to validate a Gig.
 - Expecting a published Gig to follow a new template version, or to stop working because its template version was superseded: it keeps the version it was built from; only a RETIRED version, template or service type blocks new drafts and publishing.
 - Retiring a template while expecting its Gigs to disappear: they stay readable to their owners; the template just leaves the creation choices.
+- Expecting add-ons because a template allows variants: add-ons need their own `ADD_ONS` pricing model on the exact version, and an existing Gig never picks up a permission added in a newer version.
+- Expecting photos from a MEDIA field with `max_items = 0` (it prohibits them); a field with no `max_items` is unbounded per field and only the Gig-wide cap (configuration) applies.
 
 ## Known BananaGig-specific lessons
 
@@ -113,11 +115,12 @@ Any change to the twelve tables or their guards needs the Data Model Review Gate
 - Do not decide market visibility in this package: ask the geography registry through the port.
 - Do not edit an applied migration.
 - Do not model a BananaDrop, a tier or a group price in the catalogue or in a template; template flags such as `DROP_ELIGIBLE` are permissions, not Drop state.
+- Do not store a variant, add-on, photo or media rule instance in the catalogue, and do not copy a template permission or MEDIA bound onto the Gig; the Gig reads the exact bound version.
 
 ## Related ADRs
 
-ADR-0016, ADR-0021, ADR-0022, ADR-0040, ADR-0041, ADR-0046
+ADR-0016, ADR-0021, ADR-0022, ADR-0040, ADR-0041, ADR-0046, ADR-0047
 
 ## Last reviewed
 
-2026-10-18 (PRD-TRP-001)
+2026-10-18 (CAT-004)

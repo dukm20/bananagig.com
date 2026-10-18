@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto';
 import { NatsEventPublisher, INFRA_PING_SUBJECT, newEvent, subscribe } from './runtime/events';
 import { registerConfigurationJobs } from './jobs/configuration';
 import { registerContentJobs } from './jobs/content';
+import { registerGigMediaJobs, type GigMediaCleaner } from './jobs/gig-media';
 import { jobHandler, withJobMeta } from './runtime/job';
 import { PollingOutboxRelay } from './runtime/outbox';
 import { insertOutboxEvent } from '@bananagig/platform';
@@ -23,6 +24,8 @@ export interface WorkerDeps {
   configuration?: ConfigurationService;
   /** When present, the worker registers the content activation job. */
   content?: ContentService;
+  /** When present, the worker registers the Gig photo clean-up job (CAT-004). */
+  gigMedia?: GigMediaCleaner;
 }
 
 /** Worker host: owns job runtime (pg-boss) and event runtime (NATS) lifecycle. No product handlers yet. */
@@ -56,6 +59,7 @@ export class Worker {
     );
     if (this.d.configuration) await registerConfigurationJobs(boss, this.d.configuration);
     if (this.d.content) await registerContentJobs(boss, this.d.content);
+    if (this.d.gigMedia) await registerGigMediaJobs(boss, this.d.gigMedia);
     await nats.ensureEventStream();
     await subscribe(nats, INFRA_PING_SUBJECT, async (e) => {
       this.seen.get(`${e.payload.via === 'outbox' ? 'outbox' : 'event'}:${String(e.payload.pingId)}`)?.();

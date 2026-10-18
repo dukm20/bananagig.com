@@ -1134,6 +1134,7 @@ One version of a Gig Template (CAT-002): the STRUCTURE a Gig is built from. A DR
 | `updated_at` | timestamptz | no | `now()` | Last change, maintained by the guard | no |
 | `published_at` | timestamptz | yes | none | When the version became ACTIVE, set by the guard | yes |
 | `closed_at` | timestamptz | yes | none | When the version stopped being current (SUPERSEDED or RETIRED), set by the guard; `ck_gig_template_versions__lifecycle` ties both timestamps to the status | yes |
+| `pricing_add_ons` | boolean | no | `false` | Added by CAT-004 (last column): the explicit permission for provider add-ons on a Gig built from the version (the fifth pricing model `ADD_ONS`; independent of FIXED / FIXED_WITH_VARIANTS, which stay required as the base). Existing versions are `false`. Part of the frozen structure (`VERSION_FROZEN` once the version leaves DRAFT, also in the statement that publishes it) | no (DRAFT only) |
 
 Indexes: the primary key; `uq_gig_template_versions__id_template (gig_template_version_id, gig_template_id)` (0017: the target of the composite audit foreign key); `uq_gig_template_versions__number (gig_template_id, version_number)` (the versions of a template); `uq_gig_template_versions__active (gig_template_id) WHERE status = 'ACTIVE'` (THE active-version lookup and the rule that there is one); `uq_gig_template_versions__draft (gig_template_id) WHERE status = 'DRAFT'` (one draft at a time).
 Triggers: `trg_gig_template_versions__guard` (`catalog.guard_gig_template_versions`): created only as a fresh DRAFT with the next number and not for a RETIRED template (`MUST_START_AS_DRAFT`, `VERSION_NUMBER_SEQUENCE`, `GIG_TEMPLATE_RETIRED`), never deleted (`NOT_DELETABLE`), id / template / number immutable (`IMMUTABLE_IDENTITY`), every structural column, `revision` and `published_at` frozen once the version left DRAFT (`VERSION_FROZEN`), the version machine (`DRAFT_IS_INITIAL`, `STATUS_TRANSITION`), publication needs an ACTIVE template and service type read FOR SHARE and `catalog.assert_version_publishable` and supersedes the previous ACTIVE version (`GIG_TEMPLATE_NOT_ACTIVE`, `SERVICE_TYPE_NOT_ACTIVE`, `GIG_TEMPLATE_HAS_NO_FIELDS`, `ENUM_FIELD_WITHOUT_OPTIONS`, `FIXED_ENUM_WITHOUT_DEFAULT`, `CONTENT_NOT_PUBLISHED`), SUPERSEDED only inside that publication (`SUPERSEDED_IS_AUTOMATIC`); `trg_gig_template_versions__no_truncate` refuses TRUNCATE.
@@ -1337,7 +1338,7 @@ Append-only audit of the Gigs (CAT-003): who (`account:<id>` or `system:<name>`,
 | `account_id` | uuid | no | none | Foreign key `fk_gig_audit_events__account_id` to `identity.accounts` (restrict): the owner at the time of the event, kept so a trail can be read per account; must own the Gig (`AUDIT_MISMATCH`) | yes |
 | `gig_id` | uuid | no | none | Foreign key `fk_gig_audit_events__gig_id` to `provider.gigs` (restrict) | yes |
 | `gig_version_id` | uuid | yes | none | Foreign key `fk_gig_audit_events__gig_version_id` to `provider.gig_versions` (restrict); must belong to the Gig (`AUDIT_MISMATCH`) | yes |
-| `action` | text | no | none | `GIG_CREATED`, `GIG_DRAFT_CREATED`, `GIG_DRAFT_UPDATED`, `GIG_VERSION_PUBLISHED`, `GIG_VERSION_SUPERSEDED`, `GIG_RETIRED` (`ck_gig_audit_events__action`) | yes |
+| `action` | text | no | none | One of 14 actions (`ck_gig_audit_events__action`; 6 since CAT-003, 8 added by CAT-004): `GIG_CREATED`, `GIG_DRAFT_CREATED`, `GIG_DRAFT_UPDATED`, `GIG_VERSION_PUBLISHED`, `GIG_VERSION_SUPERSEDED`, `GIG_RETIRED`, `GIG_VARIANTS_UPDATED`, `GIG_ADD_ONS_UPDATED`, `GIG_MEDIA_UPLOAD_AUTHORIZED`, `GIG_MEDIA_UPLOAD_REFUSED`, `GIG_MEDIA_ATTACHED`, `GIG_MEDIA_DETACHED`, `GIG_MEDIA_REORDERED`, `GIG_MEDIA_UPDATED` | yes |
 | `changes` | jsonb | yes | none | NULL or a JSON object (`ck_gig_audit_events__changes_object`) of identifiers, changed field names and counts | yes |
 | `correlation_id` | text | no | none | The request correlation id | yes |
 
@@ -1547,3 +1548,84 @@ Append-only audit trail of the verification domain (TRUST-001): who, what, when,
 
 Indexes: the primary key only. The three subject foreign keys have no index of their own: the table is written once and read only for investigation; an index is added through its own review when a query path appears.
 Triggers: `trg_audit_events__immutable` (BEFORE UPDATE OR DELETE, per row) and `trg_audit_events__no_truncate` (BEFORE TRUNCATE) call `trust.forbid_mutation`: UPDATE, DELETE and TRUNCATE are refused (`ROW_IMMUTABLE`).
+
+### provider.gig_version_variants
+
+A VARIANT: one of several mutually exclusive alternatives (a size, a level), optional, no default flag of a Gig version (CAT-004). Owned by the VERSION: rows are inserted and deleted only while the version is a DRAFT (the service replaces the whole set in one transaction; UPDATE is refused outright, `NO_UPDATE`, since 0022) and are frozen history afterwards (`VERSION_FROZEN`, also for DELETE). Priced as a non-negative DELTA on the base price (CAT-003) plus a non-negative duration delta; the base is the price with no variant selected (zero delta); whether a booking must pick a variant is a booking rule. Allowed only when the bound template version permits FIXED_WITH_VARIANTS (`pricing_fixed_with_variants`). Provider-written name and description are plain text and never appear in audit, events or logs. No currency column: the currency is that of the parent version. CONSUMER RULE: a booking, a BananaDrop or a bundle references an item by `(gig_version_id, item_key)`, never by the row id, which is regenerated in every version. Never truncated.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `variant_id` | uuid | no | `gen_random_uuid()` | Primary key `pk_gig_version_variants` | yes |
+| `gig_version_id` | uuid | no | none | Foreign key `fk_gig_version_variants__version_id` to `provider.gig_versions` (restrict) | yes |
+| `item_key` | text | no | none | The stable key (`ck_gig_version_variants__key`: `^[a-z][a-z0-9_]{1,39}$`), server-minted, unique per version (`uq_gig_version_variants__key`), copied into the next draft | yes |
+| `name` | text | no | none | Plain text, non-blank, at most 200 code points (`ck_gig_version_variants__name`); the configured limit is lower and is enforced by the service together with the duplicate-name rule | yes (rows are never updated) |
+| `description` | text | yes | none | Plain text, non-blank when present, at most 2000 code points (`ck_gig_version_variants__description`) | yes (rows are never updated) |
+| `price_delta_minor` | bigint | no | none | Minor units added to the base price, 0 to 10^12 (`ck_gig_version_variants__price_delta`); the currency is that of the version | yes (rows are never updated) |
+| `duration_delta_minutes` | integer | no | none | Minutes added to the Gig duration, 0 to 100000 (`ck_gig_version_variants__duration_delta`) | yes (rows are never updated) |
+| `display_order` | integer | no | none | Position, at least 1 (`ck_gig_version_variants__display_order`), unique per version (`uq_gig_version_variants__order`) | yes (rows are never updated) |
+| `created_at` | timestamptz | no | `now()` | Creation time | yes |
+
+Indexes: the primary key; the two unique constraints `uq_gig_version_variants__key (gig_version_id, item_key)` and `uq_gig_version_variants__order (gig_version_id, display_order)`, whose leading column also supports the foreign key to the version.
+Triggers: `trg_gig_version_variants__guard` (`provider.guard_gig_version_options`, BEFORE INSERT OR UPDATE OR DELETE): the parent version is a DRAFT, read FOR SHARE (`VERSION_FROZEN`), every UPDATE refused first (`NO_UPDATE`: the set is replaced by delete and insert, so row ids are regenerated per version), the bound template version permits FIXED_WITH_VARIANTS (`VARIANTS_NOT_PERMITTED`; the frozen flag is read without a lock). `trg_gig_version_variants__no_truncate` refuses TRUNCATE (`ROW_IMMUTABLE`).
+
+### provider.gig_version_add_ons
+
+An ADD-ON: an independent optional extra, no quantity of a Gig version (CAT-004). Owned by the VERSION: rows are inserted and deleted only while the version is a DRAFT (the service replaces the whole set in one transaction; UPDATE is refused outright, `NO_UPDATE`, since 0022) and are frozen history afterwards (`VERSION_FROZEN`, also for DELETE). Priced as a non-negative DELTA on the base price (CAT-003) plus a non-negative duration delta; the base is the price with no variant selected (zero delta); whether a booking must pick a variant is a booking rule. Allowed only when the bound template version has the explicit permission `pricing_add_ons`. Provider-written name and description are plain text and never appear in audit, events or logs. No currency column: the currency is that of the parent version. CONSUMER RULE: a booking, a BananaDrop or a bundle references an item by `(gig_version_id, item_key)`, never by the row id, which is regenerated in every version. Never truncated.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `add_on_id` | uuid | no | `gen_random_uuid()` | Primary key `pk_gig_version_add_ons` | yes |
+| `gig_version_id` | uuid | no | none | Foreign key `fk_gig_version_add_ons__version_id` to `provider.gig_versions` (restrict) | yes |
+| `item_key` | text | no | none | The stable key (`ck_gig_version_add_ons__key`: `^[a-z][a-z0-9_]{1,39}$`), server-minted, unique per version (`uq_gig_version_add_ons__key`), copied into the next draft | yes |
+| `name` | text | no | none | Plain text, non-blank, at most 200 code points (`ck_gig_version_add_ons__name`); the configured limit is lower and is enforced by the service together with the duplicate-name rule | yes (rows are never updated) |
+| `description` | text | yes | none | Plain text, non-blank when present, at most 2000 code points (`ck_gig_version_add_ons__description`) | yes (rows are never updated) |
+| `price_delta_minor` | bigint | no | none | Minor units added to the base price, 0 to 10^12 (`ck_gig_version_add_ons__price_delta`); the currency is that of the version | yes (rows are never updated) |
+| `duration_delta_minutes` | integer | no | none | Minutes added to the Gig duration, 0 to 100000 (`ck_gig_version_add_ons__duration_delta`) | yes (rows are never updated) |
+| `display_order` | integer | no | none | Position, at least 1 (`ck_gig_version_add_ons__display_order`), unique per version (`uq_gig_version_add_ons__order`) | yes (rows are never updated) |
+| `created_at` | timestamptz | no | `now()` | Creation time | yes |
+
+Indexes: the primary key; the two unique constraints `uq_gig_version_add_ons__key (gig_version_id, item_key)` and `uq_gig_version_add_ons__order (gig_version_id, display_order)`, whose leading column also supports the foreign key to the version.
+Triggers: `trg_gig_version_add_ons__guard` (`provider.guard_gig_version_options`, BEFORE INSERT OR UPDATE OR DELETE): the parent version is a DRAFT, read FOR SHARE (`VERSION_FROZEN`), every UPDATE refused first (`NO_UPDATE`: the set is replaced by delete and insert, so row ids are regenerated per version), the bound template version has `pricing_add_ons` (`ADD_ONS_NOT_PERMITTED`; the frozen flag is read without a lock). `trg_gig_version_add_ons__no_truncate` refuses TRUNCATE (`ROW_IMMUTABLE`).
+
+### provider.media_assets
+
+The BYTES of one provider photo (CAT-004), owned by an account and independent of any Gig. One row per authorized upload. Lifecycle `UPLOAD_PENDING`, then `READY` or `ABANDONED`; `READY` then `DELETED` (only when no attachment references it); `ABANDONED` and `DELETED` are terminal and frozen. A READY asset is immutable. The object key, the hash and any URL are secrets of the store and never leave the service in a default payload, audit row, event, log or error detail. There is no binary deduplication across uploads or accounts. Never deleted or truncated.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `media_asset_id` | uuid | no | `gen_random_uuid()` | Primary key `pk_media_assets` | yes |
+| `account_id` | uuid | no | none | The owner: foreign key `fk_media_assets__account_id` to `identity.accounts` (restrict). The asset attaches only to a Gig of the same account (`ASSET_OWNER`) | yes |
+| `status` | text | no | `'UPLOAD_PENDING'` | `UPLOAD_PENDING`, `READY`, `ABANDONED`, `DELETED` (`ck_media_assets__status`); starts pending (`MUST_START_PENDING`); transitions `STATUS_TRANSITION`; ABANDONED / DELETED refused while referenced (`ASSET_REFERENCED`) | no |
+| `object_key` | text | no | none | The FINAL private store key, always exactly `provider/gig-media/<media_asset_id>` (`ck_media_assets__object_key_derived`, 0022; also 1 to 500 characters, `ck_media_assets__object_key`), unique (`uq_media_assets__object_key`). A secret of the store | yes |
+| `mime_type` | text | no | none | `image/jpeg`, `image/png` or `image/webp` (`ck_media_assets__mime_type`); the allowed subset is configuration | yes |
+| `size_bytes` | bigint | no | none | The authorized size, 1 to 26214400 (`ck_media_assets__size`) | yes |
+| `sha256` | char(64) | yes | none | Lower-case hex SHA-256 of the verified bytes (`ck_media_assets__sha256`); NULL while pending, set at READY, immutable then (`BYTES_IMMUTABLE`) | after READY |
+| `width`, `height` | integer | yes | none | Header dimensions, both or neither, 1 to 30000 (`ck_media_assets__dimensions`); never decoded | after READY |
+| `scan_status` | text | no | `'PENDING'` | `PENDING`, `CLEAN`, `INFECTED`, `ERROR` (`ck_media_assets__scan_status`); INFECTED only with ABANDONED (`ck_media_assets__infected`); a pending asset is PENDING or ERROR (a scanner error keeps it pending); a READY or DELETED one CLEAN or ERROR; an ABANDONED one any value (`ck_media_assets__lifecycle`) | after READY |
+| `upload_expires_at` | timestamptz | no | none | End of the upload authorization, after `created_at` (`ck_media_assets__expiry`) | yes |
+| `created_at` | timestamptz | no | `now()` | Creation time | yes |
+| `ready_at` | timestamptz | yes | none | When the asset became READY; NULL for pending and abandoned assets, required for READY and DELETED (`ck_media_assets__lifecycle`) | after READY |
+| `updated_at` | timestamptz | no | `now()` | Last change, maintained by the guard | no |
+| `objects_removed_at` | timestamptz | yes | none | Added by 0022: when the final and the upload objects of a TERMINAL asset were deleted from the store; NULL unless ABANDONED or DELETED (`ck_media_assets__objects_removed`); one-way (`MARKER_ONE_WAY`); settable on a frozen terminal row | one-way |
+| `upload_key_removed_at` | timestamptz | yes | none | Added by 0022: when the `<final key>.upload` object of a READY or terminal asset was deleted after its PUT authorization expired; NULL for a pending asset (`ck_media_assets__upload_key_removed`); one-way; settable on a READY row without touching the bytes facts | one-way |
+
+Indexes: the primary key; `uq_media_assets__object_key (object_key)`; `idx_media_assets__account (account_id)` (the foreign key to the account and the per-account upload read; 0022 replaced `(account_id, status)`, whose second column served no query); partial `idx_media_assets__pending_expiry (upload_expires_at) WHERE status = 'UPLOAD_PENDING'` (the expiry sweep); partial `idx_media_assets__objects_to_remove (updated_at) WHERE status IN ('ABANDONED', 'DELETED') AND objects_removed_at IS NULL` (terminal assets whose objects are still in the store; 0022); partial `idx_media_assets__upload_key_sweep (upload_expires_at) WHERE status = 'READY' AND upload_key_removed_at IS NULL` (upload objects of READY assets to remove; 0022). The 0021 partial index on `ready_at` was dropped in 0022: the orphan sweep (READY, older than the grace period, no attachment) was never served by it and scans the READY assets (debt).
+Triggers: `trg_media_assets__guard` (`provider.guard_media_assets`, BEFORE INSERT OR UPDATE OR DELETE): never deleted (`NO_DELETE`), created pending for an ACTIVE account read FOR SHARE (`MUST_START_PENDING`, `ACCOUNT_NOT_ACTIVE`), identity immutable (`IMMUTABLE_IDENTITY`), terminal states frozen except the two one-way removal markers (`ASSET_FROZEN`, `MARKER_ONE_WAY`), the allowed transitions only (`STATUS_TRANSITION`), the bytes facts of a READY asset immutable (`BYTES_IMMUTABLE`), no DELETED while any attachment references the asset and no ABANDONED while an attachment of a version that is not RETIRED does (`ASSET_REFERENCED`; an unfinished upload left only in RETIRED versions can be abandoned), `updated_at` maintained. `trg_media_assets__no_truncate` refuses TRUNCATE (`ROW_IMMUTABLE`; a plain TRUNCATE is refused earlier by PostgreSQL because the attachments reference the table).
+
+### provider.gig_version_media
+
+The ATTACHMENT of a photo to a Gig version (CAT-004); its id is the API media id. Owned by the VERSION: rows change only while it is a DRAFT; frozen afterwards. The same READY asset is re-attached to the next draft without copying the binary. The template rule (minimum, maximum, required) is read from the bound template version and never copied. Never truncated.
+
+| Column | Type | Null | Default | Meaning | Immutable |
+|---|---|---|---|---|---|
+| `gig_version_media_id` | uuid | no | `gen_random_uuid()` | Primary key `pk_gig_version_media`: the media id of the API | yes |
+| `gig_version_id` | uuid | no | none | Foreign key `fk_gig_version_media__version_id` to `provider.gig_versions` (restrict) | yes |
+| `media_asset_id` | uuid | no | none | Foreign key `fk_gig_version_media__asset_id` to `provider.media_assets` (restrict); one attachment per asset per version (`uq_gig_version_media__asset`); the asset belongs to the Gig's account and is UPLOAD_PENDING or READY | yes |
+| `gig_template_field_id` | uuid | no | none | Foreign key `fk_gig_version_media__field_id` to `catalog.gig_template_fields` (restrict): the MEDIA field of the bound template version this photo satisfies | yes |
+| `display_order` | integer | no | none | At least 1 (`ck_gig_version_media__display_order`); unique per version (`uq_gig_version_media__order`, DEFERRABLE INITIALLY IMMEDIATE: checked at the END of a statement, so ONE UPDATE can swap or renumber all positions without false conflicts mid-statement; it cannot be the arbiter of ON CONFLICT and nothing uses it so); gaps are allowed | no (DRAFT only) |
+| `alt_text` | text | yes | none | Plain text, non-blank when present, at most 500 code points (`ck_gig_version_media__alt_text`); never audited or logged | no (DRAFT only) |
+| `created_at` | timestamptz | no | `now()` | Creation time | yes |
+| `updated_at` | timestamptz | no | `now()` | Last change, maintained by the guard | no |
+
+Indexes: the primary key; `uq_gig_version_media__order (gig_version_id, display_order)` and `uq_gig_version_media__asset (gig_version_id, media_asset_id)` (the first supports the foreign key to the version); `idx_gig_version_media__asset (media_asset_id)` (the foreign key to the asset and the reference-aware clean-up); `idx_gig_version_media__field (gig_template_field_id)` (the foreign key to the catalogue field, whose rows ARE deleted when a DRAFT template version is replaced).
+Triggers: `trg_gig_version_media__guard` (`provider.guard_gig_version_media`, BEFORE INSERT OR UPDATE OR DELETE): the parent version is a DRAFT and is taken FOR NO KEY UPDATE (`VERSION_FROZEN`), identity immutable (`IMMUTABLE_IDENTITY`); on insert the field belongs to the version's bound template version (`FIELD_NOT_IN_TEMPLATE_VERSION`), is MEDIA (`FIELD_TYPE_MISMATCH`), does not prohibit photos (`MEDIA_PROHIBITED`), the asset (FOR SHARE) belongs to the Gig's account (`ASSET_OWNER`) and is usable (`ASSET_NOT_USABLE`) and the field is below `max_items` (`MEDIA_FIELD_FULL`). `trg_gig_version_media__no_truncate` refuses TRUNCATE (`ROW_IMMUTABLE`). The minimum per required field is checked at publication by `provider.check_gig_version_children`.

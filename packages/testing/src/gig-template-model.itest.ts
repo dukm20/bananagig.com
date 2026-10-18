@@ -940,9 +940,11 @@ describe('F. RESTRICT: every foreign key holds when the guards are bypassed, and
     await expect(pool.query(`TRUNCATE ${ALL_TABLES.join(', ')}`)).rejects.toMatchObject({ code: '0A000' });
     await expect(pool.query(`TRUNCATE ${ALL_TABLES.join(', ')}, provider.registration_service_types`)).rejects.toMatchObject({ code: '0A000' });
     // since 0020 provider.gigs, provider.gig_versions and provider.gig_version_field_values reference templates, template versions, fields and options as well
+    // since 0021 provider.gig_version_variants, provider.gig_version_add_ons and provider.gig_version_media reference the Gig versions (and the media attachments the template fields) as well: a referenced table can only be
+    // truncated together with every table that references it, so PostgreSQL itself (0A000) answers for any list that leaves one of them out; the foreign key is the guard for a referenced table
     await expectRule(
       run(
-        `TRUNCATE ${ALL_TABLES.join(', ')}, provider.registration_service_types, trust.requirement_rules, provider.gigs, provider.gig_versions, provider.gig_version_field_values, provider.gig_audit_events`,
+        `TRUNCATE ${ALL_TABLES.join(', ')}, provider.registration_service_types, trust.requirement_rules, provider.gigs, provider.gig_versions, provider.gig_version_field_values, provider.gig_audit_events, provider.gig_version_variants, provider.gig_version_add_ons, provider.gig_version_media`,
       ),
       'ROW_IMMUTABLE',
     );
@@ -2084,10 +2086,10 @@ describe('J. the Gig Templates cannot hold, and do not hold, anything about a pe
       [NEW_TABLE_NAMES],
     );
 
-  it('has 62 columns in the six tables, and the only names that contain a forbidden word are the documented platform bounds and flags (never a provider value): three duration bounds, two area-mode flags, the visibility flag and the two content-key columns called label', async () => {
+  it('has 63 columns in the six tables, and the only names that contain a forbidden word are the documented platform bounds and flags (never a provider value): three duration bounds, two area-mode flags, the visibility flag and the two content-key columns called label', async () => {
     const rows = await NEW_COLUMNS();
     expect(rows).toHaveLength(Object.values(GT_COLUMNS).reduce((a, c) => a + c.length, 0));
-    expect(rows).toHaveLength(62);
+    expect(rows).toHaveLength(63); // 62 of 0016 plus pricing_add_ons (0021, CAT-004)
     const flagged = rows.filter((r) => forbidden(r.column_name)).map((r) => `${r.table_name}.${r.column_name}:${r.data_type}`);
     expect(flagged.sort()).toEqual(
       [
@@ -2137,6 +2139,7 @@ describe('J. the Gig Templates cannot hold, and do not hold, anything about a pe
         'area_polygon:boolean',
         'area_postal_codes:boolean',
         'area_radius:boolean',
+        'pricing_add_ons:boolean',
         'pricing_bundle_eligible:boolean',
         'pricing_drop_eligible:boolean',
         'pricing_fixed:boolean',
@@ -3508,6 +3511,7 @@ const GT_COLUMNS: Record<string, ColumnShape[]> = {
     ['updated_at', 'timestamp with time zone', false, 'now()', null],
     ['published_at', 'timestamp with time zone', true, null, null],
     ['closed_at', 'timestamp with time zone', true, null, null],
+    ['pricing_add_ons', 'boolean', false, 'false', null], // migration 0021 (CAT-004): added last, so it follows closed_at
   ],
   gig_template_fields: [
     ['gig_template_field_id', 'uuid', false, 'gen_random_uuid()', null],
@@ -4230,6 +4234,8 @@ describe('A. schema shape: six new tables, nine functions and twelve triggers ad
       // migration 0020 (CAT-003): a Gig stands on a template, a Gig version on the exact template version, a field value on the answered field and its ENUM option
       { from_table: 'provider.gig_version_field_values', conname: 'fk_gig_version_field_values__field_id' },
       { from_table: 'provider.gig_version_field_values', conname: 'fk_gig_version_field_values__option' },
+      // migration 0021 (CAT-004): a photo attachment names the MEDIA field of the bound template version it satisfies
+      { from_table: 'provider.gig_version_media', conname: 'fk_gig_version_media__field_id' },
       { from_table: 'provider.gig_versions', conname: 'fk_gig_versions__gig_template_version_id' },
       { from_table: 'provider.gigs', conname: 'fk_gigs__gig_template_id' },
       { from_table: 'provider.registration_service_types', conname: 'fk_registration_service_types__service_type_id' },

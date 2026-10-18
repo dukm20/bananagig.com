@@ -36,7 +36,7 @@ import { buildApp } from './app';
 import { createContentSmsRenderer, createPhoneCountryDirectory, createPhonePolicyProvider } from './modules/account/phone-wiring';
 import { composeScopeReferenceValidators, createMarketGate } from './modules/catalog/wiring';
 import { createAccountPort, createCatalogPort, createConsentPort, createMarketPort, createProviderPolicyProvider } from './modules/provider/wiring';
-import { createGigPolicyProvider, createGigPrerequisites, createGigTemplatePort } from './modules/provider/gig-wiring';
+import { createGigMediaScanner, createGigPolicyProvider, createGigPrerequisites, createGigTemplatePort } from './modules/provider/gig-wiring';
 import { createProviderContextPort, createTrustPolicyProvider, createTrustPrerequisites } from './modules/trust/wiring';
 import { createConsentPolicyProvider, createDefaultLocaleResolver } from './modules/consent/wiring';
 import { createKeycloakSecurityIdentityProvider, createSecurityPolicyProvider, createUnavailableSecurityIdentityProvider } from './modules/security/wiring';
@@ -213,12 +213,14 @@ const registrations: { current?: ProviderRegistrationService } = {};
 // Provider verification (TRUST-001): a case of requirements derived from the registration's market and service types. Evidence lives in the PRIVATE bucket (presigned, one object,
 // short-lived); scanning and external verification are ports whose production default fails closed (no scanner and no vendor exist yet). It reads the registration through the
 // registration's own ports (a lazy getter: the registration is constructed with the verification prerequisite below).
+const privateStore = new S3PrivateObjectStore({ client: s3, presignClient: createS3Presigner(cfg), bucket: cfg.s3.bucket });
+const evidenceScanner = cfg.trust.scanner === 'fake' ? new FakeEvidenceScanner() : new DisabledEvidenceScanner();
 const trust = new TrustService({
   database,
   context: createProviderContextPort({ accounts: providerAccountPort, policy: providerPolicy, registrations: () => registrations.current! }),
   policy: createTrustPolicyProvider(configuration),
-  store: new S3PrivateObjectStore({ client: s3, presignClient: createS3Presigner(cfg), bucket: cfg.s3.bucket }),
-  scanner: cfg.trust.scanner === 'fake' ? new FakeEvidenceScanner() : new DisabledEvidenceScanner(),
+  store: privateStore,
+  scanner: evidenceScanner,
   external: cfg.trust.externalProvider === 'fake' ? new FakeVerificationProvider() : new DisabledVerificationProvider(),
 });
 
@@ -230,6 +232,9 @@ const providerGigs = new ProviderGigService({
   accounts: providerAccountPort,
   templates: createGigTemplatePort(gigTemplates),
   policy: createGigPolicyProvider(configuration),
+  // CAT-004: provider photos use the same private bucket and the same scanner adapter as the verification evidence (keys under `provider/gig-media/`)
+  store: privateStore,
+  scanner: createGigMediaScanner(evidenceScanner),
 });
 const providerRegistrations = (registrations.current = new ProviderRegistrationService({
   database,

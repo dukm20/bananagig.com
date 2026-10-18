@@ -389,6 +389,14 @@ describe('S3PrivateObjectStore: createDownloadUrl', () => {
     expect(u.searchParams.get('response-content-type')).toBe('application/pdf');
     expect(u.searchParams.get('response-content-disposition')).toBe('attachment');
   });
+  it('serves the object inline only when asked (an image preview), and as an attachment otherwise', async () => {
+    const { s } = make();
+    const inline = new URL((await s.createDownloadUrl({ key: KEY, ttlSeconds: 60, contentType: 'image/png', disposition: 'inline' })).url);
+    expect(inline.searchParams.get('response-content-disposition')).toBe('inline');
+    expect(inline.searchParams.get('response-content-type')).toBe('image/png');
+    const dflt = new URL((await s.createDownloadUrl({ key: KEY, ttlSeconds: 60, disposition: 'attachment' })).url);
+    expect(dflt.searchParams.get('response-content-disposition')).toBe('attachment');
+  });
   it('computes expiresAt from the injected clock and the TTL', async () => {
     const { s } = make();
     expect((await s.createDownloadUrl({ key: KEY, ttlSeconds: 15 })).expiresAt).toEqual(new Date(NOW.getTime() + 15_000));
@@ -562,21 +570,77 @@ describe('S3PrivateObjectStore: readVersioned', () => {
 });
 
 describe('S3PrivateObjectStore: copyIfVersion', () => {
-  const run = (handler: Handler) => {
-    const { client, sent } = stubClient(handler);
+  /** HEAD answers `head` (the source as the store reports it); every other command goes to `handler`. */
+  const run = (handler: Handler, head: object | (() => never) = { ContentLength: 10, ContentType: 'image/png' }) => {
+    const { client, sent } = stubClient((cmd) => {
+      if (cmd.constructor.name === 'HeadObjectCommand') return typeof head === 'function' ? head() : head;
+      return handler(cmd);
+    });
     return { s: new S3PrivateObjectStore({ client, bucket: BUCKET }), sent };
   };
-  it('sends ONE CopyObject into the target key with CopySourceIfMatch = the version and the source as <bucket>/<key>', async () => {
+  const copies = (sent: Sent[]) => sent.filter((c) => c.name === 'CopyObjectCommand');
+  it('reads the source content type, then sends ONE CopyObject into the target key with CopySourceIfMatch = the version, the source as <bucket>/<key> and REPLACE metadata', async () => {
     const { s, sent } = run(() => ({}));
     await s.copyIfVersion(UPLOAD_KEY, KEY, '"abc123"');
     expect(sent).toEqual([
-      { name: 'CopyObjectCommand', input: { Bucket: BUCKET, Key: KEY, CopySource: `${BUCKET}/${UPLOAD_KEY}`, CopySourceIfMatch: '"abc123"' } },
+      { name: 'HeadObjectCommand', input: { Bucket: BUCKET, Key: UPLOAD_KEY } },
+      {
+        name: 'CopyObjectCommand',
+        input: {
+          Bucket: BUCKET,
+          Key: KEY,
+          CopySource: `${BUCKET}/${UPLOAD_KEY}`,
+          CopySourceIfMatch: '"abc123"',
+          MetadataDirective: 'REPLACE',
+          ContentType: 'image/png',
+        },
+      },
     ]);
+  });
+  it('carries no unsigned metadata of the upload to the final object: REPLACE with only the content type (no cache control, encoding, disposition or user metadata is passed)', async () => {
+    const { s, sent } = run(() => ({}), {
+      ContentLength: 10,
+      ContentType: 'image/jpeg',
+      CacheControl: 'public, max-age=31536000',
+      ContentEncoding: 'gzip',
+      Metadata: { x: 'y' },
+    });
+    await s.copyIfVersion(UPLOAD_KEY, KEY, '"v"');
+    const input = copies(sent)[0]!.input;
+    expect(input.MetadataDirective).toBe('REPLACE');
+    expect(Object.keys(input).sort()).toEqual(['Bucket', 'ContentType', 'CopySource', 'CopySourceIfMatch', 'Key', 'MetadataDirective']);
+    expect(input.ContentType).toBe('image/jpeg');
+  });
+  it('omits ContentType when the source reports none (REPLACE then leaves the target without one rather than guessing)', async () => {
+    const { s, sent } = run(() => ({}), { ContentLength: 10 });
+    await s.copyIfVersion(UPLOAD_KEY, KEY, '"v"');
+    expect(copies(sent)[0]!.input).not.toHaveProperty('ContentType');
+    expect(copies(sent)[0]!.input.MetadataDirective).toBe('REPLACE');
   });
   it('percent-encodes each path segment of the source but keeps the slashes', async () => {
     const { s, sent } = run(() => ({}));
     await s.copyIfVersion('trust/upload/a b/c?d#e+f', KEY, '"v"');
-    expect(sent[0]!.input.CopySource).toBe(`${BUCKET}/trust/upload/a%20b/c%3Fd%23e%2Bf`);
+    expect(copies(sent)[0]!.input.CopySource).toBe(`${BUCKET}/trust/upload/a%20b/c%3Fd%23e%2Bf`);
+  });
+  it('a source that is already gone (HEAD finds nothing) is CHANGED and no copy is sent', async () => {
+    const { s, sent } = run(
+      () => ({}),
+      () => {
+        throw named('NotFound');
+      },
+    );
+    const e = await s.copyIfVersion(UPLOAD_KEY, KEY, '"v"').catch((x: unknown) => x);
+    expect((e as ObjectStoreError).code).toBe('CHANGED');
+    expect(copies(sent)).toEqual([]);
+  });
+  it('an outage while reading the source is UNAVAILABLE without leaking the SDK message', async () => {
+    const { s } = run(
+      () => ({}),
+      () => {
+        throw named('InternalError', { $metadata: { httpStatusCode: 500 } });
+      },
+    );
+    await expectUnavailable(s.copyIfVersion(UPLOAD_KEY, KEY, '"v"'));
   });
   it.each([
     ['PreconditionFailed by name', named('PreconditionFailed')],
@@ -584,7 +648,7 @@ describe('S3PrivateObjectStore: copyIfVersion', () => {
     ['NoSuchKey (the source is gone)', named('NoSuchKey')],
     ['NotFound', named('NotFound')],
     ['a bare 404 status', named('Whatever', { $metadata: { httpStatusCode: 404 } })],
-  ])('maps %s to CHANGED', async (_n, err) => {
+  ])('maps %s on the copy to CHANGED', async (_n, err) => {
     const { s } = run(() => {
       throw err;
     });
@@ -601,7 +665,7 @@ describe('S3PrivateObjectStore: copyIfVersion', () => {
     ['a timeout', named('TimeoutError')],
     ['a non-Error rejection', 'plain string'],
     ['null', null],
-  ])('maps %s to UNAVAILABLE without leaking the SDK message', async (_n, err) => {
+  ])('maps %s on the copy to UNAVAILABLE without leaking the SDK message', async (_n, err) => {
     const { s } = run(() => {
       throw err;
     });

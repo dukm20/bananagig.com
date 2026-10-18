@@ -119,7 +119,10 @@ describe('canonFromRequest', () => {
 
   it('the pricing models and the area modes come out in the canonical order, whatever order the request used', () => {
     const c = canonFromRequest(
-      parseReplace({ pricingModels: ['DROP_ELIGIBLE', 'BUNDLE_ELIGIBLE', 'FIXED_WITH_VARIANTS', 'FIXED'], areaModes: ['POLYGON', 'POSTAL_CODES', 'RADIUS'] }),
+      parseReplace({
+        pricingModels: ['ADD_ONS', 'DROP_ELIGIBLE', 'BUNDLE_ELIGIBLE', 'FIXED_WITH_VARIANTS', 'FIXED'],
+        areaModes: ['POLYGON', 'POSTAL_CODES', 'RADIUS'],
+      }),
     );
     expect(c.pricing).toEqual([...PRICING_MODELS]);
     expect(c.area).toEqual([...AREA_MODES]);
@@ -1072,6 +1075,7 @@ describe('replaceGigTemplateDraft: the definition is validated strictly and the 
     ['an unknown key on a field', { fields: [rawField({ price: 5 })] }, 'fields.0'],
     ['an empty pricing list', { pricingModels: [] }, 'pricingModels'],
     ['pricing without a base price', { pricingModels: ['BUNDLE_ELIGIBLE', 'DROP_ELIGIBLE'] }, 'pricingModels'],
+    ['add-ons alone (a permission, not a base price)', { pricingModels: ['ADD_ONS'] }, 'pricingModels'],
     ['a repeated pricing model', { pricingModels: ['FIXED', 'FIXED'] }, 'pricingModels'],
     ['an unknown pricing model', { pricingModels: ['FIXED', 'FREE'] }, 'pricingModels.1'],
     ['no area mode', { areaModes: [] }, 'areaModes'],
@@ -1170,6 +1174,7 @@ const versionRow = (over: Record<string, unknown> = {}) => ({
   pricing_fixed_with_variants: false,
   pricing_bundle_eligible: true,
   pricing_drop_eligible: false,
+  pricing_add_ons: false,
   area_radius: true,
   area_postal_codes: true,
   area_polygon: false,
@@ -1193,6 +1198,13 @@ describe('versionSummaryView', () => {
       areaModes: ['RADIUS', 'POSTAL_CODES'],
       fieldCount: 7,
     });
+  });
+
+  it('reports ADD_ONS (last in the canonical order) in both views when the permission is on, and not when it is off', () => {
+    const on = versionRow({ pricing_add_ons: true });
+    expect(versionSummaryView(on, 7, false).pricingModels).toEqual(['FIXED', 'BUNDLE_ELIGIBLE', 'ADD_ONS']);
+    expect(versionSummaryView(on, 7, true).pricingModels).toEqual(['FIXED', 'BUNDLE_ELIGIBLE', 'ADD_ONS']);
+    expect(versionSummaryView(versionRow(), 7, true).pricingModels).toEqual(['FIXED', 'BUNDLE_ELIGIBLE']);
   });
 
   it('the management view adds status, revision and the three timestamps (ISO text, null when absent)', () => {
@@ -1228,23 +1240,34 @@ describe('pricingModelsOf and areaModesOf', () => {
     pricing_fixed_with_variants: flags[1],
     pricing_bundle_eligible: flags[2],
     pricing_drop_eligible: flags[3],
+    pricing_add_ons: flags[4],
   });
   const areaRow = (flags: boolean[]) => ({ area_radius: flags[0], area_postal_codes: flags[1], area_polygon: flags[2] });
 
   it('lists the allowed models in the canonical order, one per true flag, whatever the order of the columns', () => {
-    expect(pricingModelsOf(pricingRow([true, true, true, true]))).toEqual(['FIXED', 'FIXED_WITH_VARIANTS', 'BUNDLE_ELIGIBLE', 'DROP_ELIGIBLE']);
-    expect(pricingModelsOf({ pricing_drop_eligible: true, pricing_bundle_eligible: true, pricing_fixed: true })).toEqual([
+    expect(pricingModelsOf(pricingRow([true, true, true, true, true]))).toEqual([
+      'FIXED',
+      'FIXED_WITH_VARIANTS',
+      'BUNDLE_ELIGIBLE',
+      'DROP_ELIGIBLE',
+      'ADD_ONS',
+    ]);
+    expect(pricingModelsOf({ pricing_add_ons: true, pricing_drop_eligible: true, pricing_bundle_eligible: true, pricing_fixed: true })).toEqual([
       'FIXED',
       'BUNDLE_ELIGIBLE',
       'DROP_ELIGIBLE',
+      'ADD_ONS',
     ]);
+    // a row from before CAT-004 (no pricing_add_ons column value) or with the permission off never reports ADD_ONS
+    expect(pricingModelsOf({ pricing_fixed: true, pricing_add_ons: false })).toEqual(['FIXED']);
+    expect(pricingModelsOf({ pricing_fixed: true })).toEqual(['FIXED']);
     expect(areaModesOf(areaRow([true, true, true]))).toEqual(['RADIUS', 'POSTAL_CODES', 'POLYGON']);
     expect(areaModesOf({ area_polygon: true, area_radius: true })).toEqual(['RADIUS', 'POLYGON']);
   });
 
-  it('each flag alone yields exactly its model (the mapping of the four pricing and three area columns is one to one)', () => {
+  it('each flag alone yields exactly its model (the mapping of the five pricing and three area columns is one to one)', () => {
     PRICING_MODELS.forEach((m, i) => {
-      const flags = [false, false, false, false];
+      const flags = [false, false, false, false, false];
       flags[i] = true;
       expect(pricingModelsOf(pricingRow(flags)), m).toEqual([m]);
     });
@@ -1256,11 +1279,13 @@ describe('pricingModelsOf and areaModesOf', () => {
   });
 
   it('no true flag, an absent column and a value that is not exactly true (1, "t", "true", null) are not models', () => {
-    expect(pricingModelsOf(pricingRow([false, false, false, false]))).toEqual([]);
+    expect(pricingModelsOf(pricingRow([false, false, false, false, false]))).toEqual([]);
     expect(areaModesOf(areaRow([false, false, false]))).toEqual([]);
     expect(pricingModelsOf({})).toEqual([]);
     expect(areaModesOf({})).toEqual([]);
-    expect(pricingModelsOf({ pricing_fixed: 1, pricing_fixed_with_variants: 't', pricing_bundle_eligible: 'true', pricing_drop_eligible: null })).toEqual([]);
+    expect(
+      pricingModelsOf({ pricing_fixed: 1, pricing_fixed_with_variants: 't', pricing_bundle_eligible: 'true', pricing_drop_eligible: null, pricing_add_ons: 1 }),
+    ).toEqual([]);
     expect(areaModesOf({ area_radius: 1, area_postal_codes: 't', area_polygon: 'true' })).toEqual([]);
   });
 });
@@ -1468,6 +1493,11 @@ describe('the cache snapshot schema', () => {
     for (const k of ['requirementType', 'referenceCode']) cases.push([`requirement.${k}`, (t) => delete version(t).requirements[0]![k]]);
     expect(cases.length).toBeGreaterThan(40);
     for (const [label, mutate] of cases) expect(GigTemplateSnapshotSchema.safeParse(withTemplate(mutate)).success, label).toBe(false);
+  });
+
+  it('accepts ADD_ONS as a pricing model of the cached version (and an older snapshot without it)', () => {
+    expect(GigTemplateSnapshotSchema.safeParse(withTemplate((t) => (version(t).pricingModels = ['FIXED', 'ADD_ONS']))).success).toBe(true);
+    expect(GigTemplateSnapshotSchema.safeParse(withTemplate((t) => (version(t).pricingModels = ['FIXED']))).success).toBe(true);
   });
 
   it('rejects a value of the wrong type or outside its vocabulary', () => {

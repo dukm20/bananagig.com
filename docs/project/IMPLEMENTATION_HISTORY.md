@@ -1120,3 +1120,38 @@ None created: the decision is product direction, recorded as the canonical align
 
 ### Known follow-up
 The owner updates the PRD Word file from `PRD_RECONCILIATION.md`. Open owner questions stay open (default price-lock time, late-cancellation fee split Q32). Next: CAT-004 Variants, Add-ons and Media (in progress), then PRO-002.
+
+## CAT-004 — 2026-10-18
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(CAT-004)"`.
+Summary: Variants, Add-ons and Media. A provider Gig VERSION gains variants, add-ons and photos as version-owned children that freeze with it (database guards, also against DELETE and TRUNCATE); the next draft copies the options and re-attaches the same ready photos without copying bytes; v1 is never touched. One pricing rule (base plus a non-negative delta in minor units and minutes; no per-child currency, no absolute prices, no quantity). Photos are private assets (JPEG, PNG, WebP) verified by the server and promoted from a separate upload key; assets are shared by attachment. Designed so BananaDrop (PRD-TRP-001) can consume it: it references the exact Gig version and a stable item key, and nothing about tiers, ladders or Drop eligibility is stored on a Gig, variant, add-on or photo. Not built: service areas, availability, booking, search, public photo delivery, derivatives, moderation, HEIC, Go-Live, the BananaDrop domain.
+
+### Housekeeping at the start (requested)
+`PROJECT_STATE` records CAT-003 (`1498d44`, GitHub Actions run 39091478398 SUCCESS in 23m 54s). PRD-TRP-001 (`eab5764`) was committed locally in between (documentation only, not pushed) and its product direction was applied to the design. `checkpoint:start` ran first on a clean tree. The user-owned `pnpm dev` shells were not touched. `la-oc` stays PLANNED; DEBT-0030, 0064, 0065, 0070 and 0076 to 0097 stay OPEN.
+
+### Delivered
+- Migrations: 0021 (template permission `pricing_add_ons` and the fifth pricing model `ADD_ONS`; `gig_version_variants`, `gig_version_add_ons`, `media_assets`, `gig_version_media`; four guard functions plus the publication backstop; widened audit actions; 15 configuration parameters and 72 content entries), 0022 hardening from the independent reviews (reconciliation markers for object removal, a derived object key, no UPDATE of options, repair of uploads stuck on retired versions), 0023 (corrected copy as content version 2, 13 photo-refusal messages). Forward-only; 0001 to 0020 untouched.
+- Service: `ProviderGigService` gained the draft-mutation primitive (account, Gig and draft locks, revision check, exactly +1), `replaceVariants`, `replaceAddOns`, the next-draft copy, publish validation of options and photos, retire that closes pending uploads and the GigMenu counts in a constant number of statements; `GigMediaService` (authorize, finalize with signature, header-dimension, hash and scan checks and a version-conditional promotion, alt text, reorder in one UPDATE, detach, preview, reconciled clean-up) with pure JPEG/PNG/WebP header parsing; the worker job `provider.gig-media-cleanup`; `copyIfVersion` no longer carries browser metadata (REPLACE directive).
+- Contracts and API: nine owner-only routes, four media error codes, the version DTO with variants, add-ons, photos, constraints and child summaries, publish event counts; OpenAPI and AsyncAPI regenerated and valid.
+- Web (temporary): whole-set no-JS options forms, photo upload through the web server with `node:http`, controlled preview route, closed issue and refusal words, section fragments. Smoke scenario `Provider variants, add-ons and media`.
+- Docs: ADR-0047, `PROVIDER_GIGS.md` (rewritten, with a BananaDrop readiness section), the data model documents, `skills/catalog`, `skills/provider`, `skills/infrastructure`, `skills/testing`, DEBT-0098 to DEBT-0101 (DEBT-0089 narrowed), LRN-0062 to LRN-0065.
+- Quality process: seven parallel agents (database, Gig service, media and worker, catalog hook, API, web, smoke) against one spec and contract; three independent read-only reviews (security, data and concurrency, API/UX/accessibility) with a fix wave; a time-boxed mutation campaign of 361 mutants on a private copy (280 killed by the existing suites; 81 survived, about 42 of them real gaps now killed by new tests; the rest equivalent, redundant or race-only). Defects found and fixed before the commit: retiring a Gig left unfinished uploads and their bytes forever; best-effort object deletion was never retried; a double finalize gave the loser a refusal for a photo that succeeded; upload signing ran inside the account-locked transaction; the upload expiry used the application clock; the next draft copied price deltas of a dropped currency; no-file and oversize uploads ended on raw error pages; validation failures named no field; a stale assertion after 0022. Accepted limits are in DEBT-0098 to DEBT-0101.
+
+### Schema
+Migrations 0021 to 0023: four tables, their guard functions and the publication backstop, the constraints and indexes listed and justified in NORMALIZATION_LOG, one column on `catalog.gig_template_versions`. NORMALIZATION_LOG, DATA_MODEL, DATA_DICTIONARY, ERD, DATA_MODEL_CHANGELOG and SCHEMA_SNAPSHOT updated; Data Model Review Gate passed (version ownership; delta versus absolute price; asset versus attachment with binary reuse; key versus name versus row id; display order; no JSON; currency inherited; BCNF reviewed).
+
+### Contracts
+`packages/contracts/src/gig.ts` (CAT-004 section); 19 error codes, 43 issue reasons, 13 photo refusal reasons; the published event gained `variantCount`, `addOnCount`, `mediaCount`.
+
+### Tests
+Unit 13533 and 164 root script tests, integration 8053 in 62 files, smoke 43 checks (41/43 locally: Email and Phone verification hit the daily send cap of `customer.dev` on the developer database; all other checks, including the new scenario, pass).
+
+### Skills updated
+`skills/catalog`, `skills/provider`, `skills/infrastructure`, `skills/testing`.
+
+### ADRs
+ADR-0047.
+
+### Known follow-up
+DEBT-0098 (simple option model), DEBT-0099 (HEIC, header-only verification, assumed limits, no derivatives or delivery), DEBT-0100 (upload handling and concurrency), DEBT-0101 (API shape and temporary editor). Next: PRO-002 Provider Public Profile, then PRO-003, the availability and service-area checkpoints and the BananaDrop core (DROP-001 onward) per `docs/product/ROADMAP.md`.

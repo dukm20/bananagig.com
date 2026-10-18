@@ -9,3 +9,7 @@ export * from './gig-errors';
 export * from './gig-types';
 export * from './gig-policy';
 export * from './gig-service';
+export * from './gig-sql';
+export * from './gig-options';
+export * from './gig-media-model';
+export * from './gig-media';

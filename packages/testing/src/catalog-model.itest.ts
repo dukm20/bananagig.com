@@ -1002,6 +1002,8 @@ describe('A. schema shape: a platform-owned taxonomy with generated content keys
       // migration 0020 (CAT-003): a Gig stands on a template, a Gig version on the exact template version, a field value on the answered field and its ENUM option
       { from_table: 'provider.gig_version_field_values', conname: 'fk_gig_version_field_values__field_id' },
       { from_table: 'provider.gig_version_field_values', conname: 'fk_gig_version_field_values__option' },
+      // migration 0021 (CAT-004): a photo attachment names the MEDIA field of the bound template version it satisfies
+      { from_table: 'provider.gig_version_media', conname: 'fk_gig_version_media__field_id' },
       { from_table: 'provider.gig_versions', conname: 'fk_gig_versions__gig_template_version_id' },
       { from_table: 'provider.gigs', conname: 'fk_gigs__gig_template_id' },
       { from_table: 'provider.registration_service_types', conname: 'fk_registration_service_types__service_type_id' },
