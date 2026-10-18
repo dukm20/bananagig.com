@@ -92,7 +92,7 @@ function inferCheckpoints() {
     ].filter((f) => unattributed.has(f));
     if (!added.length) continue;
     for (const f of added) unattributed.delete(f);
-    const id = subject.match(/^[a-z]+\(([A-Z][A-Z0-9]*-\d{3}[A-Z]?)\)/)?.[1];
+    const id = subject.match(/^[a-z]+\(([A-Z][A-Z0-9]*(?:-[A-Z][A-Z0-9]*)?-\d{3}[A-Z]?)\)/)?.[1];
     if (!id) {
       r.fail(`commit ${hash.slice(0, 7)} adds a migration but its subject has no (<ID>) checkpoint: "${subject}"`);
       continue;

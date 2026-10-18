@@ -439,6 +439,12 @@ describe('checkpoint:start', () => {
     expect(node(r, 'checkpoint-start.mjs', ['INF-002A']).code).toBe(0);
     expect(node(r, 'checkpoint-start.mjs', ['INF-002AB']).out).toContain('invalid checkpoint id');
   });
+  it('accepts a checkpoint id with a second name segment such as ENG-GOV-001, and nothing looser', () => {
+    const r = repo(minimal);
+    expect(node(r, 'checkpoint-start.mjs', ['ENG-GOV-001']).code).toBe(0);
+    for (const bad of ['ENG-GOV-GOV-001', 'ENG-GOV-01', 'eng-gov-001', 'ENG--001', 'ENG-GOVERNANCE-001'])
+      expect(node(r, 'checkpoint-start.mjs', [bad]).out, bad).toContain('invalid checkpoint id');
+  });
   it('refuses a dirty working tree and lists the files', () => {
     const r = repo(minimal);
     write(r, 'stray.txt', 'x');
