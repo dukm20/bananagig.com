@@ -9,3 +9,7 @@ next-env.d.ts
 *.tsbuildinfo
 .checkpoint
 .vitest
+
+# Claude Code local state (ENG-GOV-001): hook evidence and personal settings are never committed
+.claude/state/
+.claude/settings.local.json

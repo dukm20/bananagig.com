@@ -2,15 +2,15 @@
 
 Every knowingly postponed item is recorded here, not buried in completion reports. IDs are permanent. Statuses: OPEN, IN_PROGRESS, ACCEPTED (a conscious, documented risk), RESOLVED (keep the entry).
 
-## DEBT-0001 — CI workflow never executed
+## DEBT-0001 — CI is not enforced before merge: `main` has no protection, required review or CODEOWNERS enforcement
 
 Status: IN_PROGRESS
 Severity: LOW
 Introduced by: INF-001
 Owner/domain: infrastructure
-Description: `.github/workflows/ci.yml` (verify, integration, compose-smoke, Trivy, governance) was written in INF-001 and first executed on 2026-10-06 (UTC) when the owner pushed `main` to github.com/dukm20/bananagig.com. Run #1 (commit 17b6b8d) failed at `pnpm audit --prod`, which skipped the governance checks and the compose-smoke job. CI-001 fixed the cause and run #2 (commit 14db38d) passed every job: verify (including governance) and compose-smoke. The remaining gap is that nothing enforces CI before merging.
+Description: `.github/workflows/ci.yml` (verify, integration, compose-smoke, Trivy, governance) was written in INF-001 and first executed on 2026-10-06 (UTC) when the owner pushed `main` to github.com/dukm20/bananagig.com. Run #1 (commit 17b6b8d) failed at `pnpm audit --prod`, which skipped the governance checks and the compose-smoke job. CI-001 fixed the cause and run #2 (commit 14db38d) passed every job: verify (including governance) and compose-smoke. The remaining gap is that nothing enforces CI before merging. The ENG-GOV-001 audit (2026-10-18, unauthenticated reads) confirmed `main` is unprotected (`protected: false`, no rulesets), no pull request has ever been opened, commits are unsigned and the repository is public; `.github/CODEOWNERS` was added but is inert until a ruleset requires code-owner review. The exact settings to apply are in `docs/engineering/GITHUB_SETTINGS.md` (remediation items C-1 and C-2).
 Why deferred: pushing is a separate explicit human decision; checkpoint tooling never pushes.
-Exit criteria: branch protection on `main` requiring the `verify` and `compose-smoke` jobs (a repository setting the owner must apply; the checkpoint tooling cannot).
+Exit criteria: a ruleset on `main` requiring a pull request, one approval with code-owner review, the `verify` and `compose-smoke` checks (and, after one clean cycle, the governance and CodeQL jobs), no force push, read back with the verification commands of `GITHUB_SETTINGS.md` (a repository setting the owner must apply; the checkpoint tooling cannot).
 Target checkpoint: first checkpoint after a remote is configured
 
 ## DEBT-0002 — Transactional outbox not implemented
@@ -1152,4 +1152,48 @@ Description: (1) Detaching a photo is `DELETE` with a JSON body (`expectedRevisi
 Why deferred: the shared component schema registry and the design system are separate checkpoints.
 Exit criteria: schemas are registered once in `components.schemas`; the detach route moves to a body-less shape; UI-BASE-001 retrofits the editor with a shared money component and field-level errors.
 Target checkpoint: UI-BASE-001 and the API conventions follow-up
+
+## DEBT-0102 — Production configuration validation is incomplete and the production code path is never exercised
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: INF-002 (found by the ENG-GOV-001 audit, items A-04, A-05, A-16, A-19)
+Owner/domain: platform / config
+Description: In production the configuration (1) does not require Valkey, S3, SMTP or NATS for the API and Valkey or S3 for the worker (an empty Valkey URL connects to localhost; `S3_BUCKET` defaults to the development bucket and `MAIL_FROM` to a `.localhost` sender); (2) accepts `http://` public URLs, which makes the session cookies non-Secure and drops the `__Host-` prefix; (3) does not refuse the development database password and S3 keys; (4) accepts `DB_STATEMENT_TIMEOUT_MS=0`; (5) leaves the fake-adapter refusals to a single `NODE_ENV` default of `development`, so compose, the smoke and CI never boot the production path (only unit tests cover it) and only the fake SMS transport guards itself at construction; (6) lets `require_clean_scan` be turned off in production configuration with no code-level floor; (7) duplicates the seeded Gig policy defaults in code for tests.
+Why deferred: found by an audit that changes no production code; the fixes change startup behaviour and need approval and tests.
+Exit criteria: remediation items R-04 and R-05 of `docs/engineering/GOVERNANCE_REMEDIATION_PLAN.md`: production validation requires and refuses the values above, every fake adapter guards itself, a CI job boots the images with `NODE_ENV=production` and the disabled adapters, and the clean-scan floor is enforced.
+Target checkpoint: ENG-GOV-002
+
+## DEBT-0103 — Runtime resilience gaps: missing timeouts, lifecycle control, a side-effecting diagnostics endpoint, no migration deployment path and unbounded outbox retries
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: INF-002 and later (found by the ENG-GOV-001 audit, items A-06, A-07, A-08, A-14)
+Owner/domain: platform / api / worker
+Description: (1) The web server's calls to the API, the S3 clients and an OpenSearch fetch have no timeout, and Fastify has no request or connection timeout; (2) there is no `unhandledRejection` or `uncaughtException` handler, no overall shutdown deadline, and the advisory-lock release path can return a still-locked connection to the pool; (3) `/internal/diagnostics` is registered unconditionally and unauthenticated, writes and deletes an S3 object, sends a real SMTP message with TLS verification disabled and returns the database version, protected only by a proxy 404 rule (MIT-0001), and `/metrics` is reachable through the proxy; (4) migrations run from the host only, and readiness is `SELECT 1`, so an image can report ready against an unmigrated or newer database; (5) poison outbox events retry forever, the JetStream duplicate window (120 s) is shorter than the backoff cap (300 s), and the purge error is swallowed.
+Why deferred: found by an audit that changes no production code.
+Exit criteria: remediation items R-06, R-07, R-08 and R-15 of the plan.
+Target checkpoint: ENG-GOV-002 and ENG-GOV-003; the outbox items before payments or webhooks
+
+## DEBT-0104 — No operational alerting, partial abuse protection and minimal security headers
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: INF-002 and later (found by the ENG-GOV-001 audit, items A-09, A-10, A-11, A-17)
+Owner/domain: platform / web / observability
+Description: (1) The only metrics are database, auth and configuration counters: no HTTP rate, latency or error metrics, no outbox backlog or age, no job-failure counts, no Prometheus rules, and the worker stays ready when the relay stalls; (2) rate limiting covers only email and phone verification and password reset (DEBT-0030 lists the absence; the 142 authenticated routes and the web login are unlimited), and one Valkey with LRU eviction holds sessions, rate-limit counters and caches together; (3) only `frame-ancestors` and `X-Frame-Options` are set: no HSTS, nosniff, Permissions-Policy or full CSP behind the sanitised-HTML renderer; (4) log redaction works by key name only (no `email`, `phone`, `ip` or `subject`), although no leak was found.
+Why deferred: found by an audit that changes no production code.
+Exit criteria: remediation items R-09, R-11, R-12 and R-17 of the plan.
+Target checkpoint: ENG-GOV-004 and the rate-limiting checkpoint (DEBT-0030)
+
+## DEBT-0105 — Supply chain and test governance controls are partial
+
+Status: OPEN
+Severity: LOW
+Introduced by: INF-001 and later (found by the ENG-GOV-001 audit, items A-12, A-15, A-18)
+Owner/domain: infrastructure / testing
+Description: Beyond the advisory gates added by ENG-GOV-001 (secret scan, policy scan, CodeQL, dependency review, workflow lint, Dependabot): container images are pinned by tag not digest (DEBT-0005); Trivy scans 3 of about 19 images; there is no SBOM or licence check; third-party containers lack the hardening the app images have; `env_file: .env` gives the API and worker every secret; ESLint is not type-aware (`no-floating-promises` is off), there are no coverage thresholds, every workspace test script uses `--passWithNoTests`, and one integration test skips silently when Valkey is unreachable.
+Why deferred: each needs measurement and tuning before it can be required.
+Exit criteria: remediation items R-13 and R-14 of the plan; the advisory jobs are made required (C-2).
+Target checkpoint: ENG-GOV-004 and ENG-GOV-002
 

@@ -27,6 +27,7 @@ Operate and extend the local container platform: services, profiles, ports, heal
 - Every long-running service needs a healthcheck unless its image is distroless (collector, flagd): then the smoke test must verify it by connectivity.
 - No secrets in images or git; development defaults must look obviously fake (`*_dev_only`).
 - Keycloak (`keycloak-auth`) is configured from `infra/keycloak/bananagig-realm.json` only; its issuer is pinned with `KC_HOSTNAME`. The public identity host in Caddy exposes only `/realms/bananagig/*` and `/resources/*`; the admin console is on a dev-only host. See `skills/identity/SKILL.md`.
+- **Production engineering governance (ENG-GOV-001, `docs/engineering/PRODUCTION_STANDARD.md`).** CI runs the blocking `ci.yml` and the ADVISORY `governance.yml` (policy scan, gitleaks over full history, dependency review, actionlint) and `codeql.yml`; an advisory job never blocks a merge, and no job is *required* until a GitHub ruleset says so (`docs/engineering/GITHUB_SETTINGS.md`: `main` was unprotected at the audit and nothing was configured by an agent). Workflows declare `permissions:`, `timeout-minutes` and `concurrency`, and every `uses:` is pinned to a full commit SHA verified against the official repository's tag (`git ls-remote`); container images are pinned by tag (digest pinning is DEBT-0005). `.claude/settings.json` and `.claude/hooks/` are local guardrails (deny destructive git, applied-migration edits and `.env`; ask for gate-weakening edits); hooks snapshot at session start and are not release enforcement. Temporary mitigations live in `docs/engineering/TEMPORARY_MITIGATIONS.md`, never as an undocumented flag or proxy rule.
 
 ## Implementation pattern
 
@@ -86,6 +87,7 @@ Compose services add no tables. A service that stores state (queue, cache, searc
 - Do not put secrets or real credentials in `.env.example`, compose files or images.
 - Do not use `latest` tags.
 - Do not route `/internal/*` through Caddy.
+- Do not mark a CI job `continue-on-error` without a comment saying when it becomes blocking, do not add a workflow without `permissions:`, and do not pin a third-party action by tag; do not report a GitHub setting as configured unless you read it back.
 
 ## Related ADRs
 
@@ -93,4 +95,4 @@ ADR-0001, ADR-0003, ADR-0005, ADR-0007, ADR-0047
 
 ## Last reviewed
 
-2026-10-18 (CAT-004)
+2026-10-18 (ENG-GOV-001)

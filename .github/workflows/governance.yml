@@ -1,0 +1,99 @@
+name: governance
+# ENG-GOV-001 (Checkpoint B): repository policy and supply-chain gates, ADVISORY.
+# Every job runs with `continue-on-error: true`, so a finding is visible in the run but does not fail it.
+# Flip each job to blocking (delete its `continue-on-error`) only after (a) the job has been green on main for a
+# review period and (b) the owner has signed off, and then add it to the required checks of the main ruleset
+# (Checkpoint C). Nothing here changes branch protection.
+on:
+  push: { branches: [main] }
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  policy-scan:
+    # ADVISORY: flip to blocking when `pnpm governance:scan --strict` is clean on main, i.e. the owner has replaced every
+    # "PENDING owner review" in scripts/governance-allowlist.json. At that point also switch the last step to --strict.
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { fetch-depth: 0 } # the scan compares the allowlist with its copy on the base branch
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with: { version: 12.9.1 }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with: { node-version: 24, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - name: governance:scan
+        env:
+          # Pull request: the allowlist baseline of the BASE branch is the reference, so a PR cannot add an exception (a new
+          # entry, a higher count, a higher R5 ratchet) for its own change without a finding. Push: the scan defaults to HEAD~1.
+          BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
+        run: |
+          if [ -n "$BASE_REF" ]; then
+            pnpm governance:scan --base="$BASE_REF"
+          else
+            pnpm governance:scan
+          fi
+
+  secret-scan:
+    # ADVISORY: flip to blocking once `pnpm secrets:scan` reports 0 leaks on main history and the allowlist is owner-reviewed.
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { fetch-depth: 0 } # scan the full history, not only the tip
+      # On a pull request the gitleaks configuration (including its allowlists) comes from the BASE branch, never from the
+      # PR itself, so a PR cannot allowlist its own secret. On push, and while the base branch has no .gitleaks.toml yet
+      # (the PR that introduces it), the checked-out file is used. Change .gitleaks.toml only through a reviewed PR.
+      - name: select gitleaks config
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          cfg="$RUNNER_TEMP/gitleaks.toml"
+          if [ "$EVENT" = "pull_request" ] && git show "origin/$BASE_REF:.gitleaks.toml" > "$cfg" 2>/dev/null; then
+            echo "gitleaks config: from origin/$BASE_REF"
+          else
+            cp .gitleaks.toml "$cfg"
+            echo "gitleaks config: from the checked-out revision"
+          fi
+          echo "GITLEAKS_CONFIG=$cfg" >> "$GITHUB_ENV"
+      # Official gitleaks image run directly (the gitleaks-action needs a licence for organisation repositories).
+      # Pinned by tag and digest. Keep in sync with the `secrets:scan` script in package.json.
+      - name: gitleaks (full history, redacted)
+        run: |
+          docker run --rm -v "$PWD:/repo" -v "$GITLEAKS_CONFIG:/gitleaks.toml:ro" \
+            ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            detect --source /repo --config /gitleaks.toml --redact --no-banner --verbose
+
+  dependency-review:
+    # ADVISORY: flip to blocking when the repository's dependency graph is enabled and the main ruleset requires this check.
+    # Needs the GitHub dependency graph (repository setting); the job reports a setup error until it is enabled.
+    if: github.event_name == 'pull_request'
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
+        with:
+          fail-on-severity: high
+
+  workflow-lint:
+    # ADVISORY: flip to blocking when actionlint is clean on main.
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: actionlint
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo \
+            rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
+            -color

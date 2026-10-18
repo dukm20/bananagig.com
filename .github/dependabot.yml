@@ -1,0 +1,28 @@
+# ENG-GOV-001 (Checkpoint B): automated dependency update PRs. Nothing is ignored; every update surfaces as a PR
+# that goes through CI like any other change. Minor and patch updates are grouped to keep the PR volume small;
+# major updates arrive as individual PRs.
+version: 2
+updates:
+  - package-ecosystem: npm
+    # pnpm workspace: the root plus every workspace package.json (pnpm-workspace.yaml: apps/*, packages/*)
+    directories: [/, /apps/*, /packages/*]
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    groups:
+      actions-minor-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: docker
+    directory: /
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 3
+  - package-ecosystem: docker
+    directory: /infra/postgres
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 3

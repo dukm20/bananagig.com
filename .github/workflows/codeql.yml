@@ -1,0 +1,33 @@
+name: codeql
+# ENG-GOV-001 (Checkpoint B): static analysis, ADVISORY (job-level continue-on-error).
+# Flip to blocking when the alert baseline has been triaged and the main ruleset requires the check.
+# Code scanning results are uploaded to the Security tab, which needs GitHub code scanning to be available
+# for this repository (public, or GitHub Advanced Security); the job reports an upload error otherwise.
+on:
+  push: { branches: [main] }
+  pull_request:
+  schedule:
+    - cron: "23 4 * * 1" # weekly, Monday 04:23 UTC
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  analyze:
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          languages: javascript-typescript
+          build-mode: none
+      - uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          category: "/language:javascript-typescript"

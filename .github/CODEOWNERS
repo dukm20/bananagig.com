@@ -1,0 +1,33 @@
+# Code ownership (ENG-GOV-001). It takes effect only when a GitHub ruleset requires
+# review from Code Owners (docs/engineering/GITHUB_SETTINGS.md); until then it is documentation.
+# Risk-sensitive paths are listed explicitly so a reviewer requirement can be tightened per path later.
+
+*                                  @dukm20
+
+# Data and migrations (P1; an applied migration must never change)
+/db/migrations/                    @dukm20
+/docs/data/                        @dukm20
+
+# Controls that decide what may ship
+/.github/                          @dukm20
+/.claude/                          @dukm20
+/scripts/                          @dukm20
+/CLAUDE.md                         @dukm20
+/docs/engineering/                 @dukm20
+/eslint.config.js                  @dukm20
+/turbo.json                        @dukm20
+
+# Runtime configuration, containers and infrastructure
+/packages/config/                  @dukm20
+/Dockerfile                        @dukm20
+/compose.yaml                      @dukm20
+/compose.dev.yaml                  @dukm20
+/infra/                            @dukm20
+
+# Identity, authorization, sessions, consent, verification evidence and media (P0)
+/packages/identity/                @dukm20
+/packages/accounts/                @dukm20
+/packages/trust/                   @dukm20
+/packages/platform/                @dukm20
+/apps/api/src/plugins/             @dukm20
+/apps/web/src/lib/auth/            @dukm20

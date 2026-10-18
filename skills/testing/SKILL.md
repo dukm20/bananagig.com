@@ -28,6 +28,7 @@ Choose and write the right test level, and run the same gates CI runs.
 - Smoke (`pnpm smoke`): runs inside the Compose network and proves real connectivity across all services.
 - Contract checks: `pnpm specs:check`, `pnpm openapi:lint`, `pnpm asyncapi:validate`; boundaries: `pnpm deps:check`.
 - Test helpers live in `@bananagig/testing` and are never imported by production code. Identity test helpers (`@bananagig/identity/testing`: forged tokens, scripted PKCE login, dev password grant) are DEV/TEST ONLY and ESLint forbids importing them from production code.
+- **Policy gates are tests of the repository itself (ENG-GOV-001).** `pnpm governance:scan` fails on skipped or disabled tests, unregistered to-do, fix-me and hack marker comments, `@ts-ignore`, workflow without `permissions:` or with an unpinned action, new `--passWithNoTests`, an expired or incomplete mitigation entry and a stale allowlist entry (`scripts/governance-allowlist.json`: every entry needs a justification and matches something, or the scan fails); `pnpm secrets:scan` runs the pinned gitleaks image over full history with `.gitleaks.toml` (narrow regex-plus-path allowlists only). The hook scripts in `.claude/hooks` are tested with structured stdin fixtures in `scripts/claude-hooks.test.mjs`, including false positives and fail-safe behaviour on malformed input. A failed Bash command reaches a `PostToolUseFailure` event, not `PostToolUse`, so verification-evidence hooks register for both and infer success from the event type.
 
 ## Implementation pattern
 
@@ -111,9 +112,10 @@ Schema changes also need constraint-violation and rollback tests, and the data-m
 - Do not skip failing tests to make a gate pass.
 - Do not call real external services from tests.
 - Do not read verification secrets from the database in a test (they are hashes): take them from the delivered message, the fake SMS sink or the `EmailSender` / `SmsSender` double.
+- Do not add a test skip, `.only`, `it.fails` or a longer timeout to get green; a failure under load is called flaky only after isolated reruns pass, and a guard is never weakened to pass a suite.
 
 ## Related ADRs
 ADR-0004, ADR-0006, ADR-0025, ADR-0034, ADR-0035, ADR-0036, ADR-0037, ADR-0039, ADR-0047
 
 ## Last reviewed
-2026-10-18 (CAT-004)
+2026-10-18 (ENG-GOV-001)

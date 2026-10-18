@@ -1635,3 +1635,103 @@ Only for documentation-only checkpoints that touch files no agent is editing; ve
 
 ### Evidence
 Commit `eab5764` (PRD-TRP-001) landing between CAT-003 and the uncommitted CAT-004 work; `docs/project/IMPLEMENTATION_HISTORY.md` entry PRD-TRP-001.
+
+## LRN-0066 — A guard that reads command text is never complete: canonicalise, treat dynamic constructs as ASK, and test with a probe corpus
+
+Date: 2026-10-18
+Checkpoint: ENG-GOV-001
+Domain: process
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/infrastructure/SKILL.md
+
+### Context
+The repository Claude Code hooks decide from the text of a Bash command whether it is destructive (force push, hard reset of the whole tree, applied-migration edits, volume removal). The first version passed its own 47 tests, and an independent red-team still found bypasses: a `$(...)` inside a heredoc, a pipe into a shell, git option abbreviations such as `git reset --har`, ANSI-C quoting, brace expansion, a `cp` into the migrations directory, case-insensitive paths on macOS and a secret split across two strings.
+
+### Learning
+Match on the parsed command (split into simple commands; canonicalise git options, including unique long-option abbreviations; decode quoting and brace forms), never on a regular expression over the raw text. Anything the parser cannot resolve statically (command substitution, a pipe into a shell, `eval`, a command string built from variables) is ASK, not allow. A failed Bash call reaches `PostToolUseFailure`, not `PostToolUse`, so evidence hooks must listen to both. Keep a probe corpus of evasions beside the tests and add every escape found to it.
+
+### Why it matters
+A guard that is easy to bypass by accident teaches the team to trust it, which is worse than no guard. The deny list is a safety net for mistakes, not a security boundary; real enforcement is the CI and the repository ruleset.
+
+### Reuse rule
+When adding a rule to `.claude/hooks`, add its allowed, asked and denied spellings (abbreviation, clustered flags, `=value`, wrapper, dynamic form) to `scripts/claude-hooks.test.mjs` in the same change.
+
+### Evidence
+`scripts/claude-hooks.test.mjs`, `.claude/hooks/README.md` (limits section) and the red-team table in `docs/engineering/GOVERNANCE_AUDIT.md`.
+
+## LRN-0067 — Fail-closed hooks can lock the session: refactor them in a scratch copy, swap atomically, and document the human recovery
+
+Date: 2026-10-18
+Checkpoint: ENG-GOV-001
+Domain: process
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/infrastructure/SKILL.md
+
+### Context
+`.claude/settings.json` runs the guard scripts with `onFailure: "block"`. While a hook agent was rewriting `lib.mjs` in place, the old entry scripts imported exports that no longer existed. Every Bash, Write and Edit call of every agent, the author of the fix included, was then refused with a module-link error. Only Read still worked, and no agent could repair it without bypassing the guard, which is what the guard exists to prevent. The repository owner had to restore the files from a terminal.
+
+### Learning
+Hook scripts are executed on every tool call (they are not snapshotted at session start), so a half-edited hook is live immediately. Edit a copy outside `.claude/`, run its full test suite and an import of every entry script there, then copy the complete consistent set into place in one command, with a backup taken first. Keep entry scripts and library exports changed in the same swap. The README must say how a human recovers (restore the backup, or a git-ignored `.claude/settings.local.json` with `"disableAllHooks": true`).
+
+### Why it matters
+A fail-closed control with no recovery path turns a typo into an outage of the whole development workflow and tempts people to remove the control.
+
+### Reuse rule
+Never edit `.claude/hooks/*.mjs` in place. Do not run a hook refactor and unrelated work in the same session without a backup.
+
+### Evidence
+The deadlock observed on 2026-10-18 (`pre-bash.mjs` import of `analyzeBash` failing), and the recovery section of `.claude/hooks/README.md`.
+
+## LRN-0068 — An advisory CI job is not a control: only a required status check in a ruleset blocks a merge
+
+Date: 2026-10-18
+Checkpoint: ENG-GOV-001
+Domain: process
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/infrastructure/SKILL.md
+
+### Context
+ENG-GOV-001 added a policy scan, a secret scan, CodeQL, dependency review and workflow lint as `continue-on-error` jobs, and left the existing `verify` job unchanged. The red-team found that none of them can stop a bad change: `main` has no ruleset (public repository, `protected: false`, `rulesets: []` read without authentication), so even `verify` is only a report after the push, and `verify` itself does not run the new scans. A related blind spot: `data-model:check` compares against the base ref and passes silently when that ref is empty (first push or force push), so the applied-migration immutability check can compare HEAD with HEAD.
+
+### Learning
+Count a gate as enforced only when (a) the command is in a job that a ruleset requires, and (b) the job fails on a finding instead of reporting it. Until the owner applies the ruleset, every governance claim is "detects", never "prevents". Make comparisons against a base ref fail loudly when the base cannot be determined.
+
+### Why it matters
+Reports that a gate "exists" were true and still gave a false sense of safety: nothing would have stopped a skipped test or a leaked key from reaching `main`.
+
+### Reuse rule
+When adding a CI check, state in the same change whether it is required by the ruleset; do not describe it as a safeguard otherwise. The remediation items are C-1, C-2 and C-7 in `docs/engineering/GOVERNANCE_REMEDIATION_PLAN.md`.
+
+### Evidence
+`docs/engineering/GOVERNANCE_AUDIT.md` (A-01 and the red-team table), `docs/engineering/GITHUB_SETTINGS.md` (ruleset to apply and read-back commands), `.github/workflows/governance.yml`.
+
+## LRN-0069 — An isolated copy of the repository must clone `node_modules`, not symlink it
+
+Date: 2026-10-18
+Checkpoint: ENG-GOV-001
+Domain: testing
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/testing/SKILL.md
+
+### Context
+Scratch copies are used for mutation campaigns and red-team probes so the real repository is never mutated. The copies symlinked `node_modules` to save time. pnpm workspace packages are links inside `node_modules`, so a symlinked `node_modules` resolved `@bananagig/*` imports back into the real repository, and a stray `tsconfig.json` in the scratch parent directory redirected `tsx` path resolution.
+
+### Learning
+Clone the install with `cp -Rc` (APFS clone, near-free on macOS) so the copy has its own workspace links, and keep the copy in a directory tree with no `tsconfig.json` above it. Check that a mutation in the copy is visible to the tests by running one deliberately broken mutant first.
+
+### Why it matters
+A mutation run that silently executes the unmutated original code reports every mutant as killed or survived for the wrong reason. The effect on earlier campaigns was conservative (code in the real tree was never changed), but the numbers may understate survivors.
+
+### Reuse rule
+Use `cp -Rc` for `node_modules`; run a sentinel mutant first. LRN-0065's worktree recipe symlinks `node_modules` only for documentation-only checkpoints that run no workspace code.
+
+### Evidence
+The red-team probes under the session scratchpad, and the mutation campaign notes in the CAT-004 entry of `docs/project/IMPLEMENTATION_HISTORY.md`.

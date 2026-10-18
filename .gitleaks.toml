@@ -1,0 +1,74 @@
+# ENG-GOV-001 (Checkpoint B). Secret scanning for BananaGig.
+# Run locally with `pnpm secrets:scan` (needs Docker); CI runs the same command in .github/workflows/governance.yml.
+#
+# Policy: extend the default ruleset, then allowlist ONLY the known-harmless values below, each by exact value AND
+# path. There is deliberately no directory-wide or extension-wide ignore: a new fixture or a real secret in the same
+# file is still reported. Adding an entry here is a reviewed change; keep the comment saying what it covers.
+# Pull requests: the CI job scans with the copy of this file from the BASE branch, so a PR cannot allowlist its own secret.
+# To reproduce that locally: `git show origin/main:.gitleaks.toml > .gitleaks.base.toml` (delete it afterwards), then
+# `pnpm secrets:scan --config /repo/.gitleaks.base.toml` (the last --config argument wins; the repository is mounted at /repo).
+#
+# Status: all entries are PENDING owner review (see scripts/governance-allowlist.json for the same convention).
+#
+# Dev placeholders (the `*_dev_only*` / `bananagig_dev_*` values in .env.example, compose files and the Keycloak dev
+# realm) and the `secret-scan:allow` AWS-style fixture are NOT reported by the default rules in the pinned gitleaks
+# version, so they need no entry; if a later gitleaks upgrade starts reporting them, add an exact-value entry here
+# rather than a path ignore.
+title = "BananaGig gitleaks"
+
+[extend]
+useDefault = true
+
+# 1. Stable add-on item keys in catalog tests. `opt_<12 hex>` is a public, client-visible item identifier
+#    (see CAT-004), not a credential; the generic-api-key rule matches it because the variable is named `key`/`itemKey`.
+[[allowlists]]
+description = "CAT-004 stable add-on item keys used as test data (opt_<12 hex>)"
+condition = "AND"
+regexTarget = "secret"
+regexes = ['''^opt_[0-9a-f]{12}$''']
+paths = [
+  '''^apps/api/src/gig-options-media\.test\.ts$''',
+  '''^packages/contracts/src/gig-children\.test\.ts$''',
+]
+
+# 2. Leak-detection canary strings: tests assert these markers never appear in responses or logs, so they look like
+#    secrets by design. Each is an exact value in exactly one or two test files.
+[[allowlists]]
+description = "Test canary SECRET_PITCH (web gig handler test)"
+condition = "AND"
+regexTarget = "secret"
+regexes = ['''^Quokka-Pitch-7712$''']
+paths = ['''^apps/web/src/gig-handlers\.test\.ts$''']
+
+[[allowlists]]
+description = "Test canary secretSub (catalog integration test)"
+condition = "AND"
+regexTarget = "secret"
+regexes = ['''^subject-9f3c1a77$''']
+paths = ['''^apps/api/src/catalog\.itest\.ts$''']
+
+[[allowlists]]
+description = "Test canary SERVICE_SECRET_MARKER (account-area and consent tests)"
+condition = "AND"
+regexTarget = "secret"
+regexes = ['''^svc-detail-marker-9f31$''']
+paths = [
+  '''^apps/api/src/account-area\.test\.ts$''',
+  '''^apps/api/src/consent\.test\.ts$''',
+]
+
+# 3. Secret-scanner fixtures of the checkpoint tooling: the commit script documents its own pattern with an example
+#    value in a comment, and its test feeds deliberately fake credentials to prove the scanner rejects them.
+[[allowlists]]
+description = "Example env-style value in the comment of scripts/commit-checkpoint.mjs"
+condition = "AND"
+regexTarget = "secret"
+regexes = ['''^abcdef0123456789xyz$''']
+paths = ['''^scripts/commit-checkpoint\.mjs$''']
+
+[[allowlists]]
+description = "Fake credentials written to temporary repos by scripts/governance.test.mjs (marked secret-scan:allow)"
+condition = "AND"
+regexTarget = "secret"
+regexes = ['''^(A1b2C3d4E5f6G7h8I9j0|abcdef0123456789abcdef0123)$''']
+paths = ['''^scripts/governance\.test\.mjs$''']

@@ -11,7 +11,8 @@ Local help, done fast. This file is the entry point for every Claude Code sessio
 5. Read relevant ADRs in `docs/architecture/` (index by number; the latest is named in PROJECT_STATE).
 6. Read `docs/data/DATA_MODEL.md` (and `DATA_MODEL_GUARDRAILS.md`) before **any** persistence change.
 7. Inspect the existing implementation before coding. Reuse; do not duplicate functionality because a request sounds new.
-8. Run `pnpm checkpoint:start <ID>` (clean tree check, state, latest migration, relevant debt).
+8. Classify the change's risk (P0/P1/P2) with `docs/engineering/PRODUCTION_STANDARD.md` and use its verification matrix; read `docs/engineering/TEMPORARY_MITIGATIONS.md` before touching or adding a shortcut.
+9. Run `pnpm checkpoint:start <ID>` (clean tree check, state, latest migration, relevant debt).
 
 ## Hard rules
 
@@ -26,6 +27,20 @@ Local help, done fast. This file is the entry point for every Claude Code sessio
 - Source code and config beat stale documentation: when they disagree, fix the document.
 - Do not push, force-push, rewrite history, or commit unless the user asked for commits in the checkpoint.
 
+## Production engineering governance (ENG-GOV-001)
+
+Standard: `docs/engineering/PRODUCTION_STANDARD.md` (source: `BananaGig_Production_Engineering_Standard.docx` and `BananaGig_Claude_Code_Master_Prompt.md`, same folder). Reviewer rubric: `REVIEW_CHECKLIST.md`. A feature that appears to work is not production-ready; the goal is failure prevention, containment and recovery.
+
+- **Audit before editing.** Inspect the structure, settings, hooks, CI, tests, scripts and `git status`; never assume a script, setting or directory exists.
+- **Classify risk first.** P0 = money movement and webhooks, BananaDrop pricing and price protection, booking capacity and concurrency, identity, authorization, sessions, consent, verification evidence, secrets and sensitive data (independent human review and dedicated failure tests). P1 = provider availability, dispatch and location, cancellations, notifications, migrations, the outbox and worker, configuration and content publishing, media. P2 = styling, static content, isolated UX. Escalate a class when a change spans services, changes a public API or database contract, or affects existing bookings.
+- **No unapproved workaround.** No hardcoded business result, mock in a production path, disabled or skipped test, ignored error, auth bypass or silent configuration override. A temporary mitigation is registered first in `docs/engineering/TEMPORARY_MITIGATIONS.md` (ID, owner, approver, expiry, removal condition, flag, tests, monitoring) and its `MIT-nnnn` id goes in the code comment; unregistered mitigations are rejected. An agent never approves its own mitigation, release or exception.
+- **Never claim what is not verified.** A test, build, security check, hook, CI gate, GitHub setting, deployment or production state "passed" or "exists" only if you verified it in this session; report not-run checks separately. A flaky failure is "unrelated" only after isolated reruns; never weaken a guard to get green. If production safety is not demonstrated the status is NOT READY.
+- **Preserve contracts.** API, database, booking, pricing, payment and security contracts change only with explicit approval.
+- **Human-only actions.** Deleting data, exposing secrets, changing production credentials, GitHub or production settings, merging, deploying and emergency exceptions need explicit authorization.
+- **Reliability by default.** Idempotency, concurrency control, transactions, timeouts on every external call, bounded retries with jitter (retry-safe operations only), typed errors, structured logs and metrics, expand/contract migrations, recovery after restart.
+- **Evidence.** Use repository-native commands and record the command, exit code and counts. Completion statuses: BLOCKED, NOT READY, READY FOR REVIEW, RELEASE CANDIDATE, PRODUCTION VERIFIED.
+- **Agent safeguards.** `.claude/settings.json` and `.claude/hooks/` are local guardrails (they deny destructive commands and edits of applied migrations and `.env`, and ask before gate-weakening edits); editing `.claude/**`, `.github/**`, lint, TypeScript or test configuration, `CODEOWNERS` or the lockfile needs approval. CI and GitHub rulesets are the independent enforcement; do not report a GitHub control as configured unless you read it back (`docs/engineering/GITHUB_SETTINGS.md`).
+
 ## Data Model Review Gate (every persistence change)
 
 Add a migration; update `DATA_MODEL.md`, `DATA_MODEL_CHANGELOG.md`, `DATA_DICTIONARY.md`, `ERD.md` (if relationships changed) and `NORMALIZATION_LOG.md` (1NF/2NF/3NF/BCNF review, duplicates, derived fields, denormalization, indexes); regenerate `docs/data/SCHEMA_SNAPSHOT.sql` with `pnpm schema:snapshot --write`. `pnpm data-model:check <ID>` enforces this.
@@ -39,7 +54,7 @@ Add a migration; update `DATA_MODEL.md`, `DATA_MODEL_CHANGELOG.md`, `DATA_DICTIO
 5. updated the normalization log if the schema changed;
 6. updated `docs/project/PROJECT_STATE.md` (current state only);
 7. appended an entry to `docs/project/IMPLEMENTATION_HISTORY.md`;
-8. recorded new technical debt in `docs/project/TECH_DEBT.md` (do not hide shortcuts in reports);
+8. recorded new technical debt in `docs/project/TECH_DEBT.md` (do not hide shortcuts in reports) and registered any temporary mitigation in `docs/engineering/TEMPORARY_MITIGATIONS.md`;
 9. evaluated whether a skill needs updating (update the narrowest `SKILL.md` only when reusable knowledge was created; never to generate activity);
 10. evaluated whether an ADR is required (only for real architecture decisions);
 11. run `pnpm checkpoint:finalize <ID> --skill-update=UPDATED|NOT_REQUIRED`;
@@ -62,6 +77,8 @@ Technical debt: UPDATED / NOT_REQUIRED
 Commit: <hash> / NOT_CREATED + reason
 ```
 
+The closing report also states the risk class, the commands actually run with exit codes and counts, the checks not run, any temporary mitigation (ID, owner, approval status), deploy and rollback considerations, and the completion status (`docs/engineering/PRODUCTION_STANDARD.md`).
+
 ## Everyday commands
 
-`pnpm dev` (host apps + container deps) · `pnpm test` · `pnpm test:integration` · `pnpm lint` · `pnpm typecheck` · `pnpm smoke` (needs `pnpm stack:all`). Details: `docs/engineering/LOCAL_DEVELOPMENT.md`. Commit rules: `docs/engineering/COMMIT_POLICY.md`.
+`pnpm governance:scan` (policy scan) · `pnpm secrets:scan` (needs Docker) · `pnpm dev` (host apps + container deps) · `pnpm test` · `pnpm test:integration` · `pnpm lint` · `pnpm typecheck` · `pnpm smoke` (needs `pnpm stack:all`). Details: `docs/engineering/LOCAL_DEVELOPMENT.md`. Commit rules: `docs/engineering/COMMIT_POLICY.md`.

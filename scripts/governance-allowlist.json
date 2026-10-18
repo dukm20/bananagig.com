@@ -1,0 +1,336 @@
+{
+  "readme": "Known, justified exceptions to scripts/governance-scan.mjs. Each entry: rule, path (exact), optional pattern (regex on the line) or lineContains (substring), optional count (max allowed matches; extra ones are findings; ratchet), justification, reviewedBy, optional expires (YYYY-MM-DD; after it the entry stops applying). An entry that matches nothing is reported STALE and fails the scan, so remove an entry when its code is fixed. A whole-file entry (no pattern/lineContains) is allowed only for the scanner's own files. Every reviewedBy is 'PENDING owner review': the repository owner has not yet approved these baselines. A missing reviewedBy is always a finding; `--strict` (for the day the policy-scan job becomes blocking) also reports every PENDING one. A new entry, a higher count or a higher ratchet compared with the base branch copy of this file is a finding unless the scan is run with --allow-baseline-growth (owner approval).",
+  "ratchets": {
+    "R5": {
+      "max": 18,
+      "justification": "Baseline (ENG-GOV-001): every workspace package's test script uses `vitest run --passWithNoTests`, so a package whose tests are deleted or never discovered still passes. The count must not grow; remove the flag per package once it has tests (or a minimum-tests check exists).",
+      "reviewedBy": "PENDING owner review"
+    }
+  },
+  "entries": [
+    {
+      "rule": "R3",
+      "path": "apps/api/src/account-area.itest.ts",
+      "pattern": "eslint-disable(-next-line|-line)? @typescript-eslint/no-explicit-any",
+      "count": 1,
+      "justification": "Baseline (ENG-GOV-001): `any` for untyped JSON bodies / mock shapes in test or smoke-harness code. No production path. Ratchet: the count may only fall; remove each by typing the value.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "apps/api/src/account-email.itest.ts",
+      "pattern": "eslint-disable(-next-line|-line)? @typescript-eslint/no-explicit-any",
+      "count": 1,
+      "justification": "Baseline (ENG-GOV-001): `any` for untyped JSON bodies / mock shapes in test or smoke-harness code. No production path. Ratchet: the count may only fall; remove each by typing the value.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "apps/api/src/account-phone.itest.ts",
+      "pattern": "eslint-disable(-next-line|-line)? @typescript-eslint/no-explicit-any",
+      "count": 1,
+      "justification": "Baseline (ENG-GOV-001): `any` for untyped JSON bodies / mock shapes in test or smoke-harness code. No production path. Ratchet: the count may only fall; remove each by typing the value.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "apps/api/src/account.itest.ts",
+      "pattern": "eslint-disable(-next-line|-line)? @typescript-eslint/no-explicit-any",
+      "count": 1,
+      "justification": "Baseline (ENG-GOV-001): `any` for untyped JSON bodies / mock shapes in test or smoke-harness code. No production path. Ratchet: the count may only fall; remove each by typing the value.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "apps/api/src/address.itest.ts",
+      "pattern": "eslint-disable(-next-line|-line)? @typescript-eslint/no-explicit-any",
+      "count": 1,
+      "justification": "Baseline (ENG-GOV-001): `any` for untyped JSON bodies / mock shapes in test or smoke-harness code. No production path. Ratchet: the count may only fall; remove each by typing the value.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "apps/api/src/catalog.itest.ts",
+      "pattern": "eslint-disable(-next-line|-line)? @typescript-eslint/no-explicit-any",
+      "count": 1,
+      "justification": "Baseline (ENG-GOV-001): `any` for untyped JSON bodies / mock shapes in test or smoke-harness code. No production path. Ratchet: the count may only fall; remove each by typing the value.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "apps/api/src/configuration.itest.ts",
+      "pattern": "eslint-disable(-next-line|-line)? @typescript-eslint/no-explicit-any",
+      "count": 1,
+      "justification": "Baseline (ENG-GOV-001): `any` for untyped JSON bodies / mock shapes in test or smoke-harness code. No production path. Ratchet: the count may only fall; remove each by typing the value.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "apps/api/src/consent.itest.ts",
+      "pattern": "eslint-disable(-next-line|-line)? @typescript-eslint/no-explicit-any",
+      "count": 1,
+      "justification": "Baseline (ENG-GOV-001): `any` for untyped JSON bodies / mock shapes in test or smoke-harness code. No production path. Ratchet: the count may only fall; remove each by typing the value.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "apps/api/src/content.itest.ts",
+      "pattern": "eslint-disable(-next-line|-line)? @typescript-eslint/no-explicit-any",
+      "count": 1,
+      "justification": "Baseline (ENG-GOV-001): `any` for untyped JSON bodies / mock shapes in test or smoke-harness code. No production path. Ratchet: the count may only fall; remove each by typing the value.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "apps/api/src/geography-integration.itest.ts",
+      "pattern": "eslint-disable(-next-line|-line)? @typescript-eslint/no-explicit-any",
+      "count": 1,
+      "justification": "Baseline (ENG-GOV-001): `any` for untyped JSON bodies / mock shapes in test or smoke-harness code. No production path. Ratchet: the count may only fall; remove each by typing the value.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "apps/api/src/geography.itest.ts",
+      "pattern": "eslint-disable(-next-line|-line)? @typescript-eslint/no-explicit-any",
+      "count": 1,
+      "justification": "Baseline (ENG-GOV-001): `any` for untyped JSON bodies / mock shapes in test or smoke-harness code. No production path. Ratchet: the count may only fall; remove each by typing the value.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "apps/api/src/gig-options-media.itest.ts",
+      "pattern": "eslint-disable(-next-line|-line)? @typescript-eslint/no-explicit-any",
+      "count": 1,
+      "justification": "Baseline (ENG-GOV-001): `any` for untyped JSON bodies / mock shapes in test or smoke-harness code. No production path. Ratchet: the count may only fall; remove each by typing the value.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "apps/api/src/gig-template.itest.ts",
+      "pattern": "eslint-disable(-next-line|-line)? @typescript-eslint/no-explicit-any",
+      "count": 1,
+      "justification": "Baseline (ENG-GOV-001): `any` for untyped JSON bodies / mock shapes in test or smoke-harness code. No production path. Ratchet: the count may only fall; remove each by typing the value.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "apps/api/src/gig.itest.ts",
+      "pattern": "eslint-disable(-next-line|-line)? @typescript-eslint/no-explicit-any",
+      "count": 1,
+      "justification": "Baseline (ENG-GOV-001): `any` for untyped JSON bodies / mock shapes in test or smoke-harness code. No production path. Ratchet: the count may only fall; remove each by typing the value.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "apps/api/src/provider.itest.ts",
+      "pattern": "eslint-disable(-next-line|-line)? @typescript-eslint/no-explicit-any",
+      "count": 1,
+      "justification": "Baseline (ENG-GOV-001): `any` for untyped JSON bodies / mock shapes in test or smoke-harness code. No production path. Ratchet: the count may only fall; remove each by typing the value.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "apps/api/src/security.itest.ts",
+      "pattern": "eslint-disable(-next-line|-line)? @typescript-eslint/no-explicit-any",
+      "count": 1,
+      "justification": "Baseline (ENG-GOV-001): `any` for untyped JSON bodies / mock shapes in test or smoke-harness code. No production path. Ratchet: the count may only fall; remove each by typing the value.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "apps/api/src/trust.itest.ts",
+      "pattern": "eslint-disable(-next-line|-line)? @typescript-eslint/no-explicit-any",
+      "count": 1,
+      "justification": "Baseline (ENG-GOV-001): `any` for untyped JSON bodies / mock shapes in test or smoke-harness code. No production path. Ratchet: the count may only fall; remove each by typing the value.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "apps/api/src/trust.test.ts",
+      "pattern": "eslint-disable(-next-line|-line)? @typescript-eslint/no-explicit-any",
+      "count": 9,
+      "justification": "Baseline (ENG-GOV-001): `any` for untyped JSON bodies / mock shapes in test or smoke-harness code. No production path. Ratchet: the count may only fall; remove each by typing the value.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "apps/smoke/src/index.ts",
+      "pattern": "eslint-disable(-next-line|-line)? @typescript-eslint/no-explicit-any",
+      "count": 27,
+      "justification": "Baseline (ENG-GOV-001): `any` for untyped JSON bodies / mock shapes in test or smoke-harness code. No production path. Ratchet: the count may only fall; remove each by typing the value.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "apps/web/src/verification-handlers.test.ts",
+      "pattern": "eslint-disable(-next-line|-line)? @typescript-eslint/no-explicit-any",
+      "count": 1,
+      "justification": "Baseline (ENG-GOV-001): `any` for untyped JSON bodies / mock shapes in test or smoke-harness code. No production path. Ratchet: the count may only fall; remove each by typing the value.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "apps/worker/src/gig-media.itest.ts",
+      "pattern": "eslint-disable(-next-line|-line)? @typescript-eslint/no-explicit-any",
+      "count": 1,
+      "justification": "Baseline (ENG-GOV-001): `any` for untyped JSON bodies / mock shapes in test or smoke-harness code. No production path. Ratchet: the count may only fall; remove each by typing the value.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "apps/worker/src/jobs/content.test.ts",
+      "pattern": "eslint-disable(-next-line|-line)? @typescript-eslint/no-explicit-any",
+      "count": 4,
+      "justification": "Baseline (ENG-GOV-001): `any` for untyped JSON bodies / mock shapes in test or smoke-harness code. No production path. Ratchet: the count may only fall; remove each by typing the value.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "apps/worker/src/jobs/gig-media.test.ts",
+      "pattern": "eslint-disable(-next-line|-line)? @typescript-eslint/no-explicit-any",
+      "count": 10,
+      "justification": "Baseline (ENG-GOV-001): `any` for untyped JSON bodies / mock shapes in test or smoke-harness code. No production path. Ratchet: the count may only fall; remove each by typing the value.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "apps/worker/src/worker.test.ts",
+      "pattern": "eslint-disable(-next-line|-line)? @typescript-eslint/no-explicit-any",
+      "count": 2,
+      "justification": "Baseline (ENG-GOV-001): `any` for untyped JSON bodies / mock shapes in test or smoke-harness code. No production path. Ratchet: the count may only fall; remove each by typing the value.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "packages/accounts/src/identity.ts",
+      "pattern": "eslint-disable(-next-line|-line)? no-control-regex",
+      "count": 1,
+      "justification": "Intentional: the regex exists to reject control and bidirectional-override characters in user text; no-control-regex forbids exactly that, so the disable is the point of the line. Not a bypass.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "packages/accounts/src/security-service.ts",
+      "pattern": "eslint-disable(-next-line|-line)? no-control-regex",
+      "count": 1,
+      "justification": "Intentional: the regex exists to reject control and bidirectional-override characters in user text; no-control-regex forbids exactly that, so the disable is the point of the line. Not a bypass.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "packages/contracts/src/gig.ts",
+      "pattern": "eslint-disable(-next-line|-line)? no-control-regex",
+      "count": 2,
+      "justification": "Intentional: the regex exists to reject control and bidirectional-override characters in user text; no-control-regex forbids exactly that, so the disable is the point of the line. Not a bypass.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "packages/contracts/src/text.ts",
+      "pattern": "eslint-disable(-next-line|-line)? no-control-regex",
+      "count": 1,
+      "justification": "Intentional: the regex exists to reject control and bidirectional-override characters in user text; no-control-regex forbids exactly that, so the disable is the point of the line. Not a bypass.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "packages/geography/src/address-engine.ts",
+      "pattern": "eslint-disable(-next-line|-line)? no-control-regex",
+      "count": 1,
+      "justification": "Intentional: the regex exists to reject control and bidirectional-override characters in user text; no-control-regex forbids exactly that, so the disable is the point of the line. Not a bypass.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "packages/identity/src/keycloak-security.itest.ts",
+      "pattern": "eslint-disable(-next-line|-line)? @typescript-eslint/no-explicit-any",
+      "count": 1,
+      "justification": "Baseline (ENG-GOV-001): `any` for untyped JSON bodies / mock shapes in test or smoke-harness code. No production path. Ratchet: the count may only fall; remove each by typing the value.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "packages/identity/src/keycloak.itest.ts",
+      "pattern": "eslint-disable(-next-line|-line)? @typescript-eslint/no-explicit-any",
+      "count": 1,
+      "justification": "Baseline (ENG-GOV-001): `any` for untyped JSON bodies / mock shapes in test or smoke-harness code. No production path. Ratchet: the count may only fall; remove each by typing the value.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R1",
+      "path": "packages/content/src/content.itest.ts",
+      "pattern": "ctx\\.skip\\(",
+      "count": 1,
+      "justification": "Real-Valkey integration test self-skips only when Valkey is unreachable and logs a console.warn SKIPPED line; the same behaviours are covered with MemoryConfigCache. Conditional environment skip, not a disabled test. Candidate to become a hard failure in CI where Valkey is guaranteed.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R2",
+      "path": "packages/accounts/src/accounts.itest.ts",
+      "lineContains": "source: 'HACK'",
+      "count": 1,
+      "justification": "'HACK' is a deliberately invalid grant_source value used to prove the CHECK constraint rejects it; not a work marker.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R2",
+      "path": "packages/testing/src/identity-model.itest.ts",
+      "lineContains": "'HACK'",
+      "count": 1,
+      "justification": "'HACK' is a deliberately invalid grant_source value inserted to prove the CHECK constraint rejects it; not a work marker.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R2",
+      "path": "scripts/skills-check.mjs",
+      "lineContains": "TODO|TBD|FIXME",
+      "count": 1,
+      "justification": "Regex of the skills checker that REJECTS placeholder text; the keyword is the pattern, not a work marker.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R2",
+      "path": "scripts/governance.test.mjs",
+      "lineContains": "Commands: 'TODO'",
+      "count": 1,
+      "justification": "Fixture proving skills-check rejects placeholder text; not a work marker.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R2",
+      "path": "scripts/governance-scan.mjs",
+      "justification": "The scanner's own rule definitions and documentation name the keywords/directives; not work markers or suppressions.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R3",
+      "path": "scripts/governance-scan.mjs",
+      "justification": "The scanner's own rule definitions and documentation name the keywords/directives; not work markers or suppressions.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R6",
+      "path": "apps/smoke/src/index.ts",
+      "lineContains": "@bananagig/testing/sms",
+      "count": 1,
+      "justification": "apps/smoke is the end-to-end smoke harness (run in the Compose tools profile, never deployed as a service); it legitimately drives the fake SMS inbox and the identity test helpers.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R6",
+      "path": "apps/smoke/src/index.ts",
+      "lineContains": "@bananagig/identity/testing",
+      "count": 1,
+      "justification": "apps/smoke is the end-to-end smoke harness (run in the Compose tools profile, never deployed as a service); it legitimately drives the fake SMS inbox and the identity test helpers.",
+      "reviewedBy": "PENDING owner review"
+    },
+    {
+      "rule": "R4",
+      "path": ".github/workflows/codeql.yml",
+      "lineContains": "security-events: write",
+      "count": 1,
+      "justification": "CodeQL must upload SARIF results to the Security tab; security-events: write is the narrowest scope that allows it and is granted at job level only (the workflow default is contents: read).",
+      "reviewedBy": "PENDING owner review"
+    }
+  ]
+}

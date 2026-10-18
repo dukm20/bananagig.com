@@ -2,15 +2,23 @@ name: ci
 on:
   push: { branches: [main] }
   pull_request:
+# ENG-GOV-001: least-privilege token; nothing in this workflow writes to the repository.
+permissions:
+  contents: read
+# One run per ref. Only pull-request runs are cancelled when superseded; main pushes always complete.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { fetch-depth: 0 } # governance checks diff against the PR base / previous push
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
         with: { version: 12.9.1 }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 24, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm format:check
@@ -36,26 +44,32 @@ jobs:
           # PR: compare against the base branch; push: compare against the previous commit (empty on the first push)
           BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
         run: |
+          # ENG-GOV-001: $BASE_ARG is deliberately unquoted below. It is either empty or a single `--base=<ref>` word, and
+          # quoting it would hand an empty argument to the checks when there is no base ref (SC2086 is expected here).
           BASE_ARG=""
           if [ -n "$BASE_REF" ] && git rev-parse --verify -q "$BASE_REF" >/dev/null; then BASE_ARG="--base=$BASE_REF"; fi
           pnpm skills:check
+          # shellcheck disable=SC2086
           pnpm project-state:check $BASE_ARG
+          # shellcheck disable=SC2086
           pnpm data-model:check $BASE_ARG
   compose-smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     needs: verify
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: cp .env.example .env && echo 'COMPOSE_PROFILES=core,observability,search,devtools' >> .env
       - run: docker compose up -d --build   # no --wait: the one-shot seaweedfs-init exits, which --wait treats as failure; the smoke test retries until ready
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
         with: { version: 12.9.1 }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 24, cache: pnpm }
       - run: pnpm install --frozen-lockfile && pnpm migrate
         env: { DATABASE_URL_HOST: "postgres://bananagig:bananagig_dev_only@127.0.0.1:5433/bananagig" }
       - run: pnpm smoke
       - name: Trivy image scan (HIGH/CRITICAL)
+        # ENG-GOV-001: the scanner image is pinned by tag only (aquasec/trivy:0.65.0), not by digest; digest pinning is a follow-up.
         run: |
           for i in web api worker; do
             docker run --rm -v /var/run/docker.sock:/var/run/docker.sock:ro aquasec/trivy:0.65.0 image --exit-code 1 --severity HIGH,CRITICAL bananagig/$i:dev

@@ -1155,3 +1155,35 @@ ADR-0047.
 
 ### Known follow-up
 DEBT-0098 (simple option model), DEBT-0099 (HEIC, header-only verification, assumed limits, no derivatives or delivery), DEBT-0100 (upload handling and concurrency), DEBT-0101 (API shape and temporary editor). Next: PRO-002 Provider Public Profile, then PRO-003, the availability and service-area checkpoints and the BananaDrop core (DROP-001 onward) per `docs/product/ROADMAP.md`.
+
+## ENG-GOV-001 — 2026-10-18
+
+Status: COMPLETE (advisory mode; production readiness NOT READY, see the audit)
+Commit: find it with `git log --grep "(ENG-GOV-001)"`; the checkpoint-id fix for the tooling is a separate earlier commit (`9b7fb6c`).
+Summary: Production Engineering Governance. Read-only audit first (A-01 to A-20, no P0 finding), then the owner approved Phase B: the production standard, review checklist and shortcut register integrated into `CLAUDE.md`; repository Claude Code settings and tested hooks; advisory CI (policy scan, secret scan, CodeQL, dependency review, workflow lint, Dependabot) and a hardened `ci.yml`; CODEOWNERS; manual GitHub settings instructions; a prioritized remediation plan. No production behaviour, migration, API or event changed. Nothing is enforced by GitHub yet: `main` has no ruleset and no check is required (owner action, `GITHUB_SETTINGS.md`).
+
+### Delivered
+- Docs: `docs/engineering/PRODUCTION_STANDARD.md`, `REVIEW_CHECKLIST.md`, `TEMPORARY_MITIGATIONS.md` (MIT-0001 to MIT-0006, all PROPOSED, approver pending), `GOVERNANCE_AUDIT.md`, `GOVERNANCE_REMEDIATION_PLAN.md`, `GITHUB_SETTINGS.md`; the two input documents are committed beside them. `CLAUDE.md`: risk classification at the start of every checkpoint, the governance section, mitigation registration in the completion rule, the extended closing report.
+- Local guardrails: `.claude/settings.json` and `.claude/hooks/` (parser-based Bash guard with git-option canonicalisation, file-edit guard for applied migrations, secrets, gate files and disabled tests, evidence and stop hooks); README with limits and a recovery procedure. 73 tests in `scripts/claude-hooks.test.mjs`.
+- Policy scan `scripts/governance-scan.mjs` (rules R1 to R7, allowlist with expiry and ratchet, 79 tests), `.gitleaks.toml`, `pnpm governance:scan`, `pnpm secrets:scan`.
+- CI: `ci.yml` (permissions, timeouts, concurrency, SHA-pinned actions; blocking behaviour unchanged), `governance.yml`, `codeql.yml`, `dependabot.yml`, `.github/CODEOWNERS`.
+- Tooling fix `9b7fb6c`: checkpoint ids with a second name segment (`ENG-GOV-001`) are accepted by `checkpoint:start`, `checkpoint:finalize` and the commit-subject check.
+- Quality process: an independent read-only red-team attacked the hooks, the scan and the gates in isolated copies. It found bypasses of the hooks (heredoc substitution, pipe into a shell, git option abbreviations, ANSI-C quoting, brace expansion, `cp` into the migrations directory, case-insensitive paths, split secrets), evasions of the scan, a self-allowlisting gitleaks config and that the new scans are not blocking; all but the last were fixed here, the rest is recorded. During the fix the hooks were rewritten in place, which locked every Bash, Write and Edit call of the session until the owner restored the files (LRN-0067).
+
+### Schema
+None. No migration, table or data-model document changed.
+
+### Contracts
+None. OpenAPI and AsyncAPI are unchanged.
+
+### Tests
+Root script tests 317 (governance 47, identity realm 117, migration files 1, governance scan 79, Claude hooks 73). `governance:scan` exit 0 with 0 findings (10 informational: six proposed mitigations, the tag-pinned Trivy image, CODEOWNERS present, the `--passWithNoTests` ratchet). Lint, format check and skills check pass. Workspace unit and integration suites are unaffected (no source change) and were not re-run for this documentation and tooling checkpoint beyond what `checkpoint:finalize` runs. Not run: `pnpm secrets:scan` against a clean history in CI, the workflows on GitHub, actionlint.
+
+### Skills updated
+`skills/infrastructure`, `skills/testing`.
+
+### ADRs
+None: tooling and process, no architecture decision.
+
+### Known follow-up
+DEBT-0001 (retitled: CI not enforced before merge) and DEBT-0102 to DEBT-0105. Owner actions C-1 (apply the `main` ruleset), C-2 (required scans, secret scanning), C-4 (visibility), C-6 (approve or remove MIT-0001 to MIT-0006) and plan item C-7 (`data-model:check` with an empty base ref). Hardening checkpoints R-04 to R-17 are proposed, not approved. Next: PRO-002 Provider Public Profile.
