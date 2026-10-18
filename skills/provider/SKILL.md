@@ -53,6 +53,7 @@ Let an existing account become a provider and track where it is in onboarding: t
 - **Caps** (`max_active` at first publish, `max_drafts` at Gig and next-draft creation) are counted under the account row lock. Lock order account -> gig -> version; policy, account facts and template structures are read BEFORE the transaction (catalogue reads cannot nest).
 - **Owner scoping:** every query filters by the authenticated account; another account's Gig is 404, never 403. The GigMenu is a constant-query owner-only read, not a public listing.
 - **The `GIGS` onboarding step** comes from `gigsPrerequisite` over the readiness facts (`NOT_STARTED`, `IN_PROGRESS`, `COMPLETE`; never `BLOCKED`; it does not block registration submit).
+- **Product direction (PRD-TRP-001, `docs/product/BananaGig_PRD_TRP_Alignment.md`): BananaDrop is a first-class core domain.** A provider Gig, its versions, variants, add-ons and media are built to be CONSUMED by a later BananaDrop, never to contain one: a BananaDrop references the exact Gig version (and a variant key within it); price tiers, ladders, floors, thresholds, capacity and participation live in the DROP domain, are provider-configured and platform-authoritative, and are never stored on the Gig, a variant or an add-on. Compatible services of one BananaDrop keep their own base prices and ladders (one BananaDrop is never one universal price). Provider role, registration, verification, Go-Live (PRO-003), booking eligibility and BananaDrop eligibility stay separate concepts; additional demand never creates capacity.
 
 ## Implementation pattern
 
@@ -120,6 +121,7 @@ Any change to the registration tables or their guards needs the Data Model Revie
 - Do not make a market public or change a market's status from the provider domain.
 - Do not import another domain package from `@bananagig/provider`; add a port.
 - Do not edit an applied migration.
+- Do not put a BananaDrop, tier, threshold, ladder, group price or Drop-eligibility flag on a Gig, variant or add-on before the DROP checkpoints define them (DROP-002 owns eligibility, DROP-005 owns tiers), and do not present a future tier price as a currently bookable price anywhere.
 
 ## Related ADRs
 
@@ -127,4 +129,4 @@ ADR-0025, ADR-0038, ADR-0040, ADR-0041, ADR-0042, ADR-0046
 
 ## Last reviewed
 
-2026-10-18 (CAT-003)
+2026-10-18 (PRD-TRP-001)

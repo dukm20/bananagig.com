@@ -6,14 +6,16 @@ Local help, done fast. This file is the entry point for every Claude Code sessio
 
 1. Read this file.
 2. Read `docs/project/PROJECT_STATE.md` (current truth: what exists, what is next).
-3. Read the relevant skills: `skills/infrastructure/SKILL.md`, `skills/database/SKILL.md`, `skills/api/SKILL.md`, `skills/web/SKILL.md`, `skills/worker/SKILL.md`, `skills/testing/SKILL.md`, `skills/identity/SKILL.md`, `skills/configuration/SKILL.md`, `skills/content/SKILL.md`, `skills/geography/SKILL.md`, `skills/catalog/SKILL.md`.
-4. Read relevant ADRs in `docs/architecture/` (index by number; the latest is named in PROJECT_STATE).
-5. Read `docs/data/DATA_MODEL.md` (and `DATA_MODEL_GUARDRAILS.md`) before **any** persistence change.
-6. Inspect the existing implementation before coding. Reuse; do not duplicate functionality because a request sounds new.
-7. Run `pnpm checkpoint:start <ID>` (clean tree check, state, latest migration, relevant debt).
+3. Read the canonical product direction `docs/product/BananaGig_PRD_TRP_Alignment.md` and the plan `docs/product/ROADMAP.md` (BananaGig is a neighborhood demand-bundling marketplace; BananaDrop is core).
+4. Read the relevant skills: `skills/infrastructure/SKILL.md`, `skills/database/SKILL.md`, `skills/api/SKILL.md`, `skills/web/SKILL.md`, `skills/worker/SKILL.md`, `skills/testing/SKILL.md`, `skills/identity/SKILL.md`, `skills/configuration/SKILL.md`, `skills/content/SKILL.md`, `skills/geography/SKILL.md`, `skills/catalog/SKILL.md`.
+5. Read relevant ADRs in `docs/architecture/` (index by number; the latest is named in PROJECT_STATE).
+6. Read `docs/data/DATA_MODEL.md` (and `DATA_MODEL_GUARDRAILS.md`) before **any** persistence change.
+7. Inspect the existing implementation before coding. Reuse; do not duplicate functionality because a request sounds new.
+8. Run `pnpm checkpoint:start <ID>` (clean tree check, state, latest migration, relevant debt).
 
 ## Hard rules
 
+- **Product truth (PRD-TRP-001):** BananaGig's defining differentiator is provider-controlled neighborhood group pricing through BananaDrops; customers book at the current eligible price and later qualifying demand can unlock lower protected prices. Never present a future price as bookable, never let demand create capacity, keep Gig, Capacity and BananaDrop independent, and keep Banana Credits secondary. Details and the 20 invariants: `docs/product/BananaGig_PRD_TRP_Alignment.md`.
 - Work on the **active checkpoint only**. Stop before implementing future checkpoints.
 - **Never edit an applied migration.** Fix forward with a new `db/migrations/NNNN_*.sql`.
 - **Never hardcode configurable business values** (fees, prices, durations, windows, rates). They belong in product configuration data, not code or env.

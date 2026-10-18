@@ -1087,3 +1087,36 @@ ADR-0046.
 
 ### Known follow-up
 DEBT-0089 (variants, add-ons, media and the unsupported required field types), DEBT-0090 (moderation), DEBT-0091 (template adoption), DEBT-0092 (service area, availability, capacity, price floor), DEBT-0093 (search, public page, Go-Live), DEBT-0094 to DEBT-0097 (the temporary editor, money entry, accepted limits). Next: CAT-004 Variants, Add-ons and Media.
+
+## PRD-TRP-001 — 2026-10-18
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(PRD-TRP-001)"`.
+Summary: BananaGig Neighborhood Group Pricing Alignment. A documentation-only checkpoint that makes BananaGig's defining product requirement explicit and canonical: BananaGig is a neighborhood demand-bundling marketplace, and BananaDrop (provider-controlled neighborhood group pricing with price protection) is a first-class core domain, not a later enhancement. No production code, migration, schema, API, event or UI changed.
+
+### Delivered
+- `docs/product/BananaGig_PRD_TRP_Alignment.md` (the canonical product direction supplied by the owner: value propositions, the domain chain, the 20 product invariants, the customer and provider portal requirements, shared group state, architecture impact notes, the revised roadmap, the UI/UX standard, the MVP definition and the rule for future agents).
+- `docs/product/ROADMAP.md` (new): the canonical feature roadmap, with the completed checkpoints, the current position, the BananaDrop core (DROP-001 to DROP-010) moved before search and the customer booking experience, the settlement half (DROP-011 to DROP-016) after booking, the BananaDrop-aware search checkpoints, the sequencing rules, the MVP bar and the UI-BASE-001 scope (a retrofit of every existing and future screen to the Apple-inspired + Uber Base Web direction, with BananaGig's own identity).
+- `docs/product/PRD_RECONCILIATION.md` (new): where the PRD v9.4 (a Word file kept outside git) differs from the alignment (vision framed as a lead and subscription platform, BananaDrop as P2 build step 8, "optional Drop tiers", price lock before fulfilment, Banana Credits as the leading mechanism) and what each difference means for engineering; the alignment document wins until the owner revises the PRD.
+- `CLAUDE.md`: the alignment document and the roadmap are now read at the start of every session, and a hard rule states the product truth. `PROJECT_STATE.md`: the current checkpoint, a Product direction section and the CAT-003 CI record (run 39091478398 SUCCESS in 23m 54s). `skills/provider`, `skills/catalog`, `skills/web`: the durable rules (BananaDrop consumes the exact Gig version and variant key, tiers and ladders never live on a Gig, variant or add-on, temporary UI until UI-BASE-001, no client-side group progress). Corrected: DEBT-0092 and DEBT-0093 (group pricing is the BananaDrop domain, not a price rule of the Gig; the targets are the AREA, CAP, DROP and SEARCH checkpoints) and the "Not here" list of `PROVIDER_GIGS.md`.
+
+### Repository search for conflicts
+No tracked document described BananaGig as a lead and subscription platform or placed BananaDrop in a later phase; the only conflicting statements were the two debt entries and the out-of-scope list above (corrected). The product requirements document (`docs/design/BananaGig_Brand_Kit/BananaGig_PRD.docx`) is excluded from git and was not edited: its conflicts are listed in `PRD_RECONCILIATION.md` for the owner.
+
+### Schema
+None. No migration, no table, no API or event change.
+
+### Contracts
+None. OpenAPI and AsyncAPI are unchanged.
+
+### Tests
+None changed. Governance checks run: `project-state:check`, `skills:check`, `data-model:check`, format and lint on the touched files.
+
+### Skills updated
+`skills/provider`, `skills/catalog`, `skills/web`.
+
+### ADRs
+None created: the decision is product direction, recorded as the canonical alignment document; the architecture decisions (BananaDrop aggregate, qualification, tiers, price protection) are made at their DROP checkpoints.
+
+### Known follow-up
+The owner updates the PRD Word file from `PRD_RECONCILIATION.md`. Open owner questions stay open (default price-lock time, late-cancellation fee split Q32). Next: CAT-004 Variants, Add-ons and Media (in progress), then PRO-002.

@@ -226,4 +226,4 @@ Run the files rather than quoting counts: the contracts (`packages/contracts/src
 
 ## Not here
 
-Variants, add-ons, bundles, media, service areas and radius, availability and capacity, the search projection and ranking, booking, subscriptions, Banana Credits, Go-Live (PRO-003), the public profile and public Gig pages, moderation, a rich text editor, template adoption or migration, price floors and instant-book rules.
+Variants, add-ons, bundles, media, service areas and radius, availability and capacity, the search projection and ranking, booking, the BananaDrop domain (neighborhood group pricing is the core product model, DROP-001 onward; it consumes the exact Gig version and never lives on a Gig), subscriptions, Banana Credits, Go-Live (PRO-003), the public profile and public Gig pages, moderation, a rich text editor, template adoption or migration, price floors and instant-book rules.

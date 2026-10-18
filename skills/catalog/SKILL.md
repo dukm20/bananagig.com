@@ -50,6 +50,7 @@ Read and change the PLATFORM-OWNED taxonomy of what can be sold: categories (Aut
 - **Locks**: the service takes the TEMPLATE row first, then the version, in every version operation; raw statements that lock a version first can deadlock (retryable conflict). Availability per market is a plain row per (market, template) with the same one-retry race policy as the taxonomy.
 - **Consumers bind the exact version and are never migrated automatically (ADR-0046).** v1 of a Gig binds the ACTIVE version; later Gig versions keep the SAME template version, so superseding a template version changes nothing for existing Gigs and a RETIRED version/template/service type only blocks NEW drafts and publishing. A template change that adds a PROVIDER_REQUIRED field of a type the Gig cannot store yet (MONEY, MEDIA, EQUIPMENT_REFERENCE, SKILL_REFERENCE) makes the template unpublishable as a Gig until CAT-004. Adoption of a newer version is a later checkpoint.
 - **Public vs management**: the same routes, `Vary: Authorization`; the public view carries the safe structure of the ACTIVE version with resolved copy and never the status, revision, content keys, timestamps or other versions; management responses and every mutation are `Cache-Control: private, no-store`. Events: activated, deactivated, retired, published (with the exact version id), availability changed. The snapshot cache shares the taxonomy's generation counter.
+- **Product direction (PRD-TRP-001, `docs/product/BananaGig_PRD_TRP_Alignment.md`):** the chain is Category > Service Type > Gig Template > Provider Gig > BananaDrop > Qualifying Booking > Participation > Price Tier > Price Protection. The catalogue and templates are PLATFORM-owned and only constrain what a provider may offer (allowed pricing models including `DROP_ELIGIBLE`, media rules, area modes); they carry no BananaDrop state, tier or price. Several compatible service types may later contribute to one BananaDrop with service-specific ladders, so never assume one service type per group.
 
 ## Implementation pattern
 
@@ -111,6 +112,7 @@ Any change to the twelve tables or their guards needs the Data Model Review Gate
 - Do not expose the prohibited-service list, a non-ACTIVE item, a disabled availability row or a content key on the public API.
 - Do not decide market visibility in this package: ask the geography registry through the port.
 - Do not edit an applied migration.
+- Do not model a BananaDrop, a tier or a group price in the catalogue or in a template; template flags such as `DROP_ELIGIBLE` are permissions, not Drop state.
 
 ## Related ADRs
 
@@ -118,4 +120,4 @@ ADR-0016, ADR-0021, ADR-0022, ADR-0040, ADR-0041, ADR-0046
 
 ## Last reviewed
 
-2026-10-18 (CAT-003)
+2026-10-18 (PRD-TRP-001)
