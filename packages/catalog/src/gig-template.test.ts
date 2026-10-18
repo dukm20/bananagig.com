@@ -1700,6 +1700,21 @@ describe('management reads validate their input before the database is touched',
     expect(((await fail(b.service.getGigTemplateVersion('full_detail', 1))) as Error).message).toBe(SENTINEL);
   });
 
+  it('the exact-version read by id (CAT-003) rejects a malformed id before the database is touched; a well-formed one reaches it', async () => {
+    const b = build();
+    for (const bad of ['', 'x', "1' OR '1'='1", '00000000-0000-4000-8000-00000000000g', undefined, 7, null])
+      expect(asCatalog(await fail(b.service.getGigTemplateVersionById(bad as unknown as string))).code).toBe('GIG_TEMPLATE_VERSION_NOT_FOUND');
+    expect(b.touched).toEqual([]);
+    expect(((await fail(b.service.getGigTemplateVersionById('00000000-0000-4000-8000-000000000000'))) as Error).message).toBe(SENTINEL);
+  });
+
+  it('the market-availability read of a Gig Template (CAT-003) answers false, without a statement, for a malformed market code or template id', async () => {
+    const b = build();
+    expect(await b.service.isGigTemplateEnabledInMarket('NOT A MARKET', '00000000-0000-4000-8000-000000000000')).toBe(false);
+    expect(await b.service.isGigTemplateEnabledInMarket('la-oc', 'not-a-uuid')).toBe(false);
+    expect(b.touched).toEqual([]);
+  });
+
   it('every database failure that is a connectivity problem on a read is UNAVAILABLE with fixed text and the driver text only in the log', async () => {
     const dead = { transaction: () => Promise.reject(Object.assign(new Error('LEAK connect ECONNREFUSED'), { code: 'ECONNREFUSED' })) };
     const database = {

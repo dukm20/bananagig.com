@@ -1061,3 +1061,101 @@ erDiagram
 **The audit trail has three optional subjects.** `audit_events` names a case, a requirement instance or a definition (at least one, `ck_audit_events__subject`); there is no composite key tying them together because the trail is immutable, written in the same transaction as the change and read only for investigation. `reason_code` there is plain text. All foreign keys are `ON DELETE RESTRICT`, and no trust row is ever deleted.
 
 **Copy is content.** The generated `name_content_key` and `instructions_content_key` of definitions, the `name_content_key` of document types and the provider-facing `name_content_key` of reason codes are foreign keys to `content.entries (key)` (restrict), so a reference row cannot exist without its managed text. Labels for statuses, errors and page copy are content entries that no table references.
+
+## provider Gigs (CAT-003)
+
+The `provider` schema gains the provider Gig: an IDENTITY (`provider.gigs`) and immutable VERSIONS (`provider.gig_versions`), each bound to the EXACT Gig Template version it was built from, with the normalised typed values of the template fields and an immutable audit trail. The service type is reached through the template and the market through the account's COMPLETED registration; neither is stored on the Gig. There is no variant, add-on, media, availability or Go-Live table.
+
+```mermaid
+erDiagram
+  GIG_ACCOUNTS {
+    uuid account_id PK "same table as identity.accounts (referenced by id only)"
+  }
+  GIG_CURRENCIES {
+    char3 currency_code PK "same table as geography.currencies"
+  }
+  GIG_TEMPLATES {
+    uuid gig_template_id PK "same table as catalog.gig_templates (reaches the service type)"
+  }
+  GIG_TEMPLATE_VERSIONS {
+    uuid gig_template_version_id PK "same table as catalog.gig_template_versions"
+  }
+  GIG_TEMPLATE_FIELDS {
+    uuid gig_template_field_id PK "same table as catalog.gig_template_fields"
+  }
+  GIG_TEMPLATE_FIELD_OPTIONS {
+    uuid gig_template_field_id PK "same table as catalog.gig_template_field_options"
+    text option_code PK
+  }
+  PROVIDER_GIGS {
+    uuid gig_id PK
+    uuid account_id FK "the owner, restrict, immutable"
+    uuid gig_template_id FK "identity of the template, restrict, immutable"
+    text status "DRAFT, ACTIVE, RETIRED"
+    uuid client_request_id UK "optional idempotency token, unique per account when present"
+    timestamptz created_at
+    timestamptz updated_at
+    timestamptz retired_at "set exactly when RETIRED"
+  }
+  PROVIDER_GIG_VERSIONS {
+    uuid gig_version_id PK
+    uuid gig_id FK
+    integer version_number UK "contiguous per Gig, unique with gig_id"
+    uuid gig_template_version_id FK "the EXACT template version, restrict, immutable"
+    text status "DRAFT, PUBLISHED, SUPERSEDED, RETIRED"
+    integer revision "draft concurrency token"
+    text title "provider plain text"
+    text short_pitch "provider plain text"
+    text description "provider plain text"
+    bigint price_amount_minor "minor units"
+    char3 price_currency FK "derived from the provider market"
+    integer duration_minutes
+    timestamptz created_at
+    timestamptz updated_at
+    timestamptz published_at
+    timestamptz superseded_at
+    timestamptz retired_at
+  }
+  PROVIDER_GIG_VERSION_FIELD_VALUES {
+    uuid gig_version_id PK "part of the key, FK to gig_versions"
+    uuid gig_template_field_id PK "part of the key, FK to template fields"
+    text text_value "exactly one typed column is set"
+    bigint integer_value
+    numeric decimal_value
+    boolean boolean_value
+    text option_code FK "ENUM only, composite FK with gig_template_field_id"
+    integer duration_minutes
+    timestamptz created_at
+    timestamptz updated_at
+  }
+  PROVIDER_GIG_AUDIT_EVENTS {
+    uuid audit_event_id PK
+    timestamptz occurred_at
+    text actor
+    uuid account_id FK "owner at the time of the event"
+    uuid gig_id FK
+    uuid gig_version_id FK "nullable"
+    text action "six GIG_* actions"
+    jsonb changes "identifiers, field names and counts only"
+    text correlation_id
+  }
+  GIG_ACCOUNTS ||--o{ PROVIDER_GIGS : "owner (account_id)"
+  GIG_TEMPLATES ||--o{ PROVIDER_GIGS : "built from (gig_template_id)"
+  PROVIDER_GIGS ||--|{ PROVIDER_GIG_VERSIONS : "versions (gig_id)"
+  GIG_TEMPLATE_VERSIONS ||--o{ PROVIDER_GIG_VERSIONS : "exact template version (gig_template_version_id)"
+  GIG_CURRENCIES |o--o{ PROVIDER_GIG_VERSIONS : "price currency (price_currency)"
+  PROVIDER_GIG_VERSIONS ||--o{ PROVIDER_GIG_VERSION_FIELD_VALUES : "values (gig_version_id)"
+  GIG_TEMPLATE_FIELDS ||--o{ PROVIDER_GIG_VERSION_FIELD_VALUES : "answered field (gig_template_field_id)"
+  GIG_TEMPLATE_FIELD_OPTIONS |o--o{ PROVIDER_GIG_VERSION_FIELD_VALUES : "chosen option (gig_template_field_id, option_code)"
+  GIG_ACCOUNTS ||--o{ PROVIDER_GIG_AUDIT_EVENTS : "owner at the time (account_id)"
+  PROVIDER_GIGS ||--o{ PROVIDER_GIG_AUDIT_EVENTS : "audited subject (gig_id)"
+  PROVIDER_GIG_VERSIONS |o--o{ PROVIDER_GIG_AUDIT_EVENTS : "concerned version (gig_version_id)"
+```
+
+**Identity and versions.** `PROVIDER_GIGS` is the identity: one row per offer, owned by an account, built from one template. `PROVIDER_GIG_VERSIONS` holds every version of that offer; the current one is the PUBLISHED row and the editable one the DRAFT row, found through two partial unique indexes (`uq_gig_versions__published`, `uq_gig_versions__draft`) that also say a Gig has at most one of each. No pointer column on the Gig names a "current version": it would be a second source of truth.
+
+**The exact template version.** Each version references `catalog.gig_template_versions` directly, not only the template. Version 1 binds the template's ACTIVE version at creation and every later version binds the same one (ADR-0046, no automatic migration), so a field, an option or a bound of the template can be read exactly as it was when the provider wrote the value. The service type is `gig_templates.service_type_id` and is reached through `PROVIDER_GIGS.gig_template_id`; the market is the market of the account's COMPLETED registration (`provider.registrations.market_id`). Neither is stored on the Gig.
+
+**One typed value per field.** `PROVIDER_GIG_VERSION_FIELD_VALUES` has the composite key `(gig_version_id, gig_template_field_id)` and exactly one typed column populated. The ENUM option is a composite foreign key `(gig_template_field_id, option_code)` to `catalog.gig_template_field_options` (MATCH SIMPLE: NULL for every other type), so an option of another field cannot be stored. The guard (not a foreign key) requires the field to belong to the version's bound template version and to be provider-editable.
+
+**Audit.** `PROVIDER_GIG_AUDIT_EVENTS` repeats `account_id` (the owner at the time of the event) so a trail can be read per account; a guard checks that it agrees with the Gig and that the version belongs to the Gig. The diagram shows the three subject keys as separate relationships.

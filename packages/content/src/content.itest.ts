@@ -34,6 +34,8 @@ const err = async (p: Promise<unknown>) => (await rejection(p)) as ContentError;
 const dbCode = async (p: Promise<unknown>) => ((await rejection(p)) as { code?: string } | undefined)?.code;
 const sha = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
 const inMs = (ms: number) => new Date(Date.now() + ms);
+/** The database container's clock drifts from the host's (about 20 ms ahead on a developer machine, with Docker's VM): a database timestamp compared with the host's `Date.now()` needs this much room. */
+const CLOCK_SKEW_MS = 2_000;
 
 const entryReq = (k: string, over: Partial<CreateEntryInput> = {}): CreateEntryInput => ({
   key: k,
@@ -510,7 +512,7 @@ describe('publish and resolve (16, 17)', () => {
       return svc.publish(d.versionId, C);
     });
     expect(final).toMatchObject({ status: 'PUBLISHED', version: 1, effectiveTo: null });
-    expect(final.effectiveFrom.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(final.effectiveFrom.getTime()).toBeLessThanOrEqual(Date.now() + CLOCK_SKEW_MS);
     const r = await svc.resolve(k, { locale: 'en-US' });
     expect(r).toMatchObject({
       key: k,
@@ -579,7 +581,7 @@ describe('publish and resolve (16, 17)', () => {
     await sleep(1_300);
     const published = await svc.publish(slow.versionId, A);
     expect(published.effectiveFrom.getTime()).toBeGreaterThan(slow.effectiveFrom.getTime());
-    expect(published.effectiveFrom.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(published.effectiveFrom.getTime()).toBeLessThanOrEqual(Date.now() + CLOCK_SKEW_MS);
     expect(published.status).toBe('PUBLISHED');
     // an explicit end that is already behind the start is refused
     const ended = await authorVersion(svc, k, { body: 'ended', from: inMs(500), to: inMs(1_500) });
@@ -1979,16 +1981,18 @@ describe('the database refuses to rewrite history and keeps the audit trail cons
     await svc.createEntry(entryReq(k), A);
     const v1 = await publishNew(svc, k, { body: 'first' });
     await sleep(30);
-    const past = new Date(Date.now() - 10).toISOString();
-    expect(String(await rejection(q('UPDATE content.versions SET effective_to = $2 WHERE version_id = $1', [v1.versionId, past])))).toMatch(
-      /effective_to cannot be closed in the past/,
-    );
+    // "a moment ago" on the DATABASE clock (the host clock can be ahead of or behind it)
+    expect(
+      String(
+        await rejection(q("UPDATE content.versions SET effective_to = clock_timestamp() - interval '10 milliseconds' WHERE version_id = $1", [v1.versionId])),
+      ),
+    ).toMatch(/effective_to cannot be closed in the past/);
     expect(
       String(await rejection(q("UPDATE content.versions SET effective_to = effective_from + interval '1 millisecond' WHERE version_id = $1", [v1.versionId]))),
     ).toMatch(/effective_to cannot be closed in the past/);
     expect((await rows([v1.versionId]))[0]!.effective_to).toBeNull();
     // a historical resolution is unchanged by the refused attempts
-    expect((await svc.resolve(k, { locale: 'en-US', at: new Date(Date.now() - 10) })).body).toBe('first');
+    expect((await svc.resolve(k, { locale: 'en-US', at: new Date(v1.effectiveFrom.getTime() + 1) })).body).toBe('first');
     // the service closes at the successor start, which is never before the transaction start
     const v2 = await publishNew(svc, k, { body: 'second' });
     expect((await rows([v1.versionId]))[0]).toMatchObject({ status: 'SUPERSEDED' });

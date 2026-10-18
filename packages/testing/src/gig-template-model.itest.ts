@@ -931,14 +931,21 @@ describe('F. RESTRICT: every foreign key holds when the guards are bypassed, and
   it('refuses a plain TRUNCATE of a referenced table (PostgreSQL itself, 0A000) and of an unreferenced one (ROW_IMMUTABLE), and the CASCADE and multi-table forms (ROW_IMMUTABLE); every row survives', async () => {
     await bare();
     const before = await Promise.all(ALL_TABLES.map((t) => count(t)));
-    for (const t of [T, V, F]) await expect(pool.query(`TRUNCATE ${t}`)).rejects.toMatchObject({ code: '0A000' });
-    for (const t of [O, R, M, AUDIT]) await expectRule(run(`TRUNCATE ${t}`), 'ROW_IMMUTABLE');
+    // O (the options) is referenced since 0020 by provider.gig_version_field_values (the composite option key of a Gig field value)
+    for (const t of [T, V, F, O]) await expect(pool.query(`TRUNCATE ${t}`)).rejects.toMatchObject({ code: '0A000' });
+    for (const t of [R, M, AUDIT]) await expectRule(run(`TRUNCATE ${t}`), 'ROW_IMMUTABLE');
     for (const t of ALL_TABLES) await expectRule(run(`TRUNCATE ${t} CASCADE`), 'ROW_IMMUTABLE');
     // since 0018 provider.registration_service_types and since 0019 trust.requirement_rules (both outside the list) reference service_types, so PostgreSQL itself refuses the plain list
     // before any trigger runs; with those two tables in the list the catalogue's own guard answers (the provider and trust guards are asserted by their own model tests)
     await expect(pool.query(`TRUNCATE ${ALL_TABLES.join(', ')}`)).rejects.toMatchObject({ code: '0A000' });
     await expect(pool.query(`TRUNCATE ${ALL_TABLES.join(', ')}, provider.registration_service_types`)).rejects.toMatchObject({ code: '0A000' });
-    await expectRule(run(`TRUNCATE ${ALL_TABLES.join(', ')}, provider.registration_service_types, trust.requirement_rules`), 'ROW_IMMUTABLE');
+    // since 0020 provider.gigs, provider.gig_versions and provider.gig_version_field_values reference templates, template versions, fields and options as well
+    await expectRule(
+      run(
+        `TRUNCATE ${ALL_TABLES.join(', ')}, provider.registration_service_types, trust.requirement_rules, provider.gigs, provider.gig_versions, provider.gig_version_field_values, provider.gig_audit_events`,
+      ),
+      'ROW_IMMUTABLE',
+    );
     await expectRule(run(`TRUNCATE ${NEW_TABLES.join(', ')} CASCADE`), 'ROW_IMMUTABLE');
     await expectRule(run(`TRUNCATE ${ALL_TABLES.join(', ')} RESTART IDENTITY CASCADE`), 'ROW_IMMUTABLE');
     expect(await Promise.all(ALL_TABLES.map((t) => count(t)))).toEqual(before);
@@ -2799,7 +2806,6 @@ describe('K. mutation checks (scratch database): each guard removed or weakened 
 
   it('MUTATION: dropping a no_truncate trigger lets that table be emptied (caught by F), for the tables nothing references (a referenced table is protected by PostgreSQL itself)', async () => {
     for (const [table, trigger] of [
-      [O, 'trg_gig_template_field_options__no_truncate'],
       [R, 'trg_gig_template_requirements__no_truncate'],
       [M, 'trg_market_gig_templates__no_truncate'],
     ] as const)
@@ -2821,6 +2827,12 @@ describe('K. mutation checks (scratch database): each guard removed or weakened 
         expect(await cascade(sp), `${trigger} is covered by the triggers of the tables the cascade reaches`).toBe('ROW_IMMUTABLE');
       });
     }
+    // O (the options) is referenced since 0020 by provider.gig_version_field_values: PostgreSQL itself refuses the plain form, and the CASCADE form reaches the provider guard of that table
+    // (a provider_rule, so the catalogue's outcome helper reports the SQLSTATE)
+    await dropTrigger('trg_gig_template_field_options__no_truncate', O, async () => {
+      expect(await rolledBack(sp, (c) => outcomeOf(c.query(`TRUNCATE ${O}`))), 'plain').toBe('0A000');
+      expect(await rolledBack(sp, (c) => outcomeOf(c.query(`TRUNCATE ${O} CASCADE`))), 'cascade').toBe('23000');
+    });
   });
 
   it('MUTATION: dropping a CHECK, a unique key or an index lets the rule it holds be broken (caught by C4, C5, C6, C7 and C9)', async () => {
@@ -4177,12 +4189,12 @@ describe('A. schema shape: six new tables, nine functions and twelve triggers ad
         (
           await from.query(
             `SELECT (SELECT count(*)::int FROM identity.accounts) AS accounts, (SELECT count(*)::int FROM integration.outbox_events) AS outbox,
-                    (SELECT count(*)::int FROM configuration.parameters WHERE key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'trust.%') AS parameters,
-                    (SELECT count(*)::int FROM configuration.audit_events a WHERE NOT EXISTS (SELECT 1 FROM configuration.parameters p WHERE p.parameter_id = a.parameter_id AND (p.key LIKE 'provider.registration.%' OR p.key LIKE 'trust.%'))) AS config_audit,
+                    (SELECT count(*)::int FROM configuration.parameters WHERE key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'provider.gig.%' AND key NOT LIKE 'trust.%') AS parameters,
+                    (SELECT count(*)::int FROM configuration.audit_events a WHERE NOT EXISTS (SELECT 1 FROM configuration.parameters p WHERE p.parameter_id = a.parameter_id AND (p.key LIKE 'provider.registration.%' OR p.key LIKE 'provider.gig.%' OR p.key LIKE 'trust.%'))) AS config_audit,
                     (SELECT count(*)::int FROM geography.markets) AS markets, (SELECT count(*)::int FROM geography.audit_events) AS geo_audit,
                     (SELECT count(*)::int FROM identity.account_sections) AS sections, (SELECT count(*)::int FROM identity.roles) AS roles,
                     (SELECT count(*)::int FROM content.locales) AS locales,
-                    (SELECT count(*)::int FROM content.entries WHERE key NOT LIKE 'catalog.%' AND key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'trust.%') AS other_entries,
+                    (SELECT count(*)::int FROM content.entries WHERE key NOT LIKE 'catalog.%' AND key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'provider.gig.%' AND key NOT LIKE 'trust.%') AS other_entries,
                     (SELECT count(*)::int FROM catalog.categories) AS categories, (SELECT count(*)::int FROM catalog.service_types) AS service_types,
                     (SELECT count(*)::int FROM catalog.market_categories) AS market_categories, (SELECT count(*)::int FROM catalog.audit_events WHERE action NOT LIKE 'GIG\\_TEMPLATE\\_%') AS old_audit`,
           )
@@ -4192,9 +4204,9 @@ describe('A. schema shape: six new tables, nine functions and twelve triggers ad
         from
           .query(
             // the provider registration copy of 0018 (provider.registration.*, 56 entries) and the verification copy of 0019 (trust.*, 97 entries) are later migrations: only what 0016 added may differ
-            `SELECT (SELECT count(*)::int FROM content.entries WHERE key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'trust.%') AS entries,
-                    (SELECT count(*)::int FROM content.versions v JOIN content.entries e ON e.entry_id = v.entry_id WHERE e.key NOT LIKE 'provider.registration.%' AND e.key NOT LIKE 'trust.%') AS versions,
-                    (SELECT count(*)::int FROM content.audit_events a JOIN content.entries e ON e.entry_id = a.entry_id WHERE e.key NOT LIKE 'provider.registration.%' AND e.key NOT LIKE 'trust.%') AS audit`,
+            `SELECT (SELECT count(*)::int FROM content.entries WHERE key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'provider.gig.%' AND key NOT LIKE 'trust.%') AS entries,
+                    (SELECT count(*)::int FROM content.versions v JOIN content.entries e ON e.entry_id = v.entry_id WHERE e.key NOT LIKE 'provider.registration.%' AND e.key NOT LIKE 'provider.gig.%' AND e.key NOT LIKE 'trust.%') AS versions,
+                    (SELECT count(*)::int FROM content.audit_events a JOIN content.entries e ON e.entry_id = a.entry_id WHERE e.key NOT LIKE 'provider.registration.%' AND e.key NOT LIKE 'provider.gig.%' AND e.key NOT LIKE 'trust.%') AS audit`,
           )
           .then((r) => r.rows[0] as { entries: number; versions: number; audit: number });
       const [x, y] = [await total(beforePool), await total(seedPool)];
@@ -4215,6 +4227,11 @@ describe('A. schema shape: six new tables, nine functions and twelve triggers ad
           WHERE contype = 'f' AND confrelid IN (SELECT oid FROM pg_class WHERE relnamespace = 'catalog'::regnamespace) AND connamespace <> 'catalog'::regnamespace ORDER BY conname COLLATE "C"`,
       ),
     ).toEqual([
+      // migration 0020 (CAT-003): a Gig stands on a template, a Gig version on the exact template version, a field value on the answered field and its ENUM option
+      { from_table: 'provider.gig_version_field_values', conname: 'fk_gig_version_field_values__field_id' },
+      { from_table: 'provider.gig_version_field_values', conname: 'fk_gig_version_field_values__option' },
+      { from_table: 'provider.gig_versions', conname: 'fk_gig_versions__gig_template_version_id' },
+      { from_table: 'provider.gigs', conname: 'fk_gigs__gig_template_id' },
       { from_table: 'provider.registration_service_types', conname: 'fk_registration_service_types__service_type_id' },
       { from_table: 'trust.requirement_rules', conname: 'fk_requirement_rules__service_type_id' },
     ]);

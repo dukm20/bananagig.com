@@ -3,7 +3,7 @@ import swagger from '@fastify/swagger';
 import type { AppConfig } from '@bananagig/config';
 import { API_PREFIX } from '@bananagig/contracts';
 import type { CatalogService, GigTemplateService } from '@bananagig/catalog';
-import type { ProviderRegistrationService } from '@bananagig/provider';
+import type { ProviderGigService, ProviderRegistrationService } from '@bananagig/provider';
 import type { TrustService } from '@bananagig/trust';
 import type { ConfigurationService } from '@bananagig/configuration';
 import type { ContentService } from '@bananagig/content';
@@ -28,6 +28,7 @@ import { contentRoutes } from './modules/content/routes';
 import { accountRoutes } from './modules/account/routes';
 import { catalogRoutes } from './modules/catalog/routes';
 import { providerRoutes } from './modules/provider/routes';
+import { providerGigRoutes } from './modules/provider/gig-routes';
 import { trustAdminRoutes } from './modules/trust/admin-routes';
 import { trustProviderRoutes } from './modules/trust/routes';
 import { consentRoutes } from './modules/consent/routes';
@@ -93,6 +94,8 @@ export interface AppDeps {
   gigTemplates?: GigTemplateService;
   /** The provider registration (PRO-001): registered with the account routes (it acts on the account of the verified token), so it needs `accounts`. */
   providerRegistrations?: ProviderRegistrationService;
+  /** The provider Gigs (CAT-003): the GigMenu and the Gig versions of the caller; the routes act on the account of the verified token, so they need `accounts`. */
+  providerGigs?: ProviderGigService;
   /** Provider verification (TRUST-001): the provider routes act on the account of the verified token, so they need `accounts`; the reviewer routes need the `trust-*` admin roles. */
   trust?: TrustService;
 }
@@ -174,7 +177,12 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
         {
           name: 'provider',
           description:
-            'The provider registration of the caller (PRO-001): the same account, not a second one. The application role (identity), the registration (market, service types, status) and Go-Live eligibility (PRO-003) are separate. Contact and agreement state are composed from their owners, never stored here; verification, subscription, profile and Gigs are future prerequisites reported as not available. Owner only: every route acts on the account of the verified token.',
+            'The provider registration of the caller (PRO-001): the same account, not a second one. The application role (identity), the registration (market, service types, status) and Go-Live eligibility (PRO-003) are separate. Contact and agreement state are composed from their owners, never stored here; verification (TRUST-001) and Gigs (CAT-003) report their own state; subscription and profile are future prerequisites reported as not available. Owner only: every route acts on the account of the verified token.',
+        },
+        {
+          name: 'gigs',
+          description:
+            "The provider GigMenu (CAT-003): the offers of the caller, each built from a platform-owned Gig Template and kept as an identity with immutable versions (a draft is edited in place, publishing freezes it and supersedes the previous version, retiring is terminal and nothing is deleted). Every version is bound to the EXACT template version it was built from. A Gig is not live and not bookable: Go-Live (PRO-003), variants, add-ons, media, service areas, availability and search are later checkpoints. The price currency is the market currency, set by the server. Owner only: every route acts on the account of the verified token and another account's Gig is not found.",
         },
         {
           name: 'gig-templates',
@@ -230,6 +238,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       areaRoutes: deps.accountArea ? { securitySummary: deps.security !== undefined, privacySummary: deps.consent !== undefined } : undefined,
     });
     if (deps.providerRegistrations) await app.register(providerRoutes, { prefix: `${API_PREFIX}/provider`, registrations: deps.providerRegistrations });
+    if (deps.providerGigs) await app.register(providerGigRoutes, { prefix: `${API_PREFIX}/provider`, gigs: deps.providerGigs });
     if (deps.trust) await app.register(trustProviderRoutes, { prefix: `${API_PREFIX}/provider/verification`, trust: deps.trust });
     if (deps.security) {
       const security = deps.security;

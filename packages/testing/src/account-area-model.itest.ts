@@ -561,10 +561,10 @@ describe('A. schema shape: a registry of account sections and of the sections ea
         (
           await from.query(
             `SELECT (SELECT count(*)::int FROM identity.accounts) AS accounts, (SELECT count(*)::int FROM integration.outbox_events) AS outbox,
-                    (SELECT count(*)::int FROM configuration.parameters WHERE key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'trust.%') AS parameters, (SELECT count(*)::int FROM identity.account_audit_events) AS audit,
+                    (SELECT count(*)::int FROM configuration.parameters WHERE key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'provider.gig.%' AND key NOT LIKE 'trust.%') AS parameters, (SELECT count(*)::int FROM identity.account_audit_events) AS audit,
                     (SELECT count(*)::int FROM content.locales) AS locales, (SELECT count(*)::int FROM geography.time_zones) AS zones,
-                    (SELECT count(*)::int FROM content.entries WHERE key NOT LIKE 'account.area.%' AND key NOT LIKE 'catalog.%' AND key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'trust.%') AS other_entries,
-                    (SELECT count(*)::int FROM content.versions v JOIN content.entries e ON e.entry_id = v.entry_id WHERE e.key NOT LIKE 'account.area.%' AND e.key NOT LIKE 'catalog.%' AND e.key NOT LIKE 'provider.registration.%' AND e.key NOT LIKE 'trust.%') AS other_versions`,
+                    (SELECT count(*)::int FROM content.entries WHERE key NOT LIKE 'account.area.%' AND key NOT LIKE 'catalog.%' AND key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'provider.gig.%' AND key NOT LIKE 'trust.%') AS other_entries,
+                    (SELECT count(*)::int FROM content.versions v JOIN content.entries e ON e.entry_id = v.entry_id WHERE e.key NOT LIKE 'account.area.%' AND e.key NOT LIKE 'catalog.%' AND e.key NOT LIKE 'provider.registration.%' AND e.key NOT LIKE 'provider.gig.%' AND e.key NOT LIKE 'trust.%') AS other_versions`,
           )
         ).rows[0];
       expect(await countsOf(pool)).toEqual(await countsOf(beforePool));
@@ -572,9 +572,9 @@ describe('A. schema shape: a registry of account sections and of the sections ea
         from
           .query(
             // the catalogue copy of 0015 (catalog.*), the provider registration copy of 0018 (provider.registration.*) and the verification copy of 0019 (trust.*) are later migrations: only what 0014 added may differ
-            `SELECT (SELECT count(*)::int FROM content.entries WHERE key NOT LIKE 'catalog.%' AND key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'trust.%') AS entries,
-                    (SELECT count(*)::int FROM content.versions v JOIN content.entries e ON e.entry_id = v.entry_id WHERE e.key NOT LIKE 'catalog.%' AND e.key NOT LIKE 'provider.registration.%' AND e.key NOT LIKE 'trust.%') AS versions,
-                    (SELECT count(*)::int FROM content.audit_events a JOIN content.entries e ON e.entry_id = a.entry_id WHERE e.key NOT LIKE 'catalog.%' AND e.key NOT LIKE 'provider.registration.%' AND e.key NOT LIKE 'trust.%') AS audit`,
+            `SELECT (SELECT count(*)::int FROM content.entries WHERE key NOT LIKE 'catalog.%' AND key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'provider.gig.%' AND key NOT LIKE 'trust.%') AS entries,
+                    (SELECT count(*)::int FROM content.versions v JOIN content.entries e ON e.entry_id = v.entry_id WHERE e.key NOT LIKE 'catalog.%' AND e.key NOT LIKE 'provider.registration.%' AND e.key NOT LIKE 'provider.gig.%' AND e.key NOT LIKE 'trust.%') AS versions,
+                    (SELECT count(*)::int FROM content.audit_events a JOIN content.entries e ON e.entry_id = a.entry_id WHERE e.key NOT LIKE 'catalog.%' AND e.key NOT LIKE 'provider.registration.%' AND e.key NOT LIKE 'provider.gig.%' AND e.key NOT LIKE 'trust.%') AS audit`,
           )
           .then((r) => r.rows[0] as { entries: number; versions: number; audit: number });
       const [x, y] = [await total(beforePool), await total(pool)];

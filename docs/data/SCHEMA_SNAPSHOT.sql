@@ -1294,6 +1294,103 @@ CREATE TABLE provider.audit_events (
   CONSTRAINT ck_audit_events__reason CHECK (((reason IS NULL) OR ((length(btrim(reason)) > 0) AND (length(reason) <= 1000))))
 );
 
+CREATE TABLE provider.gig_audit_events (
+  audit_event_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  occurred_at timestamp with time zone NOT NULL DEFAULT clock_timestamp(),
+  actor text NOT NULL,
+  account_id uuid NOT NULL,
+  gig_id uuid NOT NULL,
+  gig_version_id uuid,
+  action text NOT NULL,
+  changes jsonb,
+  correlation_id text NOT NULL,
+  CONSTRAINT pk_gig_audit_events PRIMARY KEY (audit_event_id),
+  CONSTRAINT fk_gig_audit_events__account_id FOREIGN KEY (account_id) REFERENCES identity.accounts(account_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_gig_audit_events__gig_id FOREIGN KEY (gig_id) REFERENCES provider.gigs(gig_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_gig_audit_events__gig_version_id FOREIGN KEY (gig_version_id) REFERENCES provider.gig_versions(gig_version_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_gig_audit_events__action CHECK ((action = ANY (ARRAY['GIG_CREATED'::text, 'GIG_DRAFT_CREATED'::text, 'GIG_DRAFT_UPDATED'::text, 'GIG_VERSION_PUBLISHED'::text, 'GIG_VERSION_SUPERSEDED'::text, 'GIG_RETIRED'::text]))),
+  CONSTRAINT ck_gig_audit_events__actor CHECK (((length(btrim(actor)) > 0) AND (length(actor) <= 200))),
+  CONSTRAINT ck_gig_audit_events__changes_object CHECK (((changes IS NULL) OR (jsonb_typeof(changes) = 'object'::text)))
+);
+CREATE INDEX idx_gig_audit_events__gig ON provider.gig_audit_events USING btree (gig_id, occurred_at);
+
+CREATE TABLE provider.gig_version_field_values (
+  gig_version_id uuid NOT NULL,
+  gig_template_field_id uuid NOT NULL,
+  text_value text,
+  integer_value bigint,
+  decimal_value numeric,
+  boolean_value boolean,
+  option_code text,
+  duration_minutes integer,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pk_gig_version_field_values PRIMARY KEY (gig_version_id, gig_template_field_id),
+  CONSTRAINT fk_gig_version_field_values__field_id FOREIGN KEY (gig_template_field_id) REFERENCES catalog.gig_template_fields(gig_template_field_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_gig_version_field_values__option FOREIGN KEY (gig_template_field_id, option_code) REFERENCES catalog.gig_template_field_options(gig_template_field_id, option_code) ON DELETE RESTRICT,
+  CONSTRAINT fk_gig_version_field_values__version_id FOREIGN KEY (gig_version_id) REFERENCES provider.gig_versions(gig_version_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_gig_version_field_values__decimal CHECK (((decimal_value IS NULL) OR ((decimal_value <> 'NaN'::numeric) AND (decimal_value <> 'Infinity'::numeric) AND (decimal_value <> '-Infinity'::numeric)))),
+  CONSTRAINT ck_gig_version_field_values__duration CHECK (((duration_minutes IS NULL) OR ((duration_minutes >= 1) AND (duration_minutes <= 100000)))),
+  CONSTRAINT ck_gig_version_field_values__one_value CHECK ((num_nonnulls(text_value, integer_value, decimal_value, boolean_value, option_code, duration_minutes) = 1)),
+  CONSTRAINT ck_gig_version_field_values__text CHECK (((text_value IS NULL) OR ((length(btrim(text_value)) > 0) AND (char_length(text_value) <= 20000))))
+);
+CREATE INDEX idx_gig_version_field_values__field_option ON provider.gig_version_field_values USING btree (gig_template_field_id, option_code);
+
+CREATE TABLE provider.gig_versions (
+  gig_version_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  gig_id uuid NOT NULL,
+  version_number integer NOT NULL,
+  gig_template_version_id uuid NOT NULL,
+  status text NOT NULL DEFAULT 'DRAFT'::text,
+  revision integer NOT NULL DEFAULT 1,
+  title text,
+  short_pitch text,
+  description text,
+  price_amount_minor bigint,
+  price_currency character(3),
+  duration_minutes integer,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  published_at timestamp with time zone,
+  superseded_at timestamp with time zone,
+  retired_at timestamp with time zone,
+  CONSTRAINT pk_gig_versions PRIMARY KEY (gig_version_id),
+  CONSTRAINT uq_gig_versions__number UNIQUE (gig_id, version_number),
+  CONSTRAINT fk_gig_versions__gig_id FOREIGN KEY (gig_id) REFERENCES provider.gigs(gig_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_gig_versions__gig_template_version_id FOREIGN KEY (gig_template_version_id) REFERENCES catalog.gig_template_versions(gig_template_version_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_gig_versions__price_currency FOREIGN KEY (price_currency) REFERENCES geography.currencies(currency_code) ON DELETE RESTRICT,
+  CONSTRAINT ck_gig_versions__description CHECK (((description IS NULL) OR ((length(btrim(description)) > 0) AND (char_length(description) <= 20000)))),
+  CONSTRAINT ck_gig_versions__duration CHECK (((duration_minutes IS NULL) OR ((duration_minutes >= 1) AND (duration_minutes <= 100000)))),
+  CONSTRAINT ck_gig_versions__lifecycle CHECK ((((status = 'DRAFT'::text) AND (published_at IS NULL) AND (superseded_at IS NULL) AND (retired_at IS NULL)) OR ((status = 'PUBLISHED'::text) AND (published_at IS NOT NULL) AND (superseded_at IS NULL) AND (retired_at IS NULL)) OR ((status = 'SUPERSEDED'::text) AND (published_at IS NOT NULL) AND (superseded_at IS NOT NULL) AND (retired_at IS NULL)) OR ((status = 'RETIRED'::text) AND (retired_at IS NOT NULL) AND (superseded_at IS NULL)))),
+  CONSTRAINT ck_gig_versions__number CHECK ((version_number >= 1)),
+  CONSTRAINT ck_gig_versions__price CHECK ((((price_amount_minor IS NULL) = (price_currency IS NULL)) AND ((price_amount_minor IS NULL) OR (price_amount_minor >= 0)))),
+  CONSTRAINT ck_gig_versions__published_content CHECK (((status <> ALL (ARRAY['PUBLISHED'::text, 'SUPERSEDED'::text])) OR ((title IS NOT NULL) AND (short_pitch IS NOT NULL) AND (description IS NOT NULL) AND ((price_amount_minor IS NULL) OR (price_amount_minor > 0))))),
+  CONSTRAINT ck_gig_versions__revision CHECK ((revision >= 1)),
+  CONSTRAINT ck_gig_versions__short_pitch CHECK (((short_pitch IS NULL) OR ((length(btrim(short_pitch)) > 0) AND (char_length(short_pitch) <= 2000)))),
+  CONSTRAINT ck_gig_versions__status CHECK ((status = ANY (ARRAY['DRAFT'::text, 'PUBLISHED'::text, 'SUPERSEDED'::text, 'RETIRED'::text]))),
+  CONSTRAINT ck_gig_versions__title CHECK (((title IS NULL) OR ((length(btrim(title)) > 0) AND (char_length(title) <= 200))))
+);
+CREATE UNIQUE INDEX uq_gig_versions__draft ON provider.gig_versions USING btree (gig_id) WHERE (status = 'DRAFT'::text);
+CREATE UNIQUE INDEX uq_gig_versions__published ON provider.gig_versions USING btree (gig_id) WHERE (status = 'PUBLISHED'::text);
+
+CREATE TABLE provider.gigs (
+  gig_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  account_id uuid NOT NULL,
+  gig_template_id uuid NOT NULL,
+  status text NOT NULL DEFAULT 'DRAFT'::text,
+  client_request_id uuid,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  retired_at timestamp with time zone,
+  CONSTRAINT pk_gigs PRIMARY KEY (gig_id),
+  CONSTRAINT fk_gigs__account_id FOREIGN KEY (account_id) REFERENCES identity.accounts(account_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_gigs__gig_template_id FOREIGN KEY (gig_template_id) REFERENCES catalog.gig_templates(gig_template_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_gigs__lifecycle CHECK (((retired_at IS NOT NULL) = (status = 'RETIRED'::text))),
+  CONSTRAINT ck_gigs__status CHECK ((status = ANY (ARRAY['DRAFT'::text, 'ACTIVE'::text, 'RETIRED'::text])))
+);
+CREATE INDEX idx_gigs__account_status ON provider.gigs USING btree (account_id, status);
+CREATE UNIQUE INDEX uq_gigs__client_request ON provider.gigs USING btree (account_id, client_request_id) WHERE (client_request_id IS NOT NULL);
+
 CREATE TABLE provider.registration_service_types (
   provider_registration_id uuid NOT NULL,
   service_type_id uuid NOT NULL,

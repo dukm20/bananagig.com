@@ -1053,3 +1053,37 @@ ADR-0043, ADR-0044, ADR-0045.
 
 ### Known follow-up
 DEBT-0087 (a real scanner, a vendor adapter, retention, per-market document acceptance, reviewer notes, a trust console, the policy that can fail open, no audit of reads, no rate limit) and DEBT-0088 (the unscheduled expiry sweep and cleanup, the minimal web flow, accepted limits). Next: CAT-003 Provider GigMenu and Gig Versioning.
+
+## CAT-003 — 2026-10-18
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(CAT-003)"`.
+Summary: Provider GigMenu and Gig Versioning. A Gig is the provider-owned offer built from a PLATFORM-OWNED Gig Template: an IDENTITY (`provider.gigs`: account and template, status DRAFT, ACTIVE, RETIRED; no service type and no market column) plus immutable VERSIONS (`provider.gig_versions`) that each bind the EXACT `gig_template_version_id`, with normalised typed field values, a server-derived price currency, duration, plain-text provider copy, one editable DRAFT and one PUBLISHED version at most, atomic supersede on publish, retire that keeps history, and no migration of an existing Gig to a newer template version. It is not live or bookable: Go-Live stays PRO-003 and `goLive` is `{evaluated:false, eligible:false}`.
+
+### Housekeeping at the start (requested)
+`PROJECT_STATE` records TRUST-001 (`38c934e`, GitHub Actions run 39080616644 SUCCESS in 17m 31s, `verify` PASS, `compose-smoke` PASS, `Provider verification` smoke PASS, as reported by the repository owner). `checkpoint:start` ran first on a clean tree. The user-owned `pnpm dev` shells were not touched. `la-oc` stays PLANNED; DEBT-0030, 0064, 0065, 0070 and 0076 to 0088 stay OPEN.
+
+### Delivered
+- Migration 0020 (`provider` schema): `gigs`, `gig_versions`, `gig_version_field_values`, `gig_audit_events`; 7 guard functions and 12 triggers (`provider_rule:<KEY>`, SQLSTATE 23000) that keep the invariants true for direct SQL (one DRAFT and one PUBLISHED per Gig, contiguous numbers, frozen published versions and values, exact template version binding, price currency equal to the market currency, typed value columns, ENUM options of the exact version, PLATFORM_FIXED never stored, a deferred check that a Gig has a version and that its status agrees with its versions, immutable audit); lock order account, Gig, version, then the catalogue rows in the catalogue's own order (template, service type, version); five typed `provider.gig.*` limits and 107 content entries seeded through the real change-request and content lifecycles.
+- `ProviderGigService` in `@bananagig/provider` over the `GigTemplatePort` and `GigPolicyProvider` ports: create (idempotent by `clientRequestId`), next draft, eager typed validation of every field value against the exact template version, draft save with an optimistic revision, publish with completeness issues and atomic supersede, retire, the GigMenu read model in a constant number of statements, `getGigReadinessFacts` and `gigsPrerequisite` for the onboarding GIGS step; three narrow exact-version reads added to `@bananagig/catalog`.
+- Contracts `packages/contracts/src/gig.ts` (DTOs, strict requests, 15 error codes, issue reasons, events, the plain-text normaliser); API module under `/api/v1/provider` (9 owner-only operations, error codes `GIG_*`, bodies read from the parsed copy); three outbox events; minimal accessible web pages `/provider/gigs`, `/provider/gigs/<id>`, `/provider/gigs/<id>/versions/<n>` and their POST handlers; smoke scenario `Provider GigMenu` (42 checks).
+- Docs: `PROVIDER_GIGS.md`, ADR-0046, the data model documents, `skills/catalog` and `skills/provider`, DEBT-0089 to DEBT-0097, LRN-0058 to LRN-0060.
+- Quality process: the work was split across six parallel agents (database, service, API, web, smoke, docs) against one shared spec and contracts, each with unit and integration tests; two independent read-only reviews. Defects found by the reviews and fixed before the commit: **a quadratic-time markup regex let one 80 KB description block the whole API for about 13 s**; invisible and blank-looking text could satisfy "required" text; a deadlock between publish and template retirement (guard lock order); a market currency change blocked the next draft with an untyped error; the account port's errors surfaced as 500; the web form body was not size-bounded; a foreign key into the catalogue had no index although the catalogue deletes rows; and a body field value was coerced by Ajv before the handler read it (found while building the API: LRN-0058). Accepted limits are in DEBT-0096 and DEBT-0097.
+
+### Schema
+Migration 0020: four tables, seven functions, 12 triggers, seeds. NORMALIZATION_LOG, DATA_MODEL, DATA_DICTIONARY, ERD, DATA_MODEL_CHANGELOG and SCHEMA_SNAPSHOT updated; Data Model Review Gate passed (Gig identity separate from versions; service type reached through the template; market reached through the registration; only the currency stored with the price; no current-version pointer, the partial unique indexes replace it; typed rows instead of a JSON blob; BCNF reviewed).
+
+### Contracts
+`packages/contracts/src/gig.ts`; 15 error codes (wire codes `GIG_*`); three `bananagig.provider.gig-*.v1` events; OpenAPI and AsyncAPI regenerated and valid.
+
+### Tests
+Unit 12919 and 164 root script tests, integration 7713 in 58 files (Gig data model rules 121, Gig service 92, API Gigs 36), smoke 42 checks (42/42 locally).
+
+### Skills updated
+`skills/catalog`, `skills/provider`.
+
+### ADRs
+ADR-0046.
+
+### Known follow-up
+DEBT-0089 (variants, add-ons, media and the unsupported required field types), DEBT-0090 (moderation), DEBT-0091 (template adoption), DEBT-0092 (service area, availability, capacity, price floor), DEBT-0093 (search, public page, Go-Live), DEBT-0094 to DEBT-0097 (the temporary editor, money entry, accepted limits). Next: CAT-004 Variants, Add-ons and Media.

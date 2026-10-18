@@ -1009,3 +1009,102 @@ Description: (1) **The expiry sweep (`recordExpiries`) exists but no worker job 
 Why deferred: each needs a consumer or an owner that does not exist yet (the worker schedule, the console, the notification checkpoints).
 Exit criteria: a worker cron for the sweep and the cleanup; expiry reminders through the notification checkpoint; the console and the polished provider flow replace the temporary page.
 Target checkpoint: PRO-003 (Go-Live needs timely expiry), the notification checkpoint and the admin console checkpoints
+
+## DEBT-0089 — Provider Gigs: variants, add-ons, bundles, media and the field types they need are left to CAT-004, and a required unsupported field blocks publishing
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: CAT-003
+Owner/domain: provider / catalog
+Description: CAT-003 built the Gig, its immutable versions, the typed field values and the GigMenu, and supports the template field types TEXT, LONG_TEXT, INTEGER, DECIMAL, BOOLEAN, ENUM and DURATION (the price is a column of the version, so MONEY is not stored as a field). It does NOT support variants (FIXED_WITH_VARIANTS only permits the base price), add-ons, bundles, drops, or media, and it stores nothing for the MEDIA, EQUIPMENT_REFERENCE and SKILL_REFERENCE field types. Behaviour while this is open: an OPTIONAL field of an unsupported type is not editable and is ignored; a PROVIDER_REQUIRED field of an unsupported type (or MONEY) blocks publishing with issue `FIELD_TYPE_NOT_SUPPORTED`, so a template that requires photos, equipment or skills cannot be published as a Gig yet and an administrator who builds such a template makes it unusable for providers until this is resolved. The platform photo limits (10 MB, 50 photos, file types) are not wired. A raw `FIELD_TYPE_UNSUPPORTED` guard in the database repeats the rule.
+Why deferred: each type needs its own storage (media objects and scanning, the equipment and skill catalogues owned by TRUST-001 and SV-09, variant and add-on tables keyed by the Gig version) and the PRD flows that use them; building any of them now would guess.
+Exit criteria: CAT-004 adds variants, add-ons and media as children of `gig_version_id` (frozen with the version), the supported field-type list and the DB guard are extended in a forward migration, the equipment and skill field types have catalogues to select from, and the publish completeness covers them. Until then the template authors know that required fields of unsupported types block providers.
+Target checkpoint: CAT-004
+
+## DEBT-0090 — Provider Gigs: provider-written copy is not moderated
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: CAT-003
+Owner/domain: trust / provider / legal
+Description: The title, short pitch, description and TEXT / LONG_TEXT field values of a Gig are free provider text. CAT-003 normalises it (Unicode NFC, whitespace, control and bidirectional-override characters, unpaired surrogates, HTML-looking markup are refused) and limits its length through configuration, but nothing reviews its content: a provider can publish offensive, misleading, off-platform-contact or prohibited-service wording (the CAT-001 prohibited-service list is not applied to the text), and nothing detects contact details written into the copy. Publishing is immediate; there is no review state, queue, report flow or takedown beyond the provider retiring the Gig. Provider text never enters audit, events, logs or error details by design, so a future moderator reads the version rows.
+Why deferred: moderation needs a policy (what is refused, automatic versus human review, appeal), a reviewer role and console (DEBT-0021, AD-02) and legal input; it is a recorded requirement, not a guess.
+Exit criteria: a moderation policy exists; published or pending versions can be reviewed, rejected or taken down with structured reasons and an audit trail; the prohibited-service list is applied; publishing becomes a request for review where the policy says so (a new version status or a separate review table, in a forward migration).
+Target checkpoint: before public Gig pages and search expose Gig text; the trust and admin console checkpoints (AD-02)
+
+## DEBT-0091 — Provider Gigs: a newer template version is never adopted (no migration of existing Gigs)
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: CAT-003
+Owner/domain: provider / catalog / product
+Description: By owner decision (ADR-0046) every version of a Gig binds the EXACT Gig Template version of its first version; nothing migrates a Gig automatically when the template gets a newer version or is retired. The consequences until adoption exists: a Gig can stay on an older (SUPERSEDED) template structure indefinitely and still publish new versions of its content; a Gig whose bound version, template or service type was RETIRED stays readable but cannot publish or start a new draft, and the provider's only way to a current structure is to create a new Gig and retire the old one (history is not carried over); there is no way for a provider to see that a newer template version exists, no diff, and no way for the platform to find or notify the Gigs on an old version (the index on `gig_template_version_id` supports the query, nothing runs it); wording of template labels is shared by all template versions (DEBT-0084), so a label change still reaches Gigs on older versions.
+Why deferred: adoption needs a design the owner has not made (opt-in or required by a deadline, how new required fields and removed options are resolved, whether adoption creates a new Gig version and re-publishes, how customers and bookings are told); doing it automatically would break the guarantee that a published offer does not change meaning.
+Exit criteria: an explicit adoption flow creates a NEW Gig version bound to the newer template version, validates it against that version, shows the provider what changed, and publishes only on the provider's act; the platform can list the Gigs still on a superseded or retired template version; the retirement path tells affected providers.
+Target checkpoint: a catalogue lifecycle checkpoint after CAT-004 (to be scheduled by the owner)
+
+## DEBT-0092 — Provider Gigs: service area, availability, capacity and the instant-book and price rules are not part of a Gig yet
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: CAT-003
+Owner/domain: provider / product
+Description: A Gig version holds copy, one price, one duration and the template field values only. Left out by design: (1) service area and radius (the template's RADIUS / POSTAL_CODES / POLYGON modes are not attached to a Gig; PR-03.04); (2) availability, schedules and capacity (PR-03.04); (3) price rules beyond a single fixed price: a floor price, a base-price rule, instant-book and booking-mode settings (PR-03.09, PR-03.10), dynamic or group pricing, discounts, drops and Banana Credits; (4) the policies a Gig carries in the PRD (PR-03.04). Publishing a Gig therefore says nothing about where or when the provider works, and the price is a plain amount in the provider's market currency (the currency is derived from the market, a provider who works in several markets or currencies is not supported because the registration has one market, DEBT-0085).
+Why deferred: each needs a consumer or a product decision that does not exist (geography of service areas, the scheduling model, the pricing and fee rules from configuration); a Gig is not bookable until these and Go-Live exist.
+Exit criteria: the service-area, availability/capacity and pricing-rule checkpoints add their data as children of the Gig version (frozen with it, in forward migrations), validate against the bound template version's allowed modes, and Go-Live (PRO-003) states which of them a bookable provider needs.
+Target checkpoint: the service-area, availability and pricing checkpoints; PRO-003
+
+## DEBT-0093 — Provider Gigs: no search projection, public Gig page or booking consumer
+
+Status: OPEN
+Severity: LOW
+Introduced by: CAT-003
+Owner/domain: search / provider / web
+Description: Published Gig versions are visible to their owner only (the GigMenu and the Gig detail). There is no OpenSearch projection, ranking, public Gig page, customer-facing read, or booking snapshot. The `bananagig.provider.gig-created.v1`, `gig-version-published.v1` and `gig-retired.v1` events exist (identifiers only, no copy), but nothing consumes them, so a consumer must read the published version from the database or an API that does not exist yet. Go-Live (PRO-003) is not evaluated: the readiness facts report `goLive {evaluated:false, eligible:false}`, and a published Gig is not live and not bookable. The registration `GIGS` step reads the facts but is not consulted by anything that blocks work.
+Why deferred: the consumers (search, public pages, booking, Go-Live) are separate checkpoints; building a projection or public read now would guess their shape and expose provider text before moderation (DEBT-0090).
+Exit criteria: a search projection and a public read are built from PUBLISHED versions (and the events) only, after Go-Live and moderation decide what may be shown; a booking keeps an immutable snapshot of the published version it was made against (R-06).
+Target checkpoint: the search, public-pages and booking checkpoints; PRO-003
+
+## DEBT-0094 — Provider Gigs: the editor is a minimal temporary web flow with plain text only
+
+Status: OPEN
+Severity: LOW
+Introduced by: CAT-003
+Owner/domain: web / provider
+Description: The `/provider/gigs` pages are server-rendered, minimal and temporary, in the same style as the registration and verification pages: forms post to same-origin handlers and redirect with closed lists of notice and error words. Left out: a rich text editor (provider text is plain text on purpose), autosave and unsaved-change protection (a stale tab gets `STALE_DRAFT` and must reload; there is no merge), a side-by-side comparison of versions, previews of how a customer will see the Gig, drag-and-drop ordering, client-side validation, and any progress persistence beyond the server state. The editor shows the template's fields from the bound version and labels them through content keys; a field of an unsupported type is listed as not available yet (DEBT-0089).
+Why deferred: the polished experience belongs to the onboarding and provider-console UI checkpoint and depends on the decisions of CAT-004 (media, variants) and moderation (DEBT-0090).
+Exit criteria: the polished provider Gig builder replaces the temporary pages with accessible editing of all CAT-004 content, version comparison, preview and conflict handling.
+Target checkpoint: the provider console / Gig builder UI checkpoint after CAT-004
+
+## DEBT-0095 — Provider Gigs: the web price entry and its display of money are an engineering simplification
+
+Status: OPEN
+Severity: LOW
+Introduced by: CAT-003
+Owner/domain: web / provider / product
+Description: The API stores and exchanges prices as integer minor units plus a three-letter currency code that the server derives from the provider's market. The API does not expose how many minor-unit digits a currency has, so the temporary web editor cannot present a major-unit amount for every currency; it takes the price as a whole number of minor units (cents for USD) labelled with the currency, and the handler accepts digits only (`apps/web/src/lib/auth/gig-handlers.ts`); a provider must type 1250 for 12.50. Money is shown without locale formatting, and the GigMenu shows the stored amount and currency as is. There is no price validation against ranges or suggestions (the PRD price floor, base price and suggestions are DEBT-0092 and the template carries no suggested price), and `price_currency` follows the market's currency at the time of each save, so a currency change of a market reaches a draft the next time it is saved but not a published version.
+Why deferred: currency exponents and locale formatting belong to a money-formatting component shared with billing, subscriptions and bookings, which does not exist yet.
+Exit criteria: a shared money component (minor-unit digits from `geography.currencies`, locale formatting, safe parsing of a major-unit input) is used by the editor and the GigMenu; the API exposes the exponent or a formatted display value; a policy exists for a market that changes its currency while Gigs are published.
+Target checkpoint: the checkpoint that introduces money display for subscriptions or booking, and the provider Gig builder UI checkpoint
+
+## DEBT-0096 — Provider Gigs: accepted limits and port reuse
+
+Status: OPEN
+Severity: LOW
+Introduced by: CAT-003
+Owner/domain: provider / platform
+Description: Accepted limits of CAT-003: (1) **Account facts reuse the registration's `AccountPort`.** The Gig service reads the account and role facts through the port the provider registration already uses and does not own a second account reader; those facts are read before the transaction, so a change committed in between is caught only by the database guards (`provider_rule` keys such as `ACCOUNT_NOT_ACTIVE`). The provider's market and selected service types come from the COMPLETED registration, so a service type retired after registration blocks creation and publishing only, never reading. (2) **Policy is read fresh before the transaction** (catalogue and configuration reads cannot nest): a policy change between the read and the commit applies to the next call. (3) **The write routes have no rate limit** (DEBT-0030): every real change adds an audit row, and a saved draft can be rewritten without limit, subject to the draft cap only on creating drafts. (4) **Field bounds are checked by the service, not the database**: the database checks type, template membership, behaviour, option validity and the currency, not minimum and maximum lengths or numbers of the bound template version. (5) **Audit `changes` hold field names and counts, not before and after values**, so the content of an earlier DRAFT cannot be reconstructed from the audit (the PUBLISHED and SUPERSEDED versions remain readable as rows). (6) **A DRAFT version is overwritten in place** by every save (the revision counter prevents lost updates); only publishing creates history. (7) **The GigMenu lists every Gig of the account** (the caps keep it small) with no pagination or filtering. (8) `PUBLISH_BLOCKED` carries identifiers only (`details.issues`), so every client must map them to labels through the content keys.
+Why deferred: each is a deliberate simplification with a safe default or needs infrastructure that other checkpoints own (the limiter, a money component, a console).
+Exit criteria: the platform limiter is applied to the Gig routes with DEBT-0030; pagination is added when the cap is raised or a console needs it; an audit read exists if reviewers need before and after values; the account facts port is shared by identity once a second consumer exists.
+Target checkpoint: DEBT-0030 for the limiter; the provider console checkpoints for the rest
+
+## DEBT-0097 — Provider Gigs: limits found in the independent review and accepted for CAT-003
+
+Status: OPEN
+Severity: LOW
+Introduced by: CAT-003
+Owner/domain: provider / web / product
+Description: The independent security and data reviews of CAT-003 found these items; the defects they found (a quadratic-time markup check, invisible text, an unbounded web form body, an unmapped account-port error, a lock-order inversion with template retirement, market currency drift, an unindexed foreign key and a Gig without a version) were fixed, and these remain as deliberate limits. (1) **Growth is bounded per state, not in total.** `provider.gig.max_active` counts ACTIVE Gigs and `provider.gig.max_drafts` counts open drafts; RETIRED Gigs, SUPERSEDED versions and audit rows are permanent by design and have no cap, so a script that creates, publishes and retires Gigs grows the GigMenu response and the history without bound (no pagination, DEBT-0030 for the limiter). (2) **Plain-text rules are strict on purpose.** Every Unicode format character except the joiners is refused (this includes the left-to-right and right-to-left marks that some right-to-left texts use), and any text that looks like an HTML tag opener (`<` followed by a letter, `!`, `?` or `/`) is refused, so prose such as "<up to 2 hours" needs rewording. (3) **Eligibility is re-checked in full only on create and publish.** Saving a draft, starting the next draft and retiring require an ACTIVE account but do not re-check the PROVIDER role, the market offering or the template status (the database guards the hard cases: a retired template or service type blocks publishing), and a suspended account cannot retire its own Gigs. (4) **The price ceiling is structural.** `GIG_PRICE_MINOR_CEILING` (10^12 minor units) keeps amounts far below the precision of a JavaScript number; the configurable price floor and ceiling are DEBT-0092. (5) **The temporary web editor drops unsaved edits when a numeric field is malformed**: the handler redirects with a closed error word and the page re-reads the server state, because typed values must not travel in a redirect or cookie. (6) A new Gig draft created in the same instant a template version is activated can see `GIG_TEMPLATE_NOT_AVAILABLE` (reason `NO_ACTIVE_VERSION`); a retry resolves it.
+Why deferred: each needs a policy decision, a shared component or infrastructure that later checkpoints own; none is exploitable for data exposure or for writing outside the owner's own Gigs.
+Exit criteria: total and per-Gig version caps and pagination exist with the provider console; the limiter protects the write routes (DEBT-0030); the product owner confirms the text rules for right-to-left languages; the draft save re-checks the full eligibility if the product wants paused providers to stop editing; the console keeps typed values on a validation error.
+Target checkpoint: DEBT-0030 for the limiter; the provider console / Gig builder UI checkpoint for the rest

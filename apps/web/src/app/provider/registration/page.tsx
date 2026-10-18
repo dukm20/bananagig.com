@@ -34,6 +34,8 @@ const ERROR_KEYS: Readonly<Record<string, string>> = Object.fromEntries(
 const GENERIC_ERROR_KEY = providerErrorKey('UNAVAILABLE');
 /** Notice words that carry copy (the other words are reflected by the page state itself and need none). */
 const NOTICE_KEYS: Readonly<Record<string, string>> = { submitted: page('completed_notice'), cancelled: page('cancelled_notice') };
+/** The next step after a completed registration: the provider's Gigs (CAT-003); the link text is the Gigs page title, omitted when the registry cannot serve it. */
+const GIGS_LINK_KEY = 'provider.gig.page.title';
 /** The most markets and service types the page lists (the lists are bounded by the platform; this bounds one render). */
 const MAX_OPTIONS = 200;
 
@@ -129,7 +131,7 @@ export default async function ProviderRegistrationPage({ searchParams }: { searc
           ...(steps.some((s) => s.step === 'LEGAL' && s.status !== 'COMPLETE' && s.status !== 'NOT_REQUIRED') ? [page('legal_hint')] : []),
         ]
       : []),
-    ...(completed ? [page('golive_note')] : []),
+    ...(completed ? [page('golive_note'), GIGS_LINK_KEY] : []),
   ]);
   const text = (k: string) => renderContent(copy[k]);
 
@@ -253,6 +255,11 @@ export default async function ProviderRegistrationPage({ searchParams }: { searc
       ) : null}
 
       {completed && text(page('golive_note')) ? <p>{text(page('golive_note'))}</p> : null}
+      {completed && text(GIGS_LINK_KEY) ? (
+        <p>
+          <a href="/provider/gigs">{text(GIGS_LINK_KEY)}</a>
+        </p>
+      ) : null}
     </div>
   );
 }

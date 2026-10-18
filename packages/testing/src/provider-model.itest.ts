@@ -38,6 +38,9 @@ import { createIsolatedDatabase, createTestPool, migrationsDir, rejection, sleep
 //
 // Mutation runs (done by hand on private copies, never in place): PROVIDER_MODEL_MIGRATIONS_DIR names a directory whose 0018_provider_registration.sql replaces the real one in every
 // database this file creates. Unset, the real migration is used.
+// Since 0020 (CAT-003) the same schema also holds the four Gig tables, their functions, triggers and indexes (all named with `gig`); they are asserted in gig-model.itest.ts. Every
+// schema-wide count or list below is scoped to the PRO-001 objects (relation, index, trigger, constraint and function names without `gig`).
+const GIG_TABLES = ['provider.gigs', 'provider.gig_versions', 'provider.gig_version_field_values', 'provider.gig_audit_events'];
 const MUTANT_DIR = process.env.PROVIDER_MODEL_MIGRATIONS_DIR;
 const MIGRATION_18 = '0018_provider_registration.sql';
 const migration18 = (): string => readFileSync(path.join(MUTANT_DIR ?? migrationsDir(), MIGRATION_18), 'utf8');
@@ -659,12 +662,16 @@ describe('A. schema shape: three tables, three functions and six triggers in a n
     expect(
       (
         await q<{ table_name: string }>(
-          "SELECT table_name FROM information_schema.tables WHERE table_schema = 'provider' AND table_type = 'BASE TABLE' ORDER BY 1",
+          "SELECT table_name FROM information_schema.tables WHERE table_schema = 'provider' AND table_type = 'BASE TABLE' AND table_name NOT LIKE '%gig%' ORDER BY 1",
         )
       ).map((r) => r.table_name),
     ).toEqual(['audit_events', 'registration_service_types', 'registrations']);
     // every relation of the schema: three ordinary tables and five indexes (3 primary keys + 2 unique keys on registrations, one of them partial); nothing else
-    expect(await q("SELECT relkind, count(*)::int AS n FROM pg_class WHERE relnamespace = 'provider'::regnamespace GROUP BY 1 ORDER BY 1")).toEqual([
+    expect(
+      await q(
+        "SELECT relkind, count(*)::int AS n FROM pg_class WHERE relnamespace = 'provider'::regnamespace AND relname NOT LIKE '%gig%' GROUP BY 1 ORDER BY 1",
+      ),
+    ).toEqual([
       { relkind: 'i', n: 5 },
       { relkind: 'r', n: 3 },
     ]);
@@ -725,7 +732,7 @@ describe('A. schema shape: three tables, three functions and six triggers in a n
 
   it('has 17 primary key, unique, foreign key and check constraints (3 + 1 + 5 + 8) and no exclusion constraint, and no table has a NOT NULL beyond the columns documented', async () => {
     const n = await q<{ contype: string; n: number }>(
-      "SELECT c.contype, count(*)::int AS n FROM pg_constraint c WHERE c.connamespace = 'provider'::regnamespace GROUP BY 1 ORDER BY 1",
+      "SELECT c.contype, count(*)::int AS n FROM pg_constraint c WHERE c.connamespace = 'provider'::regnamespace AND c.conrelid::regclass::text NOT LIKE '%gig%' GROUP BY 1 ORDER BY 1",
     );
     expect(n).toEqual([
       { contype: 'c', n: 8 },
@@ -757,12 +764,12 @@ describe('A. schema shape: three tables, three functions and six triggers in a n
 
   it('has exactly five indexes in the schema, one of them partial, none on market_id, service_type_id, the audit registration, a status alone or a timestamp (the documented deliberate omissions)', async () => {
     expect(Object.values(INDEX_DEFS).reduce((a, d) => a + Object.keys(d).length, 0)).toBe(5);
-    expect(await q("SELECT indexname FROM pg_indexes WHERE schemaname = 'provider' AND indexdef ~ ' WHERE ' ORDER BY 1")).toEqual([
-      { indexname: 'uq_registrations__live' },
-    ]);
+    expect(
+      await q("SELECT indexname FROM pg_indexes WHERE schemaname = 'provider' AND indexdef ~ ' WHERE ' AND indexname NOT LIKE '%gig%' ORDER BY 1"),
+    ).toEqual([{ indexname: 'uq_registrations__live' }]);
     expect(
       await q(
-        "SELECT indexname FROM pg_indexes WHERE schemaname = 'provider' AND (indexdef ~ 'INCLUDE' OR indexdef ~ '(market_id|created_at|updated_at|completed_at|cancelled_at|occurred_at|actor|action|revision|changes)')",
+        "SELECT indexname FROM pg_indexes WHERE schemaname = 'provider' AND (indexdef ~ 'INCLUDE' OR indexdef ~ '(market_id|created_at|updated_at|completed_at|cancelled_at|occurred_at|actor|action|revision|changes)') AND indexname NOT LIKE '%gig%'",
       ),
     ).toEqual([]);
     // the foreign key columns WITHOUT a supporting index are exactly the three the migration documents (never-deleted targets, no filtered query on the referencing column)
@@ -770,7 +777,7 @@ describe('A. schema shape: three tables, three functions and six triggers in a n
       (
         await q<{ tbl: string; conname: string }>(
           `SELECT conrelid::regclass::text AS tbl, conname FROM pg_constraint c
-          WHERE contype = 'f' AND connamespace = 'provider'::regnamespace
+          WHERE contype = 'f' AND connamespace = 'provider'::regnamespace AND conname NOT LIKE '%gig%'
             AND NOT EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.conrelid AND i.indkey[0] = c.conkey[1])`,
         )
       )
@@ -793,7 +800,7 @@ describe('A. schema shape: three tables, three functions and six triggers in a n
     expect(
       (
         await q<{ tgname: string }>(
-          "SELECT g.tgname FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid WHERE c.relnamespace = 'provider'::regnamespace AND NOT g.tgisinternal ORDER BY 1",
+          "SELECT g.tgname FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid WHERE c.relnamespace = 'provider'::regnamespace AND c.relname NOT LIKE '%gig%' AND NOT g.tgisinternal ORDER BY 1",
         )
       ).length,
     ).toBe(6);
@@ -807,7 +814,7 @@ describe('A. schema shape: three tables, three functions and six triggers in a n
 
   it('defines the three functions as plpgsql trigger functions, VOLATILE, not SECURITY DEFINER, without a custom search_path, not leakproof or strict, with a comment each', async () => {
     const rows = await q<{ proname: string; args: string; volatility: string; result: string }>(
-      `SELECT p.proname, pg_get_function_identity_arguments(p.oid) AS args, p.provolatile AS volatility, pg_get_function_result(p.oid) AS result FROM pg_proc p WHERE p.pronamespace = 'provider'::regnamespace ORDER BY 1`,
+      `SELECT p.proname, pg_get_function_identity_arguments(p.oid) AS args, p.provolatile AS volatility, pg_get_function_result(p.oid) AS result FROM pg_proc p WHERE p.pronamespace = 'provider'::regnamespace AND p.proname NOT LIKE '%gig%' ORDER BY 1`,
     );
     expect(rows).toEqual(FUNCTIONS);
     expect(
@@ -919,7 +926,7 @@ describe('A. schema shape: three tables, three functions and six triggers in a n
     expect(
       (
         await q<{ target: string }>(
-          `SELECT DISTINCT confrelid::regclass::text AS target FROM pg_constraint WHERE contype = 'f' AND connamespace = 'provider'::regnamespace AND confrelid::regclass::text NOT LIKE 'provider.%' ORDER BY 1`,
+          `SELECT DISTINCT confrelid::regclass::text AS target FROM pg_constraint WHERE contype = 'f' AND connamespace = 'provider'::regnamespace AND conrelid::regclass::text NOT LIKE '%gig%' AND confrelid::regclass::text NOT LIKE 'provider.%' ORDER BY 1`,
         )
       ).map((r) => r.target),
     ).toEqual(['catalog.service_types', 'geography.markets', 'identity.accounts']);
@@ -2339,7 +2346,7 @@ describe('F. RESTRICT: every foreign key holds when the guards are bypassed, and
       );
       await rolledBack(async (c) => {
         await c.query(NO_FOREIGN_TRIGGERS);
-        for (const s of noTriggers(...TABLES)) await c.query(s);
+        for (const s of noTriggers(...TABLES, ...GIG_TABLES)) await c.query(s); // since 0020 the cascade also reaches the Gig tables
         await c.query(`TRUNCATE ${root} CASCADE`); // not refused by anything else: the provider triggers were the only thing in the way
         for (const t of reached) expect(await count(t, 'true', [], c), `${t} was truncated`).toBe(0);
       });
@@ -2948,7 +2955,7 @@ describe('J. the provider tables cannot hold, and do not hold, anything about a 
 
   it('has no column named after a person, a contact, an address, a token, a document, a legal text, a price, a role, a verification or a subscription: every word of every column name belongs to the registration vocabulary', async () => {
     const rows = await q<{ table_name: string; column_name: string; data_type: string }>(
-      "SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = 'provider' ORDER BY 1, ordinal_position",
+      "SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = 'provider' AND table_name NOT LIKE '%gig%' ORDER BY 1, ordinal_position",
     );
     expect(rows).toHaveLength(Object.values(COLUMNS_BY_TABLE).reduce((a, c) => a + c.length, 0));
     expect(rows).toHaveLength(21);
@@ -2990,9 +2997,9 @@ describe('J. the provider tables cannot hold, and do not hold, anything about a 
   });
 
   it("stores no duplicate of state owned elsewhere: no column repeats the account status, the role membership, the contact state, the consent state, a market code, a service type code or a name (only ids and the registration's own lifecycle)", async () => {
-    const cols = (await q<{ column_name: string }>("SELECT column_name FROM information_schema.columns WHERE table_schema = 'provider'")).map(
-      (r) => r.column_name,
-    );
+    const cols = (
+      await q<{ column_name: string }>("SELECT column_name FROM information_schema.columns WHERE table_schema = 'provider' AND table_name NOT LIKE '%gig%'")
+    ).map((r) => r.column_name);
     for (const dup of [
       'account_status',
       'role_status',
@@ -3013,10 +3020,11 @@ describe('J. the provider tables cannot hold, and do not hold, anything about a 
 
   it('writes nothing outside its own tables and reads only what it protects: the guards SELECT from identity.accounts, catalog.service_types and provider.registrations (the first two FOR SHARE), and never INSERT, UPDATE, DELETE, notify, touch the outbox or the audit trail', async () => {
     const src = Object.fromEntries(
-      (await q<{ proname: string; prosrc: string }>("SELECT proname, prosrc FROM pg_proc WHERE pronamespace = 'provider'::regnamespace")).map((r) => [
-        r.proname,
-        r.prosrc,
-      ]),
+      (
+        await q<{ proname: string; prosrc: string }>(
+          "SELECT proname, prosrc FROM pg_proc WHERE pronamespace = 'provider'::regnamespace AND proname NOT LIKE '%gig%'",
+        )
+      ).map((r) => [r.proname, r.prosrc]),
     );
     expect(Object.keys(src).sort()).toEqual(['forbid_mutation', 'guard_registration_service_types', 'guard_registrations']);
     for (const [fn, text] of Object.entries(src)) {

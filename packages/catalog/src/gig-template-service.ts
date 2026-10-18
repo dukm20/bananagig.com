@@ -50,10 +50,12 @@ import {
   GigTemplateSnapshotSchema,
   fieldView,
   versionSummaryView,
+  type GigTemplateFieldDetailView,
   type GigTemplateFieldOptionView,
   type GigTemplateFieldView,
   type GigTemplateRequirementView,
   type GigTemplateSnapshot,
+  type GigTemplateVersionDetailView,
   type GigTemplateVersionSummaryView,
   type GigTemplateVersionView,
   type GigTemplateView,
@@ -95,6 +97,7 @@ export interface Canon {
 }
 
 const MAX_MISSING_KEYS_REPORTED = 20;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** The database stores 4 decimals: normalize like it does, so a definition is equal to what was stored (float noise such as 0.30000000000000004 is not a change). */
 const round4 = (v: number | undefined): number | null => (v === undefined ? null : Math.round(v * 10_000) / 10_000);
 const reqId = (r: CanonRequirement): string => `${r.requirementType}:${r.referenceCode ?? ''}`;
@@ -411,6 +414,83 @@ export class GigTemplateService {
         .get(q.gig_template_version_id as string)!
         .requirements.push({ requirementType: q.requirement_type as GigTemplateRequirementType, referenceCode: (q.reference_code as string | null) ?? null });
     return out;
+  }
+
+  /**
+   * ONE exact version with its template, service type and category facts, in a single consistent snapshot (CAT-003: a Gig keeps the version it was built from, whatever its status).
+   * A malformed or unknown id is GIG_TEMPLATE_VERSION_NOT_FOUND.
+   */
+  async getGigTemplateVersionById(gigTemplateVersionId: string): Promise<GigTemplateVersionDetailView> {
+    if (typeof gigTemplateVersionId !== 'string' || !UUID.test(gigTemplateVersionId))
+      throw new CatalogError('GIG_TEMPLATE_VERSION_NOT_FOUND', 'the version is not registered', {});
+    return this.consistentRead(async (trx) => {
+      const view = await this.detailOfVersion(trx, sql`v.gig_template_version_id = ${gigTemplateVersionId}`);
+      if (!view) throw new CatalogError('GIG_TEMPLATE_VERSION_NOT_FOUND', 'the version is not registered', {});
+      return view;
+    });
+  }
+
+  /**
+   * The structure a new Gig starts from, by template code: the ACTIVE version when there is one, otherwise the newest version that is not a DRAFT (so a caller can say WHY the template
+   * cannot be used). GIG_TEMPLATE_NOT_FOUND when the code is unknown or the template has no published version at all.
+   */
+  async getGigTemplateStructure(code: string): Promise<GigTemplateVersionDetailView> {
+    return this.consistentRead(async (trx) => {
+      const view = await this.detailOfVersion(
+        trx,
+        sql`t.code = ${code} AND v.status <> 'DRAFT'`,
+        sql`ORDER BY (v.status = 'ACTIVE') DESC, v.version_number DESC LIMIT 1`,
+      );
+      if (!view) throw new CatalogError('GIG_TEMPLATE_NOT_FOUND', 'the Gig Template is not registered', { code: String(code).slice(0, 64) });
+      return view;
+    });
+  }
+
+  /** Whether the template is enabled in the market now (the availability row only; the caller decides what else must hold). An unknown market or template is false. */
+  async isGigTemplateEnabledInMarket(marketCode: string, gigTemplateId: string): Promise<boolean> {
+    if (!MarketCode.safeParse(marketCode).success || typeof gigTemplateId !== 'string' || !UUID.test(gigTemplateId)) return false;
+    const r = await sql<Row>`SELECT mgt.enabled FROM catalog.market_gig_templates mgt JOIN geography.markets m ON m.market_id = mgt.market_id
+       WHERE m.code = ${marketCode} AND mgt.gig_template_id = ${gigTemplateId}`.execute(this.db);
+    return r.rows[0]?.enabled === true;
+  }
+
+  private async detailOfVersion(
+    ex: Executor,
+    where: ReturnType<typeof sql>,
+    tail: ReturnType<typeof sql> = sql``,
+  ): Promise<GigTemplateVersionDetailView | null> {
+    const row = (
+      await sql<Row>`SELECT v.*, t.gig_template_id AS template_id, t.code, t.status AS template_status, t.name_content_key, t.description_content_key, t.instructions_content_key,
+             st.code AS service_type_code, st.status AS service_type_status, c.code AS category_code
+        FROM catalog.gig_template_versions v
+        JOIN catalog.gig_templates t ON t.gig_template_id = v.gig_template_id
+        JOIN catalog.service_types st ON st.service_type_id = t.service_type_id
+        JOIN catalog.categories c ON c.category_id = st.category_id
+       WHERE ${where} ${tail}`.execute(ex)
+    ).rows[0];
+    if (!row) return null;
+    const versionId = row.gig_template_version_id as string;
+    const s = (await this.loadStructure(ex, [versionId])).get(versionId)!;
+    const ids = new Map(
+      (
+        await sql<Row>`SELECT gig_template_field_id, field_key FROM catalog.gig_template_fields WHERE gig_template_version_id = ${versionId}`.execute(ex)
+      ).rows.map((f) => [f.field_key as string, f.gig_template_field_id as string]),
+    );
+    const fields: GigTemplateFieldDetailView[] = s.fields.map((f) => ({ ...f, gigTemplateFieldId: ids.get(f.fieldKey)! }));
+    return {
+      gigTemplateId: row.template_id as string,
+      code: row.code as string,
+      templateStatus: status(row.template_status),
+      serviceTypeCode: row.service_type_code as string,
+      serviceTypeStatus: status(row.service_type_status),
+      categoryCode: row.category_code as string,
+      nameContentKey: row.name_content_key as string,
+      descriptionContentKey: (row.description_content_key as string | null) ?? null,
+      instructionsContentKey: (row.instructions_content_key as string | null) ?? null,
+      version: versionSummaryView(row, fields.length, true),
+      fields,
+      requirements: s.requirements,
+    };
   }
 
   private async marketIdOf(ex: Executor, marketCode: string): Promise<string> {
@@ -956,4 +1036,12 @@ export class GigTemplateService {
   }
 }
 
-export type { GigTemplateFieldView, GigTemplateRequirementView, GigTemplateVersionSummaryView, GigTemplateVersionView, GigTemplateView };
+export type {
+  GigTemplateFieldDetailView,
+  GigTemplateVersionDetailView,
+  GigTemplateFieldView,
+  GigTemplateRequirementView,
+  GigTemplateVersionSummaryView,
+  GigTemplateVersionView,
+  GigTemplateView,
+};

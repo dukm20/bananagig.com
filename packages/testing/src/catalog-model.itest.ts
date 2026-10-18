@@ -960,14 +960,14 @@ describe('A. schema shape: a platform-owned taxonomy with generated content keys
         (
           await from.query(
             `SELECT (SELECT count(*)::int FROM identity.accounts) AS accounts, (SELECT count(*)::int FROM integration.outbox_events) AS outbox,
-                    (SELECT count(*)::int FROM configuration.parameters WHERE key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'trust.%') AS parameters,
-                    (SELECT count(*)::int FROM configuration.audit_events a WHERE NOT EXISTS (SELECT 1 FROM configuration.parameters p WHERE p.parameter_id = a.parameter_id AND (p.key LIKE 'provider.registration.%' OR p.key LIKE 'trust.%'))) AS config_audit,
+                    (SELECT count(*)::int FROM configuration.parameters WHERE key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'provider.gig.%' AND key NOT LIKE 'trust.%') AS parameters,
+                    (SELECT count(*)::int FROM configuration.audit_events a WHERE NOT EXISTS (SELECT 1 FROM configuration.parameters p WHERE p.parameter_id = a.parameter_id AND (p.key LIKE 'provider.registration.%' OR p.key LIKE 'provider.gig.%' OR p.key LIKE 'trust.%'))) AS config_audit,
                     (SELECT count(*)::int FROM geography.markets) AS markets, (SELECT count(*)::int FROM geography.audit_events) AS geo_audit,
                     (SELECT count(*)::int FROM identity.account_sections) AS sections, (SELECT count(*)::int FROM identity.roles) AS roles,
                     (SELECT count(*)::int FROM content.locales) AS locales,
-                    (SELECT count(*)::int FROM content.entries WHERE key NOT LIKE 'catalog.%' AND key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'trust.%') AS other_entries,
-                    (SELECT count(*)::int FROM content.versions v JOIN content.entries e ON e.entry_id = v.entry_id WHERE e.key NOT LIKE 'catalog.%' AND e.key NOT LIKE 'provider.registration.%' AND e.key NOT LIKE 'trust.%') AS other_versions,
-                    (SELECT count(*)::int FROM content.audit_events a JOIN content.entries e ON e.entry_id = a.entry_id WHERE e.key NOT LIKE 'catalog.%' AND e.key NOT LIKE 'provider.registration.%' AND e.key NOT LIKE 'trust.%') AS other_audit`,
+                    (SELECT count(*)::int FROM content.entries WHERE key NOT LIKE 'catalog.%' AND key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'provider.gig.%' AND key NOT LIKE 'trust.%') AS other_entries,
+                    (SELECT count(*)::int FROM content.versions v JOIN content.entries e ON e.entry_id = v.entry_id WHERE e.key NOT LIKE 'catalog.%' AND e.key NOT LIKE 'provider.registration.%' AND e.key NOT LIKE 'provider.gig.%' AND e.key NOT LIKE 'trust.%') AS other_versions,
+                    (SELECT count(*)::int FROM content.audit_events a JOIN content.entries e ON e.entry_id = a.entry_id WHERE e.key NOT LIKE 'catalog.%' AND e.key NOT LIKE 'provider.registration.%' AND e.key NOT LIKE 'provider.gig.%' AND e.key NOT LIKE 'trust.%') AS other_audit`,
           )
         ).rows[0];
       expect(await counts(pool)).toEqual(await counts(beforePool));
@@ -975,9 +975,9 @@ describe('A. schema shape: a platform-owned taxonomy with generated content keys
         from
           .query(
             // the provider registration copy of 0018 (provider.registration.*, 56 entries) and the verification copy of 0019 (trust.*, 97 entries) are later migrations: only what 0015 and 0016 added may differ
-            `SELECT (SELECT count(*)::int FROM content.entries WHERE key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'trust.%') AS entries,
-                    (SELECT count(*)::int FROM content.versions v JOIN content.entries e ON e.entry_id = v.entry_id WHERE e.key NOT LIKE 'provider.registration.%' AND e.key NOT LIKE 'trust.%') AS versions,
-                    (SELECT count(*)::int FROM content.audit_events a JOIN content.entries e ON e.entry_id = a.entry_id WHERE e.key NOT LIKE 'provider.registration.%' AND e.key NOT LIKE 'trust.%') AS audit`,
+            `SELECT (SELECT count(*)::int FROM content.entries WHERE key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'provider.gig.%' AND key NOT LIKE 'trust.%') AS entries,
+                    (SELECT count(*)::int FROM content.versions v JOIN content.entries e ON e.entry_id = v.entry_id WHERE e.key NOT LIKE 'provider.registration.%' AND e.key NOT LIKE 'provider.gig.%' AND e.key NOT LIKE 'trust.%') AS versions,
+                    (SELECT count(*)::int FROM content.audit_events a JOIN content.entries e ON e.entry_id = a.entry_id WHERE e.key NOT LIKE 'provider.registration.%' AND e.key NOT LIKE 'provider.gig.%' AND e.key NOT LIKE 'trust.%') AS audit`,
           )
           .then((r) => r.rows[0] as { entries: number; versions: number; audit: number });
       const [x, y] = [await total(beforePool), await total(seedPool)];
@@ -999,6 +999,11 @@ describe('A. schema shape: a platform-owned taxonomy with generated content keys
           WHERE contype = 'f' AND confrelid IN (SELECT oid FROM pg_class WHERE relnamespace = 'catalog'::regnamespace) AND connamespace <> 'catalog'::regnamespace ORDER BY conname COLLATE "C"`,
       ),
     ).toEqual([
+      // migration 0020 (CAT-003): a Gig stands on a template, a Gig version on the exact template version, a field value on the answered field and its ENUM option
+      { from_table: 'provider.gig_version_field_values', conname: 'fk_gig_version_field_values__field_id' },
+      { from_table: 'provider.gig_version_field_values', conname: 'fk_gig_version_field_values__option' },
+      { from_table: 'provider.gig_versions', conname: 'fk_gig_versions__gig_template_version_id' },
+      { from_table: 'provider.gigs', conname: 'fk_gigs__gig_template_id' },
       { from_table: 'provider.registration_service_types', conname: 'fk_registration_service_types__service_type_id' },
       { from_table: 'trust.requirement_rules', conname: 'fk_requirement_rules__service_type_id' },
     ]);

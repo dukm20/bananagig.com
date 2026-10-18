@@ -47,6 +47,7 @@ describe('the spec generator covers every route module of the app', () => {
     ['content', '/api/v1/content/resolve'],
     ['configuration', '/api/v1/configuration/parameters'],
     ['catalog', '/api/v1/catalog/categories'],
+    ['provider gigs', '/api/v1/provider/gigs'],
   ])('the committed OpenAPI documents the %s routes', (_name, prefix) => {
     const spec = read('docs/api/openapi.yaml');
     expect(spec, `docs/api/openapi.yaml has no path starting with ${prefix}`).toMatch(

@@ -92,6 +92,33 @@ export const GigTemplateViewSchema = z.object({
 });
 export type GigTemplateView = z.infer<typeof GigTemplateViewSchema>;
 
+/**
+ * ONE exact version with the identity facts it belongs to (CAT-003: a provider Gig binds an exact template version and needs the facts to decide whether it can still be created,
+ * edited or published). Management view: every status, never cached. The field identities (`gigTemplateFieldId`) are what a Gig's field values reference; they are NOT part of
+ * the public template views.
+ */
+export interface GigTemplateFieldDetailView extends GigTemplateFieldView {
+  gigTemplateFieldId: string;
+}
+export interface GigTemplateVersionDetailView {
+  gigTemplateId: string;
+  code: string;
+  /** The template identity status (DRAFT, ACTIVE, INACTIVE, RETIRED). */
+  templateStatus: CatalogStatusValue;
+  serviceTypeCode: string;
+  /** The status of the template's service type. */
+  serviceTypeStatus: CatalogStatusValue;
+  categoryCode: string;
+  nameContentKey: string;
+  descriptionContentKey: string | null;
+  instructionsContentKey: string | null;
+  /** The version, with its status (DRAFT, ACTIVE, SUPERSEDED, RETIRED), duration facts and pricing models. */
+  version: GigTemplateVersionSummaryView;
+  fields: GigTemplateFieldDetailView[];
+  requirements: GigTemplateRequirementView[];
+}
+type CatalogStatusValue = z.infer<typeof CatalogStatus>;
+
 export const GigTemplateSnapshotSchema = z.object({ templates: z.array(GigTemplateViewSchema) });
 export type GigTemplateSnapshot = z.infer<typeof GigTemplateSnapshotSchema>;
 

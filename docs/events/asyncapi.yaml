@@ -3,7 +3,7 @@ asyncapi: 3.0.0
 info:
   title: BananaGig Events
   version: 1.0.0
-  description: Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events, the identity account events, the email verification events, the phone verification events, the account security events (sessions, second factor, password reset) the consent events (acceptance and withdrawal of a legal document version) the catalogue events (category and service type activation, market availability) the Gig Template events (activation, pause, retirement, publication of a version, market availability) and the provider registration events (started, completed, cancelled) exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.
+  description: Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events, the identity account events, the email verification events, the phone verification events, the account security events (sessions, second factor, password reset) the consent events (acceptance and withdrawal of a legal document version) the catalogue events (category and service type activation, market availability) the Gig Template events (activation, pause, retirement, publication of a version, market availability) the provider registration events (started, completed, cancelled), the provider verification events and the provider Gig events (created, version published, retired) exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.
 defaultContentType: application/json
 channels:
   infraPing:
@@ -336,6 +336,24 @@ channels:
     messages:
       ProviderRegistrationCancelled:
         $ref: "#/components/messages/ProviderRegistrationCancelled"
+  gig_gigCreated:
+    address: bananagig.provider.gig-created.v1
+    description: A provider created a Gig (identity and its first DRAFT version) from a Gig Template; the version is bound to the exact template version. A Gig is not live and not bookable. Published through the transactional outbox (aggregate provider_gig); the payload carries identifiers only, never a title, a pitch, a description or any provider text.
+    messages:
+      ProviderGigCreated:
+        $ref: "#/components/messages/ProviderGigCreated"
+  gig_gigVersionPublished:
+    address: bananagig.provider.gig-version-published.v1
+    description: A Gig version was published (frozen) and the previous published version, when there was one, was superseded in the same transaction. This does NOT make the provider live or bookable. Published through the transactional outbox (aggregate provider_gig); the payload carries identifiers only, never a title, a pitch, a description or any provider text.
+    messages:
+      ProviderGigVersionPublished:
+        $ref: "#/components/messages/ProviderGigVersionPublished"
+  gig_gigRetired:
+    address: bananagig.provider.gig-retired.v1
+    description: "A provider retired a Gig (terminal): its draft and published versions became RETIRED and the history stays. Nothing is deleted. Published through the transactional outbox (aggregate provider_gig); the payload carries identifiers only, never a title, a pitch, a description or any provider text."
+    messages:
+      ProviderGigRetired:
+        $ref: "#/components/messages/ProviderGigRetired"
   trust_caseOpened:
     address: bananagig.trust.verification-case-opened.v1
     description: A verification case was opened for a provider account (the requirements policy derived from the registration). Verification is multi-dimensional and an approved case is NOT Go-Live. Published through the transactional outbox (aggregate verification_case); the payload carries identifiers and codes only, never a contact, a name or a text.
@@ -654,6 +672,21 @@ operations:
     channel:
       $ref: "#/channels/provider_registrationCancelled"
     summary: An IN_PROGRESS provider registration was cancelled. The account and its roles are untouched.
+  sendProviderGigCreated:
+    action: send
+    channel:
+      $ref: "#/channels/gig_gigCreated"
+    summary: A provider created a Gig (identity and its first DRAFT version) from a Gig Template; the version is bound to the exact template version. A Gig is not live and not bookable.
+  sendProviderGigVersionPublished:
+    action: send
+    channel:
+      $ref: "#/channels/gig_gigVersionPublished"
+    summary: A Gig version was published (frozen) and the previous published version, when there was one, was superseded in the same transaction. This does NOT make the provider live or bookable.
+  sendProviderGigRetired:
+    action: send
+    channel:
+      $ref: "#/channels/gig_gigRetired"
+    summary: "A provider retired a Gig (terminal): its draft and published versions became RETIRED and the history stays. Nothing is deleted."
   sendProviderVerificationCaseOpened:
     action: send
     channel:
@@ -1241,6 +1274,36 @@ components:
             type: string
       payload:
         $ref: "#/components/schemas/ProviderRegistrationCancelled"
+    ProviderGigCreated:
+      name: ProviderGigCreated
+      title: A provider created a Gig (identity and its first DRAFT version) from a Gig Template; the version is bound to the exact template version. A Gig is not live and not bookable.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/ProviderGigCreated"
+    ProviderGigVersionPublished:
+      name: ProviderGigVersionPublished
+      title: A Gig version was published (frozen) and the previous published version, when there was one, was superseded in the same transaction. This does NOT make the provider live or bookable.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/ProviderGigVersionPublished"
+    ProviderGigRetired:
+      name: ProviderGigRetired
+      title: "A provider retired a Gig (terminal): its draft and published versions became RETIRED and the history stays. Nothing is deleted."
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/ProviderGigRetired"
     ProviderVerificationCaseOpened:
       name: ProviderVerificationCaseOpened
       title: A verification case was opened for a provider account (the requirements policy derived from the registration). Verification is multi-dimensional and an approved case is NOT Go-Live.
@@ -5598,6 +5661,232 @@ components:
             - accountId
             - providerRegistrationId
             - attempt
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    ProviderGigCreated:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.provider.gig-created.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            accountId:
+              type: string
+            gigId:
+              type: string
+            gigVersionId:
+              type: string
+            gigTemplateVersionId:
+              type: string
+          required:
+            - accountId
+            - gigId
+            - gigVersionId
+            - gigTemplateVersionId
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    ProviderGigVersionPublished:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.provider.gig-version-published.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            accountId:
+              type: string
+            gigId:
+              type: string
+            gigVersionId:
+              type: string
+            versionNumber:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
+            gigTemplateVersionId:
+              type: string
+            supersededGigVersionId:
+              type:
+                - string
+                - "null"
+          required:
+            - accountId
+            - gigId
+            - gigVersionId
+            - versionNumber
+            - gigTemplateVersionId
+            - supersededGigVersionId
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    ProviderGigRetired:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.provider.gig-retired.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            accountId:
+              type: string
+            gigId:
+              type: string
+          required:
+            - accountId
+            - gigId
           additionalProperties: false
       required:
         - eventId

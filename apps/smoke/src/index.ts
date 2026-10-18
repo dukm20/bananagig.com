@@ -20,6 +20,11 @@ import {
   DeviceRemovedResponse,
   DeviceTrustResponse,
   EmailVerifiedResponse,
+  GigDetailResponse,
+  GigMenuResponse,
+  GigTemplateChoicesResponse,
+  GigVersionResponse,
+  gigErrorKey,
   ErrorResponse,
   LEGAL_ENTRY_KEYS,
   MfaEnrollmentResponse,
@@ -5088,7 +5093,7 @@ await check('Provider registration', async () => {
         [accountId],
       );
       const events = await database.query<{ event_type: string; n: number }>(
-        `SELECT event_type, count(*)::int AS n FROM integration.outbox_events WHERE event_type LIKE 'bananagig.provider.%' AND payload_json->>'accountId' = $1 GROUP BY event_type`,
+        `SELECT event_type, count(*)::int AS n FROM integration.outbox_events WHERE event_type LIKE 'bananagig.provider.%' AND payload_json->>'accountId' = $1::text GROUP BY event_type`,
         [accountId],
       );
       const attempts = await database.query<{ n: number }>(`SELECT count(*)::int AS n FROM provider.registrations WHERE account_id = $1`, [accountId]);
@@ -5111,7 +5116,9 @@ await check('Provider registration', async () => {
         stepOf(req0, 'CONTACT').status === 'NOT_STARTED' &&
         // VERIFICATION is answered by the verification domain (TRUST-001): identity verification applies to everyone and has not started; the later steps are not built yet
         stepOf(req0, 'VERIFICATION').status === 'NOT_STARTED' &&
-        ['SUBSCRIPTION', 'PROFILE', 'GIGS'].every((s) => stepOf(req0, s).status === 'NOT_AVAILABLE') &&
+        ['SUBSCRIPTION', 'PROFILE'].every((s) => stepOf(req0, s).status === 'NOT_AVAILABLE') &&
+        // GIGS is answered by the Gig domain (CAT-003): no Gig exists, so it has not started
+        stepOf(req0, 'GIGS').status === 'NOT_STARTED' &&
         req0.overall.registrationReady === false &&
         req0.overall.goLive.evaluated === false &&
         req0.overall.goLive.eligible === false,
@@ -5625,8 +5632,9 @@ await check('Provider registration', async () => {
         reqDone.overall.goLive.evaluated === false &&
         reqDone.overall.goLive.eligible === false &&
         stepOf(reqDone, 'VERIFICATION').status === 'NOT_STARTED' &&
-        ['SUBSCRIPTION', 'PROFILE', 'GIGS'].every((s) => stepOf(reqDone, s).status === 'NOT_AVAILABLE'),
-      '(13) completing the registration is not Go-Live and does not need verification: VERIFICATION (TRUST-001) is not started, later steps are NOT_AVAILABLE and Go-Live is not evaluated',
+        ['SUBSCRIPTION', 'PROFILE'].every((s) => stepOf(reqDone, s).status === 'NOT_AVAILABLE') &&
+        stepOf(reqDone, 'GIGS').status === 'NOT_STARTED',
+      '(13) completing the registration is not Go-Live and does not need verification: VERIFICATION (TRUST-001) is not started, GIGS (CAT-003) has no Gig, later steps are NOT_AVAILABLE and Go-Live is not evaluated',
     );
     const submitAgain = ok(await provider('POST', '/submit', token, { expectedRevision: done.registration.revision }), 200, '(13) submit again');
     assert(submitAgain.registration.status === 'COMPLETED', '(13) submitting a completed registration is idempotent');
@@ -6526,6 +6534,1105 @@ await check('Provider verification', async () => {
         await request('/admin/trust/requirement-definitions/liability_insurance/status', 'PUT', adminToken, { status: 'INACTIVE' });
       if (adminToken && marketCreated)
         await request('/geography/markets/' + marketCode + '/activation', 'POST', adminToken, { active: false, reason: 'smoke cleanup' });
+    } catch {
+      // best effort: the failure that got us here is the one to report
+    }
+    try {
+      if (kcUserId) await kcAdmin('DELETE', `/users/${kcUserId}`);
+    } catch {
+      // best effort
+    }
+    valkey.disconnect();
+    await database.close();
+  }
+});
+
+// ---------------------------------------------------------------- Provider GigMenu and Gig versioning (CAT-003)
+await check('Provider GigMenu', async () => {
+  // The provider GigMenu (CAT-003) end to end with REAL Keycloak tokens and a THROWAWAY customer-only identity (created through the Keycloak admin API and deleted at the end). The
+  // identity becomes a provider through the REAL flows (Mailpit email, fake SMS sink, the consent API, the registration API), in an isolated DEV/TEST market (ZZ) with its own
+  // category, service type and Gig Template (published by admin.dev; retired or deactivated at the end). Then it builds Gigs from the template through the owner-only API: exact
+  // template-version binding, eager draft validation, completeness at publish, optimistic revisions, publish/supersede/retire, the GigMenu and its readiness facts, a second account
+  // (customer.dev) that gets 404, and the web pages behind Caddy. A Gig is NOT live: Go-Live is never evaluated, and no variant, add-on, media or search field exists in any response.
+  // Assumptions: DATABASE_URL (read-only SELECTs on the Gig tables, audit and outbox), LOKI_URL, MAILPIT_URL, VALKEY_URL, KEYCLOAK_ADMIN*, the legal versions published by the
+  // 'Consent' scenario, and the Gig API of apps/api (routes under /api/v1/provider, error codes either GIG-prefixed or as named in the contract).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  type Json = any; // parsed response bodies are checked field by field below
+  const assert = (ok: boolean, what: string): void => {
+    if (!ok) throw new Error(what);
+  };
+  const runId = Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+  const cid = `smoke-gigs-${runId}`;
+  const flowStart = Date.now() * 1e6;
+  const marketCode = `devtest-gig-${runId}`;
+  const categoryCode = `devtest_gigc_${runId}`;
+  const serviceType = `devtest_gigs_${runId}`;
+  const tpl = `devtest_gig_${runId}`;
+  const key = (suffix: string): string => `catalog.gig_template.${tpl}.${suffix}`;
+  const username = `cat003.${runId}`;
+  const password = `Pw-${randomBytes(9).toString('hex')}`; // secret-scan:allow throwaway DEV/TEST identity, deleted at the end
+  const email = `cat003-${runId}@bananagig.localhost`;
+  const mailpit = env('MAILPIT_URL', 'http://mailpit-email:8025');
+  const loki = env('LOKI_URL', 'http://loki-logs:3100');
+  const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  // the provider text of this run (plain text; unique per run so it can be searched for in the audit trail, the outbox and the logs)
+  const title1 = `Smoke Gig Title ${runId}`;
+  const pitch1 = `Smoke gig pitch ${runId}`;
+  const description1 = `Smoke gig description ${runId}.\nSecond line.`;
+  const notes1 = `Bring the keys ${runId}`;
+  const title2 = `Smoke Gig Title ${runId} second`;
+  const providerText = [title1, pitch1, `Smoke gig description ${runId}`, notes1, title2];
+  const seen: string[] = []; // every PROVIDER Gig response (body and headers): searched for forbidden fields, identifiers, contacts and tokens
+  await clearLimiterBuckets('email-verification');
+  await clearLimiterBuckets('phone-verification');
+
+  type Reply = { status: number; text: string; json: Json; headers: Headers };
+  const request = async (path: string, method: string, token: string | null, body?: unknown): Promise<Reply> => {
+    const r = await get(`${api}/api/v1${path}`, {
+      method,
+      headers: {
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        [CORRELATION_HEADER]: cid,
+        ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
+      },
+      ...(body !== undefined ? { body: typeof body === 'string' ? body : JSON.stringify(body) } : {}),
+    });
+    const text = await r.text();
+    let json: Json;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = undefined;
+    }
+    return { status: r.status, text, json, headers: r.headers };
+  };
+  const mgmt = async (
+    module: 'catalog' | 'geography' | 'content',
+    admin: string,
+    method: string,
+    path: string,
+    body?: unknown,
+    okStatuses = [200, 201],
+  ): Promise<Reply> => {
+    const r = await request(`/${module}${path}`, method, admin, body);
+    assert(okStatuses.includes(r.status), `${method} /${module}${path} -> ${r.status} ${r.json?.error?.code ?? ''} ${r.json?.error?.details?.reason ?? ''}`);
+    return r;
+  };
+  /** The provider Gig API (every response is kept for the scans at the end and must be Cache-Control: no-store). */
+  const gig = async (method: 'GET' | 'POST' | 'PUT', path: string, token: string | null, body?: unknown): Promise<Reply> => {
+    const r = await request(`/provider${path}`, method, token, body);
+    seen.push(r.text, JSON.stringify([...r.headers]));
+    assert(r.headers.get('cache-control') === 'no-store', `${method} /provider${path}: every Gig response must be Cache-Control: no-store (${r.status})`);
+    return r;
+  };
+  const registration = (method: 'GET' | 'POST' | 'PUT', path: string, token: string | null, body?: unknown): Promise<Reply> =>
+    request(`/provider/registration${path}`, method, token, body);
+  const account = (token: string, path: string, method: 'GET' | 'POST' = 'GET', body?: unknown): Promise<Reply> =>
+    request(`/account${path}`, method, token, body);
+  /** The wire code of a Gig error is the contract code, optionally behind a GIG_ prefix. */
+  const isCode = (wire: unknown, code: string): boolean => wire === code || wire === `GIG_${code}`;
+  const refusal = (r: Reply, statuses: number[], codes: string[], what: string): Reply => {
+    assert(
+      statuses.includes(r.status) && codes.some((c) => isCode(r.json?.error?.code, c)),
+      `${what}: expected ${statuses.join('|')} ${codes.join('|')}, got ${r.status} ${r.json?.error?.code ?? r.text.slice(0, 160)}`,
+    );
+    const mk = r.json.error.details?.messageKey;
+    if (mk !== undefined)
+      assert(
+        codes.some((c) => mk === gigErrorKey(c as never)),
+        `${what}: the error message key ${mk} does not belong to ${codes.join('|')}`,
+      );
+    return r;
+  };
+  const hasIssue = (r: Reply, reason: string, fieldKey?: string): boolean =>
+    Array.isArray(r.json?.error?.details?.issues) &&
+    r.json.error.details.issues.some(
+      (i: Json) => i.reason === reason && (fieldKey === undefined || i.fieldKey === fieldKey) && i.messageKey === `provider.gig.issue.${reason.toLowerCase()}`,
+    );
+  type Parser = { safeParse(v: unknown): Json };
+  /** An expected success whose body must match the published contract. Returns the `data` member. */
+  const read = (schema: Parser, r: Reply, status: number, what: string): Json => {
+    assert(r.status === status, `${what} -> ${r.status} ${r.json?.error?.code ?? r.text.slice(0, 160)} ${r.json?.error?.details?.reason ?? ''}`);
+    const p = schema.safeParse(r.json);
+    if (!p.success) throw new Error(`${what}: the response does not match its contract: ${String(p.error?.message).slice(0, 400)}`);
+    return p.data.data;
+  };
+  const byNumber = (d: Json, n: number): Json => d.versions.find((v: Json) => v.versionNumber === n);
+  const fieldValueMap = (v: Json): string => JSON.stringify(Object.fromEntries(v.fieldValues.map((f: Json) => [f.fieldKey, f.value]).sort()));
+  const fieldOf = (v: Json, k: string): Json => v.fields.find((f: Json) => f.fieldKey === k);
+
+  // ---- Keycloak: the throwaway identity (customer realm role only; the account starts as a customer)
+  const kcToken = await kcMasterToken();
+  const kcAdmin = async (method: string, path: string, body?: unknown): Promise<{ status: number; json: Json; location: string | null }> => {
+    const res = await get(`${kcUrl}/admin/realms/bananagig${path}`, {
+      method,
+      headers: { authorization: `Bearer ${kcToken}`, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    const text = await res.text();
+    let json: Json;
+    try {
+      json = text ? JSON.parse(text) : undefined;
+    } catch {
+      json = text;
+    }
+    return { status: res.status, json, location: res.headers.get('location') };
+  };
+  let kcUserId = '';
+  const database = createDatabase(env('DATABASE_URL', ''), { role: 'tests' });
+  const valkey = new Redis(env('VALKEY_URL', 'redis://valkey-cache:6379'), { maxRetriesPerRequest: 2 });
+  valkey.on('error', () => undefined);
+  const inbox = new FakeSmsInbox(valkey);
+  let admin = '';
+  let marketCreated = false;
+  let templateRetired = false;
+  try {
+    // (1) the throwaway identity, an admin token for the catalogue, the owner's market status
+    const created = await kcAdmin('POST', '/users', {
+      username,
+      enabled: true,
+      email: `kc-${email}`,
+      emailVerified: true,
+      firstName: 'Gig',
+      lastName: 'Smoke',
+      attributes: { 'bananagig.devOnly': ['true'] },
+    });
+    assert(created.status === 201 && !!created.location, `(1) creating the throwaway Keycloak user -> ${created.status} ${JSON.stringify(created.json)}`);
+    kcUserId = created.location!.split('/').pop()!;
+    const role = await kcAdmin('GET', '/roles/customer');
+    assert(role.status === 200, `(1) the customer realm role -> ${role.status}`);
+    assert((await kcAdmin('POST', `/users/${kcUserId}/role-mappings/realm`, [role.json])).status === 204, '(1) mapping the customer realm role');
+    assert(
+      (await kcAdmin('PUT', `/users/${kcUserId}/reset-password`, { type: 'password', value: password, temporary: false })).status === 204,
+      '(1) setting the throwaway password',
+    );
+    const login = await authorizationCodeLogin(kc, { clientId: 'bananagig-web', redirectUri: WEB_REDIRECT_URI, username, password });
+    const token = (
+      await exchangeAuthorizationCode({
+        tokenEndpoint: ep.token,
+        clientId: 'bananagig-web',
+        redirectUri: WEB_REDIRECT_URI,
+        code: login.code,
+        codeVerifier: login.verifier,
+      })
+    ).accessToken;
+    const me = AccountResponse.parse((await account(token, '/me')).json).data;
+    const accountId = me.accountId;
+    assert(uuidRe.test(accountId) && me.status === 'ACTIVE', '(1) the account is created on the first request and ACTIVE');
+    const adminLogin = await authorizationCodeLogin(kc, { clientId: 'bananagig-admin', redirectUri: ADMIN_REDIRECT_URI, ...DEV_USERS.admin });
+    admin = (
+      await exchangeAuthorizationCode({
+        tokenEndpoint: ep.token,
+        clientId: 'bananagig-admin',
+        redirectUri: ADMIN_REDIRECT_URI,
+        code: adminLogin.code,
+        codeVerifier: adminLogin.verifier,
+      })
+    ).accessToken;
+    const laocBefore = (await mgmt('geography', admin, 'GET', '/markets/la-oc')).json.data.status as string;
+
+    // (2) the platform side: a DEV/TEST market, category, service type and an ACTIVE Gig Template (v1 published) offered in the market. The template allows a fixed price and has
+    // a fixed text, a required ENUM, an optional DURATION, an optional BOOLEAN and an optional bounded TEXT: no media, so the Gig can be complete in CAT-003.
+    await ensureDevtestGeography(admin);
+    await mgmt('geography', admin, 'POST', '/markets', {
+      code: marketCode,
+      name: `DEV/TEST gig smoke ${runId}`,
+      countryCode: 'ZZ',
+      defaultLocale: 'qaa',
+      currencyCode: 'USD',
+      defaultTimeZone: 'America/Los_Angeles',
+      reason: 'DEV/TEST ONLY smoke market',
+    });
+    marketCreated = true;
+    const publishCopy = async (k: string, text: string): Promise<void> => {
+      await mgmt('content', admin, 'POST', '/entries', {
+        key: k,
+        contentType: 'UI_LABEL',
+        ownerRole: 'CONTENT',
+        description: 'DEV/TEST ONLY Gig smoke entry',
+        approvalPolicy: 'NONE',
+      });
+      const v = (await mgmt('content', admin, 'POST', `/entries/${k}/versions`, { locale: 'en-US', body: text, reason: 'smoke test' })).json.data;
+      await mgmt('content', admin, 'POST', `/versions/${v.versionId}/submit`, {});
+      await mgmt('content', admin, 'POST', `/versions/${v.versionId}/publish`, {});
+    };
+    await publishCopy(`catalog.category.${categoryCode}.name`, `Smoke Gig Category ${runId}`);
+    await publishCopy(`catalog.service_type.${serviceType}.name`, `Smoke Gig Service ${runId}`);
+    await publishCopy(key('name'), `Smoke Gig Template ${runId}`);
+    await mgmt('catalog', admin, 'POST', '/categories', { code: categoryCode, reason: 'DEV/TEST ONLY' });
+    await mgmt('catalog', admin, 'POST', '/service-types', { code: serviceType, categoryCode, reason: 'DEV/TEST ONLY' });
+    await mgmt('catalog', admin, 'POST', '/gig-templates', {
+      code: tpl,
+      serviceTypeCode: serviceType,
+      withDescription: false,
+      withInstructions: false,
+      reason: 'DEV/TEST ONLY smoke template',
+    });
+    await mgmt('catalog', admin, 'PUT', `/categories/${categoryCode}/status`, { status: 'ACTIVE', reason: 'launch' });
+    await mgmt('catalog', admin, 'PUT', `/service-types/${serviceType}/status`, { status: 'ACTIVE', reason: 'launch' });
+    await mgmt('catalog', admin, 'PUT', `/gig-templates/${tpl}/status`, { status: 'ACTIVE', reason: 'launch' });
+    await publishCopy(key('field.inclusions.label'), 'What is included');
+    await publishCopy(key('field.inclusions.default'), 'Exterior wash, interior vacuum, windows.');
+    await publishCopy(key('field.finish.label'), 'Finish');
+    await publishCopy(key('field.finish.option.wax.label'), 'Wax');
+    await publishCopy(key('field.finish.option.sealant.label'), 'Sealant');
+    await publishCopy(key('field.extra_time.label'), 'Extra time');
+    await publishCopy(key('field.bring_water.label'), 'Bring your own water');
+    await publishCopy(key('field.vehicle_notes.label'), 'Vehicle notes');
+    await mgmt('catalog', admin, 'POST', `/gig-templates/${tpl}/versions`, { reason: 'DEV/TEST ONLY first draft' });
+    const definition = {
+      expectedRevision: 1,
+      duration: { minMinutes: 60, maxMinutes: 240, suggestedMinutes: 120 },
+      pricingModels: ['FIXED'],
+      areaModes: ['RADIUS'],
+      fields: [
+        { fieldKey: 'inclusions', fieldType: 'LONG_TEXT', section: 'INCLUSIONS', behavior: 'PLATFORM_FIXED', withDefaultText: true },
+        { fieldKey: 'finish', fieldType: 'ENUM', behavior: 'PROVIDER_REQUIRED', options: [{ optionCode: 'wax', isDefault: true }, { optionCode: 'sealant' }] },
+        { fieldKey: 'extra_time', fieldType: 'DURATION', behavior: 'PROVIDER_CONFIGURABLE', minNumber: 15, maxNumber: 120 },
+        { fieldKey: 'bring_water', fieldType: 'BOOLEAN', behavior: 'PROVIDER_CONFIGURABLE', defaultBoolean: false },
+        { fieldKey: 'vehicle_notes', fieldType: 'TEXT', behavior: 'PROVIDER_CONFIGURABLE', maxLength: 80 },
+      ],
+      requirements: [{ requirementType: 'INSURANCE' }],
+      reason: 'DEV/TEST ONLY fields',
+    };
+    await mgmt('catalog', admin, 'PUT', `/gig-templates/${tpl}/versions/1`, definition);
+    await mgmt('catalog', admin, 'POST', `/gig-templates/${tpl}/versions/1/publish`, { expectedRevision: 2, reason: 'DEV/TEST ONLY publish' });
+    await mgmt('catalog', admin, 'PUT', `/markets/${marketCode}/categories/${categoryCode}`, { enabled: true, displayOrder: 10, reason: 'prepare' });
+    await mgmt('catalog', admin, 'PUT', `/markets/${marketCode}/service-types/${serviceType}`, { enabled: true, displayOrder: 10, reason: 'prepare' });
+    await mgmt('catalog', admin, 'PUT', `/markets/${marketCode}/gig-templates/${tpl}`, { enabled: true, displayOrder: 10, reason: 'prepare' });
+    await mgmt('geography', admin, 'POST', `/markets/${marketCode}/activation`, { active: true, reason: 'smoke test' });
+    const tplVersionRow = async (versionNumber: number): Promise<string> => {
+      const rows = await database.query<{ id: string }>(
+        `SELECT v.gig_template_version_id AS id FROM catalog.gig_template_versions v JOIN catalog.gig_templates t ON t.gig_template_id = v.gig_template_id WHERE t.code = $1 AND v.version_number = $2`,
+        [tpl, versionNumber],
+      );
+      assert(rows.length === 1, `(2) template ${tpl} version ${versionNumber} must exist exactly once`);
+      return rows[0]!.id;
+    };
+    const tplV1 = await tplVersionRow(1);
+
+    // (3) before anything: every Gig route needs the caller's own token, strict bodies refuse any owner/status/currency, and a customer is not eligible
+    for (const [method, path, body] of [
+      ['GET', '/gig-templates', undefined],
+      ['GET', '/gigs', undefined],
+      ['POST', '/gigs', { gigTemplateCode: tpl }],
+      ['GET', `/gigs/${randomUUID()}`, undefined],
+      ['POST', `/gigs/${randomUUID()}/versions`, {}],
+      ['GET', `/gigs/${randomUUID()}/versions/1`, undefined],
+      ['PUT', `/gigs/${randomUUID()}/draft`, { expectedRevision: 1 }],
+      ['POST', `/gigs/${randomUUID()}/publish`, { expectedRevision: 1 }],
+      ['POST', `/gigs/${randomUUID()}/retire`, {}],
+    ] as const)
+      assert(
+        (await gig(method, path, null, body)).status === 401,
+        `(3) ${method} /provider${path.replace(/[0-9a-f-]{36}/, ':gigId')} without a token must be 401`,
+      );
+    for (const [what, body] of [
+      ['an account id', { gigTemplateCode: tpl, accountId }],
+      ['a status', { gigTemplateCode: tpl, status: 'ACTIVE' }],
+      ['a template version', { gigTemplateCode: tpl, gigTemplateVersionId: tplV1 }],
+      ['a currency', { gigTemplateCode: tpl, currency: 'EUR' }],
+      ['a malformed idempotency token', { gigTemplateCode: tpl, clientRequestId: 'not-a-uuid' }],
+      ['no template', {}],
+    ] as const)
+      assert((await gig('POST', '/gigs', token, body)).status === 400, `(3) a create request naming ${what} must be 400`);
+    assert((await gig('POST', '/gigs', token, '[]')).status === 400, '(3) a create request that is not an object must be 400');
+    assert((await gig('GET', '/gigs/not-a-uuid', token)).status === 400, '(3) a malformed Gig id must be 400');
+    const notProvider = await gig('GET', '/gig-templates', token);
+    if (notProvider.status === 200)
+      assert(notProvider.json.data.templates.length === 0, `(3) a customer who is not a provider is offered no template (${notProvider.text.slice(0, 160)})`);
+    refusal(
+      await gig('POST', '/gigs', token, { gigTemplateCode: tpl }),
+      [403],
+      ['PROVIDER_NOT_ELIGIBLE'],
+      '(3) a customer who is not a provider creating a Gig',
+    );
+
+    // (4) become a provider through the real flows: verified contacts, the market and service type, consent, submit
+    assert((await account(token, '/email', 'POST', { email })).status === 200, '(4) setting the email');
+    assert((await account(token, '/email/verification/send', 'POST', {})).status === 200, '(4) sending the email verification');
+    const message = await retry(
+      async () => {
+        const found = (await (await expectOk(`${mailpit}/api/v1/search?query=${encodeURIComponent(`to:"${email}"`)}`)).json()) as {
+          messages: { ID: string }[] | null;
+        };
+        if (!found.messages?.length) throw new Error('the verification email has not arrived');
+        return (await (await expectOk(`${mailpit}/api/v1/message/${found.messages[0]!.ID}`)).json()) as { Text: string };
+      },
+      10,
+      1000,
+    );
+    const emailCode = /code is\s+([0-9]{6})\b/i.exec(message.Text)?.[1];
+    assert(!!emailCode, '(4) the email code is missing from the delivered message');
+    assert((await account(token, '/email/verification/confirm-code', 'POST', { code: emailCode })).status === 200, '(4) confirming the email code');
+    let tail = '';
+    do tail = String(Math.floor(Math.random() * 10_000)).padStart(4, '0');
+    while (['901', '902', '903', '904', '905'].includes(tail.slice(-3)));
+    const e164 = `+1202555${tail}`;
+    await inbox.clear(e164);
+    assert((await account(token, '/phone', 'POST', { phone: `(202) 555-${tail}`, country: 'US' })).status === 200, '(4) setting the phone number');
+    assert((await account(token, '/phone/verification/send', 'POST', {})).status === 200, '(4) sending the SMS');
+    const smsCode = extractSmsCode((await inbox.wait(e164, 1, 10_000))[0]!.body);
+    assert(!!smsCode, '(4) the SMS code is missing');
+    assert((await account(token, '/phone/verification/confirm-code', 'POST', { code: smsCode })).status === 200, '(4) confirming the SMS code');
+    const started = await registration('POST', '', token, {});
+    assert(started.status === 201, `(4) starting the provider registration -> ${started.status} ${started.json?.error?.code ?? ''}`);
+    const market = await registration('PUT', '/market', token, { marketCode });
+    assert(market.status === 200, `(4) choosing the test market -> ${market.status} ${market.json?.error?.code ?? ''}`);
+    const services = await registration('PUT', '/services', token, { serviceTypeCodes: [serviceType] });
+    assert(services.status === 200, `(4) choosing the service type -> ${services.status} ${services.json?.error?.code ?? ''}`);
+    const consentReq = ConsentRequirementsResponse.parse((await account(token, '/consents/requirements')).json).data;
+    const outstanding = consentReq.requirements.filter((r) => r.status === 'OUTSTANDING' || r.status === 'REACCEPTANCE_REQUIRED');
+    assert(
+      outstanding.every((r) => r.document),
+      `(4) legal text must be in force (the Consent scenario publishes it): ${JSON.stringify(consentReq.requirements.map((r) => `${r.purposeCode}:${r.status}`))}`,
+    );
+    for (const r of outstanding) {
+      const accepted = await account(token, `/consents/${r.purposeCode}/accept`, 'POST', {
+        versionId: r.document!.versionId,
+        locale: r.document!.locale,
+        bodySha256: r.document!.bodySha256,
+      });
+      assert(accepted.status === 200, `(4) accepting ${r.purposeCode} -> ${accepted.status} ${accepted.json?.error?.code ?? ''}`);
+    }
+    const reg0 = (await registration('GET', '', token)).json.data.registration;
+    const submitted = await registration('POST', '/submit', token, { expectedRevision: reg0.revision });
+    assert(
+      submitted.status === 200 && submitted.json.data.registration.status === 'COMPLETED' && submitted.json.data.providerRole === 'ACTIVE',
+      `(4) submit -> ${submitted.status} ${submitted.json?.error?.code ?? ''} ${JSON.stringify(submitted.json?.error?.details ?? {})}`,
+    );
+    const stepOf = (req: Json, step: string): Json => req.steps.find((s: Json) => s.step === step);
+    const req4 = (await registration('GET', '/requirements', token)).json.data;
+    assert(
+      stepOf(req4, 'GIGS').status === 'NOT_STARTED' && req4.overall.registrationComplete === true,
+      `(4) the registration is complete and the GIGS step has not started (${stepOf(req4, 'GIGS').status})`,
+    );
+
+    // (5) the templates the provider can start from: the ACTIVE template of the selected service type, enabled in the provider's market
+    const choices = read(GigTemplateChoicesResponse, await gig('GET', '/gig-templates', token), 200, '(5) GET /gig-templates');
+    assert(
+      choices.marketCode === marketCode &&
+        choices.templates.length === 1 &&
+        choices.templates[0].gigTemplateCode === tpl &&
+        choices.templates[0].serviceTypeCode === serviceType &&
+        choices.templates[0].categoryCode === categoryCode &&
+        choices.templates[0].gigTemplateVersionNumber === 1,
+      `(5) exactly the launched template is offered, at its ACTIVE version 1 (${JSON.stringify(choices)})`,
+    );
+    const empty = read(GigMenuResponse, await gig('GET', '/gigs', token), 200, '(5) GET /gigs (empty)');
+    assert(
+      empty.gigs.length === 0 &&
+        empty.canCreate === true &&
+        empty.readiness.hasPublishedGig === false &&
+        empty.readiness.publishedGigCount === 0 &&
+        empty.readiness.draftVersionCount === 0 &&
+        empty.limits.activeCount === 0 &&
+        empty.limits.draftCount === 0,
+      `(5) the GigMenu of a new provider is empty and can create (${JSON.stringify(empty)})`,
+    );
+
+    // (6) create the Gig: a DRAFT identity with draft version 1 bound to the EXACT template version; the request token makes it idempotent; no market or service type is stored on it
+    const requestId = randomUUID();
+    refusal(await gig('POST', '/gigs', token, { gigTemplateCode: 'devtest_no_such_template' }), [404], ['GIG_TEMPLATE_NOT_FOUND'], '(6) an unknown template');
+    const createdGig = read(GigDetailResponse, await gig('POST', '/gigs', token, { gigTemplateCode: tpl, clientRequestId: requestId }), 201, '(6) POST /gigs');
+    const gigId: string = createdGig.gig.gigId;
+    assert(
+      uuidRe.test(gigId) &&
+        createdGig.gig.status === 'DRAFT' &&
+        createdGig.gig.statusKey === 'provider.gig.status.draft' &&
+        createdGig.gig.gigTemplateCode === tpl &&
+        createdGig.gig.serviceTypeCode === serviceType &&
+        createdGig.gig.retiredAt === null &&
+        createdGig.currentVersion === null &&
+        createdGig.versions.length === 1,
+      `(6) a new Gig is a DRAFT identity without a published version (${JSON.stringify(createdGig.gig)})`,
+    );
+    const draft1 = createdGig.draftVersion;
+    assert(
+      draft1 !== null &&
+        draft1.versionNumber === 1 &&
+        draft1.status === 'DRAFT' &&
+        draft1.revision === 1 &&
+        draft1.title === null &&
+        draft1.template.gigTemplateVersionId === tplV1 &&
+        draft1.template.gigTemplateVersionNumber === 1 &&
+        draft1.template.versionStatus === 'ACTIVE' &&
+        draft1.template.templateStatus === 'ACTIVE' &&
+        draft1.template.gigTemplateCode === tpl &&
+        draft1.template.serviceTypeCode === serviceType,
+      `(6) draft 1 is bound to the exact ACTIVE template version (${JSON.stringify(draft1?.template)} expected ${tplV1})`,
+    );
+    const replay = read(
+      GigDetailResponse,
+      await gig('POST', '/gigs', token, { gigTemplateCode: tpl, clientRequestId: requestId }),
+      200,
+      '(6) the same request token again',
+    );
+    assert(replay.gig.gigId === gigId, '(6) repeating the request token returns the same Gig (200, not a second Gig)');
+    const gigRow = await database.query<{ n: number; cols: number }>(
+      `SELECT (SELECT count(*)::int FROM provider.gigs WHERE account_id = $1) AS n,
+              (SELECT count(*)::int FROM information_schema.columns WHERE table_schema = 'provider' AND table_name = 'gigs' AND column_name IN ('market_id', 'market_code', 'service_type_id', 'service_type_code')) AS cols`,
+      [accountId],
+    );
+    assert(
+      gigRow[0]!.n === 1 && gigRow[0]!.cols === 0,
+      `(6) one Gig row, and the Gig stores neither a market nor a service type (${JSON.stringify(gigRow[0])})`,
+    );
+
+    // (7) the editor view: structure comes from the bound template version (nothing copied), the permissions and limits are explicit, the empty draft says why it cannot publish
+    const fx = fieldOf(draft1, 'inclusions');
+    assert(
+      draft1.fields.map((f: Json) => f.fieldKey).join() === 'inclusions,finish,extra_time,bring_water,vehicle_notes' &&
+        fx.fixed === true &&
+        fx.supported === true &&
+        fx.required === false &&
+        fx.defaultContentKey !== null &&
+        fieldOf(draft1, 'finish').required === true &&
+        fieldOf(draft1, 'finish')
+          .options.map((o: Json) => o.optionCode)
+          .join() === 'wax,sealant' &&
+        fieldOf(draft1, 'extra_time').fixed === false &&
+        fieldOf(draft1, 'extra_time').minNumber === 15 &&
+        fieldOf(draft1, 'vehicle_notes').maxLength === 80 &&
+        draft1.fieldValues.length === 0,
+      `(7) the fields come from the template version, the platform-fixed one is resolved not copied (${JSON.stringify(draft1.fields.map((f: Json) => f.fieldKey))})`,
+    );
+    assert(
+      draft1.constraints.price.permitted === true &&
+        draft1.constraints.price.required === true &&
+        draft1.constraints.price.currency === 'USD' &&
+        draft1.constraints.duration.permitted === true &&
+        draft1.constraints.duration.required === true &&
+        draft1.constraints.duration.minMinutes === 60 &&
+        draft1.constraints.duration.maxMinutes === 240 &&
+        draft1.constraints.duration.suggestedMinutes === 120 &&
+        draft1.constraints.title.maxLength > 0 &&
+        draft1.constraints.shortPitch.maxLength > 0 &&
+        draft1.constraints.description.maxLength > 0,
+      `(7) the constraints name the market currency (derived, never sent) and the template's price and duration permissions (${JSON.stringify(draft1.constraints)})`,
+    );
+    assert(
+      draft1.publishable === false &&
+        ['TITLE_REQUIRED', 'SHORT_PITCH_REQUIRED', 'DESCRIPTION_REQUIRED', 'PRICE_REQUIRED', 'DURATION_REQUIRED', 'FIELD_REQUIRED'].every((reason) =>
+          draft1.issues.some((i: Json) => i.reason === reason && i.messageKey === `provider.gig.issue.${reason.toLowerCase()}`),
+        ),
+      `(7) an empty draft is not publishable and names what is missing (${JSON.stringify(draft1.issues.map((i: Json) => i.reason))})`,
+    );
+
+    // (8) a draft may be incomplete, but any value present must be valid; a refused save changes nothing (the revision stays 1)
+    const valid1 = {
+      expectedRevision: 1,
+      title: title1,
+      shortPitch: pitch1,
+      description: description1,
+      priceAmountMinor: 15000,
+      durationMinutes: 120,
+      fieldValues: [
+        { fieldKey: 'finish', value: 'wax' },
+        { fieldKey: 'extra_time', value: 30 },
+        { fieldKey: 'bring_water', value: true },
+        { fieldKey: 'vehicle_notes', value: notes1 },
+      ],
+    };
+    const save = (token_: string | null, body: unknown) => gig('PUT', `/gigs/${gigId}/draft`, token_, body);
+    const invalid = async (what: string, patch: Record<string, unknown>, reason: string, fieldKey?: string): Promise<void> => {
+      const r = refusal(await save(token, { ...valid1, ...patch }), [400], ['VALIDATION_FAILED'], `(8) ${what}`);
+      assert(
+        hasIssue(r, reason, fieldKey),
+        `(8) ${what}: expected the issue ${reason}${fieldKey ? ` on ${fieldKey}` : ''} (${JSON.stringify(r.json.error.details?.issues)})`,
+      );
+    };
+    await invalid(
+      'a platform-fixed field value',
+      { fieldValues: [{ fieldKey: 'inclusions', value: 'my own text' }] },
+      'FIELD_NOT_PROVIDER_EDITABLE',
+      'inclusions',
+    );
+    await invalid('an unknown field', { fieldValues: [{ fieldKey: 'no_such_field', value: 'x' }] }, 'FIELD_UNKNOWN', 'no_such_field');
+    await invalid('an option the template does not have', { fieldValues: [{ fieldKey: 'finish', value: 'diamond' }] }, 'FIELD_OPTION_UNKNOWN', 'finish');
+    await invalid('a duration field below its bound', { fieldValues: [{ fieldKey: 'extra_time', value: 5 }] }, 'FIELD_VALUE_OUT_OF_RANGE', 'extra_time');
+    await invalid(
+      'a text longer than the template allows',
+      { fieldValues: [{ fieldKey: 'vehicle_notes', value: 'x'.repeat(81) }] },
+      'FIELD_TOO_LONG',
+      'vehicle_notes',
+    );
+    await invalid('a boolean field with a string', { fieldValues: [{ fieldKey: 'bring_water', value: 'yes' }] }, 'FIELD_VALUE_INVALID', 'bring_water');
+    await invalid('a Gig duration below the template minimum', { durationMinutes: 45 }, 'DURATION_OUT_OF_RANGE');
+    await invalid('markup in the title', { title: '<b>Hello</b>' }, 'HTML_NOT_ALLOWED');
+    await invalid('a title far beyond the configured length', { title: 'T'.repeat(250) }, 'TITLE_TOO_LONG');
+    for (const [what, patch] of [
+      ['a currency in the body', { priceCurrency: 'EUR' }],
+      ['an account id', { accountId }],
+      ['a status', { status: 'PUBLISHED' }],
+      ['a negative price', { priceAmountMinor: -1 }],
+      ['a fractional price', { priceAmountMinor: 10.5 }],
+      ['a revision of zero', { expectedRevision: 0 }],
+      [
+        'a repeated field key',
+        {
+          fieldValues: [
+            { fieldKey: 'finish', value: 'wax' },
+            { fieldKey: 'finish', value: 'sealant' },
+          ],
+        },
+      ],
+    ] as const)
+      assert((await save(token, { ...valid1, ...patch })).status === 400, `(8) a save with ${what} must be 400`);
+    const stillEmpty = read(GigDetailResponse, await gig('GET', `/gigs/${gigId}`, token), 200, '(8) GET after the refused saves');
+    assert(
+      stillEmpty.draftVersion.revision === 1 && stillEmpty.draftVersion.title === null && stillEmpty.draftVersion.fieldValues.length === 0,
+      '(8) refused saves wrote nothing',
+    );
+
+    // (9) publishing an incomplete draft is refused with identifiers only
+    const blocked = refusal(
+      await gig('POST', `/gigs/${gigId}/publish`, token, { expectedRevision: 1 }),
+      [409, 422],
+      ['PUBLISH_BLOCKED'],
+      '(9) publishing an empty draft',
+    );
+    for (const reason of ['TITLE_REQUIRED', 'PRICE_REQUIRED', 'DURATION_REQUIRED']) assert(hasIssue(blocked, reason), `(9) the refusal names ${reason}`);
+    assert(hasIssue(blocked, 'FIELD_REQUIRED', 'finish'), '(9) the refusal names the required field by key');
+    assert(
+      read(GigDetailResponse, await gig('GET', `/gigs/${gigId}`, token), 200, '(9) GET').gig.status === 'DRAFT',
+      '(9) a refused publish leaves the Gig a DRAFT',
+    );
+
+    // (10) save a valid draft: the revision grows by one, the currency is the market's (server-derived), the fixed field stores no value; a stale revision is 409
+    const saved1 = read(GigDetailResponse, await save(token, valid1), 200, '(10) PUT draft');
+    const d1 = saved1.draftVersion;
+    assert(
+      d1.revision === 2 &&
+        d1.title === title1 &&
+        d1.shortPitch === pitch1 &&
+        d1.description === description1 &&
+        d1.price?.amountMinor === 15000 &&
+        d1.price?.currency === 'USD' &&
+        d1.durationMinutes === 120 &&
+        d1.template.gigTemplateVersionId === tplV1 &&
+        d1.fieldValues.length === 4 &&
+        !d1.fieldValues.some((f: Json) => f.fieldKey === 'inclusions') &&
+        d1.publishable === true &&
+        d1.issues.length === 0,
+      `(10) the draft holds the content, USD from the market, no value for the platform-fixed field, and is publishable at revision 2 (${JSON.stringify({ r: d1.revision, p: d1.price, n: d1.fieldValues.length, i: d1.issues })})`,
+    );
+    refusal(await save(token, valid1), [409], ['STALE_DRAFT'], '(10) saving with the revision already used');
+
+    // (11) publish version 1: the Gig becomes ACTIVE, the version is frozen; publishing again or saving afterwards is refused; at most one PUBLISHED version
+    refusal(await gig('POST', `/gigs/${gigId}/publish`, token, { expectedRevision: 1 }), [409], ['STALE_DRAFT'], '(11) publishing with a stale revision');
+    assert(
+      (await gig('POST', `/gigs/${gigId}/publish`, token, { expectedRevision: 2, title: 'x' })).status === 400,
+      '(11) a publish request with extra keys must be 400',
+    );
+    const published1 = read(GigDetailResponse, await gig('POST', `/gigs/${gigId}/publish`, token, { expectedRevision: 2 }), 200, '(11) publish v1');
+    const v1 = published1.currentVersion;
+    assert(
+      published1.gig.status === 'ACTIVE' &&
+        v1.versionNumber === 1 &&
+        v1.status === 'PUBLISHED' &&
+        v1.statusKey === 'provider.gig.version_status.published' &&
+        v1.publishedAt !== null &&
+        v1.title === title1 &&
+        v1.template.gigTemplateVersionId === tplV1 &&
+        published1.draftVersion === null &&
+        published1.versions.length === 1,
+      `(11) the Gig is ACTIVE with version 1 PUBLISHED (${JSON.stringify({ g: published1.gig.status, v: v1?.status })})`,
+    );
+    refusal(
+      await gig('POST', `/gigs/${gigId}/publish`, token, { expectedRevision: 2 }),
+      [409],
+      ['STALE_DRAFT', 'NO_DRAFT'],
+      '(11) a second publish of the same revision',
+    );
+    refusal(
+      await save(token, { ...valid1, expectedRevision: 2, title: 'Changed after publishing' }),
+      [409],
+      ['NO_DRAFT', 'STALE_DRAFT'],
+      '(11) saving a published version',
+    );
+    const frozen1 = JSON.stringify(read(GigVersionResponse, await gig('GET', `/gigs/${gigId}/versions/1`, token), 200, '(11) GET version 1'));
+    assert(JSON.parse(frozen1).title === title1, '(11) version 1 still holds its title');
+    const publishedCount = async (): Promise<number> =>
+      (await database.query<{ n: number }>(`SELECT count(*)::int AS n FROM provider.gig_versions WHERE gig_id = $1 AND status = 'PUBLISHED'`, [gigId]))[0]!.n;
+    assert((await publishedCount()) === 1, '(11) exactly one PUBLISHED version');
+
+    // (12) the GigMenu shows it; readiness is a set of facts and the registration's GIGS step is derived from them
+    const menu12 = read(GigMenuResponse, await gig('GET', '/gigs', token), 200, '(12) GET /gigs');
+    const row12 = menu12.gigs.find((g: Json) => g.gig.gigId === gigId);
+    assert(
+      menu12.gigs.length === 1 &&
+        row12.gig.status === 'ACTIVE' &&
+        row12.currentVersion.versionNumber === 1 &&
+        row12.currentVersion.title === title1 &&
+        row12.currentVersion.price.amountMinor === 15000 &&
+        row12.currentVersion.price.currency === 'USD' &&
+        row12.currentVersion.durationMinutes === 120 &&
+        row12.draftVersion === null &&
+        row12.versionCount === 1,
+      `(12) the GigMenu row holds the published version (${JSON.stringify(row12)})`,
+    );
+    assert(
+      menu12.readiness.hasPublishedGig === true &&
+        menu12.readiness.publishedGigCount === 1 &&
+        menu12.readiness.draftVersionCount === 0 &&
+        menu12.readiness.goLive.evaluated === false &&
+        menu12.readiness.goLive.eligible === false &&
+        menu12.limits.activeCount === 1 &&
+        menu12.limits.draftCount === 0 &&
+        menu12.limits.maxActive >= 1 &&
+        menu12.limits.maxDrafts >= 1 &&
+        menu12.canCreate === true,
+      `(12) readiness: one published Gig, Go-Live not evaluated (${JSON.stringify(menu12.readiness)} ${JSON.stringify(menu12.limits)})`,
+    );
+    const req12 = (await registration('GET', '/requirements', token)).json.data;
+    assert(
+      stepOf(req12, 'GIGS').status === 'COMPLETE' && req12.overall.goLive.evaluated === false && req12.overall.goLive.eligible === false,
+      `(12) the registration GIGS step is COMPLETE from the Gig facts, Go-Live still not evaluated (${stepOf(req12, 'GIGS').status})`,
+    );
+
+    // (13) a NEWER template version does not move the Gig: template v2 is published, the Gig's next draft still binds template v1 (an owner decision, ADR-0046)
+    await mgmt('catalog', admin, 'POST', `/gig-templates/${tpl}/versions`, { copyFromVersion: 1, reason: 'DEV/TEST ONLY second draft' });
+    await mgmt('catalog', admin, 'PUT', `/gig-templates/${tpl}/versions/2`, {
+      ...definition,
+      expectedRevision: 1,
+      duration: { minMinutes: 90, maxMinutes: 300, suggestedMinutes: 150 },
+      reason: 'DEV/TEST ONLY second definition',
+    });
+    await mgmt('catalog', admin, 'POST', `/gig-templates/${tpl}/versions/2/publish`, { expectedRevision: 2, reason: 'DEV/TEST ONLY publish 2' });
+    const tplV2 = await tplVersionRow(2);
+    assert(tplV2 !== tplV1, '(13) template version 2 is another row');
+    const afterTpl = read(GigDetailResponse, await gig('GET', `/gigs/${gigId}`, token), 200, '(13) GET the Gig after template v2');
+    assert(
+      afterTpl.currentVersion.template.gigTemplateVersionId === tplV1 &&
+        afterTpl.currentVersion.template.gigTemplateVersionNumber === 1 &&
+        afterTpl.currentVersion.template.versionStatus === 'SUPERSEDED',
+      `(13) the published Gig keeps template version 1, now SUPERSEDED (${JSON.stringify(afterTpl.currentVersion.template)})`,
+    );
+    assert(
+      read(GigTemplateChoicesResponse, await gig('GET', '/gig-templates', token), 200, '(13) choices').templates[0].gigTemplateVersionNumber === 2,
+      '(13) new Gigs would start from template version 2',
+    );
+    const next = read(GigDetailResponse, await gig('POST', `/gigs/${gigId}/versions`, token, {}), 201, '(13) POST /versions (next draft)');
+    const draft2 = next.draftVersion;
+    assert(
+      draft2.versionNumber === 2 &&
+        draft2.status === 'DRAFT' &&
+        draft2.revision === 1 &&
+        draft2.template.gigTemplateVersionId === tplV1 &&
+        draft2.template.versionStatus === 'SUPERSEDED' &&
+        draft2.constraints.duration.minMinutes === 60 &&
+        draft2.constraints.duration.maxMinutes === 240 &&
+        draft2.title === title1 &&
+        next.currentVersion.versionNumber === 1 &&
+        next.versions.length === 2,
+      `(13) draft 2 starts from the published version and binds the SAME template version 1, with its duration bounds (${JSON.stringify({ t: draft2.template, c: draft2.constraints.duration })})`,
+    );
+    refusal(await gig('POST', `/gigs/${gigId}/versions`, token, {}), [409], ['DRAFT_EXISTS'], '(13) a second draft');
+    assert((await gig('POST', `/gigs/${gigId}/versions`, token, { title: 'x' })).status === 400, '(13) a next-draft request with a body must be 400');
+    const menu13 = read(GigMenuResponse, await gig('GET', '/gigs', token), 200, '(13) GET /gigs');
+    assert(
+      menu13.gigs[0].draftVersion.versionNumber === 2 &&
+        menu13.gigs[0].currentVersion.versionNumber === 1 &&
+        menu13.gigs[0].versionCount === 2 &&
+        menu13.readiness.hasPublishedGig === true &&
+        menu13.readiness.draftVersionCount === 1 &&
+        menu13.limits.draftCount === 1,
+      `(13) the menu shows the published version and the draft (${JSON.stringify({ r: menu13.readiness, l: menu13.limits })})`,
+    );
+
+    // (14) edit and publish version 2: version 1 is superseded in the same step; there is still exactly one PUBLISHED version
+    const valid2 = {
+      expectedRevision: 1,
+      title: title2,
+      shortPitch: pitch1,
+      description: description1,
+      priceAmountMinor: 17500,
+      durationMinutes: 75, // valid under template version 1 (60 to 240); the ACTIVE template version 2 would refuse it (90 to 300)
+      fieldValues: [
+        { fieldKey: 'finish', value: 'sealant' },
+        { fieldKey: 'extra_time', value: 45 },
+        { fieldKey: 'bring_water', value: false },
+      ],
+    };
+    const saved2 = read(GigDetailResponse, await save(token, valid2), 200, '(14) PUT draft 2');
+    assert(
+      saved2.draftVersion.revision === 2 && saved2.draftVersion.durationMinutes === 75 && saved2.draftVersion.publishable === true,
+      '(14) draft 2 saved at revision 2 and publishable',
+    );
+    refusal(await save(token, valid2), [409], ['STALE_DRAFT'], '(14) saving draft 2 with a stale revision');
+    const published2 = read(GigDetailResponse, await gig('POST', `/gigs/${gigId}/publish`, token, { expectedRevision: 2 }), 200, '(14) publish v2');
+    assert(
+      published2.gig.status === 'ACTIVE' &&
+        published2.currentVersion.versionNumber === 2 &&
+        published2.currentVersion.status === 'PUBLISHED' &&
+        published2.currentVersion.title === title2 &&
+        published2.currentVersion.price.amountMinor === 17500 &&
+        published2.draftVersion === null &&
+        byNumber(published2, 1).status === 'SUPERSEDED' &&
+        byNumber(published2, 1).supersededAt !== null &&
+        byNumber(published2, 2).status === 'PUBLISHED',
+      `(14) version 2 is PUBLISHED and version 1 SUPERSEDED (${JSON.stringify(published2.versions.map((v: Json) => `${v.versionNumber}:${v.status}`))})`,
+    );
+    assert((await publishedCount()) === 1, '(14) still exactly one PUBLISHED version');
+
+    // (15) version 1 is preserved: SUPERSEDED but readable, with the content it was published with and its original template binding
+    const v1Again = read(GigVersionResponse, await gig('GET', `/gigs/${gigId}/versions/1`, token), 200, '(15) GET version 1');
+    const was = JSON.parse(frozen1);
+    assert(
+      v1Again.status === 'SUPERSEDED' &&
+        v1Again.supersededAt !== null &&
+        v1Again.title === was.title &&
+        v1Again.shortPitch === was.shortPitch &&
+        v1Again.description === was.description &&
+        JSON.stringify(v1Again.price) === JSON.stringify(was.price) &&
+        v1Again.durationMinutes === was.durationMinutes &&
+        fieldValueMap(v1Again) === fieldValueMap(was) &&
+        v1Again.template.gigTemplateVersionId === tplV1 &&
+        v1Again.publishedAt === was.publishedAt &&
+        v1Again.revision === was.revision,
+      `(15) version 1 keeps its content after being superseded (${v1Again.status})`,
+    );
+    const v2Read = read(GigVersionResponse, await gig('GET', `/gigs/${gigId}/versions/2`, token), 200, '(15) GET version 2');
+    assert(
+      v2Read.status === 'PUBLISHED' && v2Read.title === title2 && fieldValueMap(v2Read) === fieldValueMap({ fieldValues: valid2.fieldValues }),
+      '(15) version 2 is readable',
+    );
+    refusal(await gig('GET', `/gigs/${gigId}/versions/3`, token), [404], ['GIG_VERSION_NOT_FOUND'], '(15) a version that does not exist');
+    for (const bad of ['0', '01', '1e3', '-1', '+1', ' 1', '1.0'])
+      assert((await gig('GET', `/gigs/${gigId}/versions/${encodeURIComponent(bad)}`, token)).status === 400, `(15) the version "${bad}" must be 400`);
+    refusal(await save(token, { ...valid2, expectedRevision: 2 }), [409], ['NO_DRAFT', 'STALE_DRAFT'], '(15) a stale revision once nothing is a draft');
+
+    // (16) the web pages behind Caddy (server-rendered; signed in with the same throwaway identity)
+    type Hop = { status: number; location: string | undefined; body: string; cookies: string[] };
+    const caddy = (method: 'GET', path: string, cookieHeader?: string): Promise<Hop> =>
+      new Promise((resolve, reject) => {
+        const req = http.request(
+          { host: 'caddy-proxy', port: 80, path, method, headers: { host: 'app.localhost', ...(cookieHeader ? { cookie: cookieHeader } : {}) } },
+          (res) => {
+            let body = '';
+            res.setEncoding('utf8');
+            res.on('data', (chunk) => (body += chunk));
+            res.on('end', () => resolve({ status: res.statusCode ?? 0, location: res.headers.location, body, cookies: res.headers['set-cookie'] ?? [] }));
+          },
+        );
+        req.setTimeout(20_000, () => req.destroy(new Error(`${method} ${path} through Caddy timed out`)));
+        req.on('error', reject);
+        req.end();
+      });
+    const jar = new Map<string, string>();
+    const absorb = (h: Hop): void => {
+      for (const line of h.cookies) {
+        const [pair] = line.split(';');
+        const i = pair!.indexOf('=');
+        const name = pair!.slice(0, i);
+        const value = pair!.slice(i + 1);
+        if (!value || /max-age=0/i.test(line)) jar.delete(name);
+        else jar.set(name, value);
+      }
+    };
+    const cookie = (): string => [...jar].map(([k, v]) => `${k}=${v}`).join('; ');
+    const anon = await caddy('GET', '/provider/gigs');
+    assert(
+      anon.status === 200 && anon.body.includes('/auth/login?returnTo=/provider/gigs') && !anon.body.includes(gigId) && !anon.body.includes(title2),
+      `(16) signed out: sign-in is offered and no Gig is shown (${anon.status})`,
+    );
+    const start = await caddy('GET', '/auth/login?returnTo=/provider/gigs');
+    absorb(start);
+    assert(start.status === 302 && (start.location ?? '').includes('code_challenge_method=S256'), `(16) web login did not start a PKCE flow (${start.status})`);
+    const callbackUrl = await completeLogin(kc, start.location!, { redirectUri: `${webPublic}/auth/callback`, username, password });
+    const callback = await caddy('GET', `/auth/callback${new URL(callbackUrl).search}`, cookie());
+    absorb(callback);
+    assert(
+      callback.status === 302 && (callback.location ?? '').endsWith('/provider/gigs') && jar.has('bg_session'),
+      `(16) web callback failed (${callback.status} ${callback.location})`,
+    );
+    const webPage = async (path: string): Promise<string> => {
+      const p = await caddy('GET', path, cookie());
+      assert(p.status === 200, `(16) GET ${path.replace(gigId, ':gigId')} -> ${p.status}`);
+      assert(
+        !/eyJ[A-Za-z0-9_-]{10,}\./.test(p.body) && !p.body.includes(token) && !p.body.includes(accountId) && !p.body.includes(email) && !p.body.includes(e164),
+        `(16) ${path.replace(gigId, ':gigId')} leaked a token, the account id or a contact`,
+      );
+      for (const v of jar.values()) assert(v.length < 8 || !p.body.includes(v), '(16) the page contains the session cookie value');
+      return p.body;
+    };
+    const menuPage = await webPage('/provider/gigs');
+    assert(menuPage.includes(title2) && menuPage.includes(`/provider/gigs/${gigId}`), '(16) the GigMenu page lists the Gig by its title and links to it');
+    const detailPage = await webPage(`/provider/gigs/${gigId}`);
+    assert(detailPage.includes(title2), '(16) the Gig page shows the published version');
+    const versionPage = await webPage(`/provider/gigs/${gigId}/versions/1`);
+    assert(versionPage.includes(title1), '(16) the superseded version 1 is readable on the web');
+
+    // (17) another account (customer.dev) cannot see or touch the Gig: 404, never 403, and indistinguishable from a Gig that does not exist
+    const otherLogin = await authorizationCodeLogin(kc, { clientId: 'bananagig-web', redirectUri: WEB_REDIRECT_URI, ...DEV_USERS.customer });
+    const other = (
+      await exchangeAuthorizationCode({
+        tokenEndpoint: ep.token,
+        clientId: 'bananagig-web',
+        redirectUri: WEB_REDIRECT_URI,
+        code: otherLogin.code,
+        codeVerifier: otherLogin.verifier,
+      })
+    ).accessToken;
+    const nowhere = randomUUID();
+    const probes: [string, string, string, unknown][] = [
+      ['GET the Gig', 'GET', '', undefined],
+      ['GET a version', 'GET', '/versions/1', undefined],
+      ['create the next draft', 'POST', '/versions', {}],
+      ['save a draft', 'PUT', '/draft', { ...valid2, expectedRevision: 1 }],
+      ['publish', 'POST', '/publish', { expectedRevision: 1 }],
+      ['retire', 'POST', '/retire', {}],
+    ];
+    for (const [what, method, suffix, body] of probes) {
+      const theirs = refusal(
+        await gig(method as 'GET' | 'POST' | 'PUT', `/gigs/${gigId}${suffix}`, other, body),
+        [404],
+        ['GIG_NOT_FOUND', 'GIG_VERSION_NOT_FOUND'],
+        `(17) another account: ${what}`,
+      );
+      const none = await gig(method as 'GET' | 'POST' | 'PUT', `/gigs/${nowhere}${suffix}`, other, body);
+      assert(
+        none.status === theirs.status && none.json?.error?.code === theirs.json?.error?.code,
+        `(17) ${what}: a Gig of someone else must answer exactly like a Gig that does not exist (${theirs.json?.error?.code} vs ${none.json?.error?.code})`,
+      );
+      assert(!theirs.text.includes(title2) && !theirs.text.includes(gigId), `(17) ${what}: the refusal must not echo the Gig`);
+    }
+    const otherMenu = await gig('GET', '/gigs', other);
+    if (otherMenu.status === 200)
+      assert(!otherMenu.text.includes(gigId) && !otherMenu.text.includes(title2), "(17) the other account's GigMenu must not list this Gig");
+    assert(
+      read(GigDetailResponse, await gig('GET', `/gigs/${gigId}`, token), 200, '(17) the owner still sees the Gig').gig.status === 'ACTIVE',
+      '(17) the refused calls changed nothing',
+    );
+
+    // (18) retire: terminal, history kept, the draft and published versions are RETIRED, the superseded one stays; nothing can be created or published on it again
+    assert(
+      (await gig('POST', `/gigs/${gigId}/retire`, token, { reason: 'because' })).status === 400,
+      '(18) a retire request carrying text must be 400 (free text would reach the audit trail)',
+    );
+    const retired = read(GigDetailResponse, await gig('POST', `/gigs/${gigId}/retire`, token, {}), 200, '(18) retire');
+    assert(
+      retired.gig.status === 'RETIRED' &&
+        retired.gig.statusKey === 'provider.gig.status.retired' &&
+        retired.gig.retiredAt !== null &&
+        retired.draftVersion === null &&
+        byNumber(retired, 1).status === 'SUPERSEDED' &&
+        byNumber(retired, 2).status === 'RETIRED' &&
+        byNumber(retired, 2).retiredAt !== null &&
+        retired.versions.length === 2,
+      `(18) the Gig is RETIRED; version 2 RETIRED, version 1 stays SUPERSEDED (${JSON.stringify(retired.versions.map((v: Json) => `${v.versionNumber}:${v.status}`))})`,
+    );
+    refusal(await gig('POST', `/gigs/${gigId}/versions`, token, {}), [409], ['GIG_RETIRED'], '(18) a new draft on a retired Gig');
+    refusal(await save(token, { ...valid2, expectedRevision: 2 }), [409], ['GIG_RETIRED', 'NO_DRAFT', 'STALE_DRAFT'], '(18) saving on a retired Gig');
+    refusal(
+      await gig('POST', `/gigs/${gigId}/publish`, token, { expectedRevision: 2 }),
+      [409],
+      ['GIG_RETIRED', 'NO_DRAFT', 'STALE_DRAFT'],
+      '(18) publishing on a retired Gig',
+    );
+    const retireAgain = await gig('POST', `/gigs/${gigId}/retire`, token, {});
+    assert(
+      retireAgain.status === 200 || (retireAgain.status === 409 && isCode(retireAgain.json?.error?.code, 'GIG_RETIRED')),
+      `(18) retiring twice is idempotent or GIG_RETIRED, never a reactivation (${retireAgain.status})`,
+    );
+    assert((await publishedCount()) === 0, '(18) no PUBLISHED version is left');
+    const menu18 = read(GigMenuResponse, await gig('GET', '/gigs', token), 200, '(18) GET /gigs after retiring');
+    assert(
+      menu18.gigs.length === 1 &&
+        menu18.gigs[0].gig.status === 'RETIRED' &&
+        menu18.readiness.hasPublishedGig === false &&
+        menu18.readiness.publishedGigCount === 0 &&
+        menu18.readiness.draftVersionCount === 0 &&
+        menu18.limits.activeCount === 0,
+      `(18) the retired Gig stays in the menu and no longer counts as published (${JSON.stringify(menu18.readiness)})`,
+    );
+
+    // (19) history stays readable after the Gig AND its template are retired; a new Gig starts from the template's CURRENT version; a retired template accepts no new Gig
+    const gigB = read(
+      GigDetailResponse,
+      await gig('POST', '/gigs', token, { gigTemplateCode: tpl }),
+      201,
+      '(19) a second Gig (a retired one is never reactivated)',
+    );
+    assert(
+      gigB.gig.gigId !== gigId && gigB.draftVersion.template.gigTemplateVersionId === tplV2 && gigB.draftVersion.template.gigTemplateVersionNumber === 2,
+      '(19) a new Gig binds the ACTIVE template version 2',
+    );
+    const gigBId: string = gigB.gig.gigId;
+    assert(gigB.draftVersion.constraints.duration.minMinutes === 90, '(19) its constraints come from template version 2');
+    const retiredB = read(GigDetailResponse, await gig('POST', `/gigs/${gigBId}/retire`, token, {}), 200, '(19) retiring a Gig that was never published');
+    assert(
+      retiredB.gig.status === 'RETIRED' && retiredB.versions.length === 1 && retiredB.versions[0].status === 'RETIRED',
+      '(19) a DRAFT Gig can be retired (its draft becomes RETIRED)',
+    );
+    await mgmt('catalog', admin, 'PUT', `/gig-templates/${tpl}/status`, { status: 'RETIRED', reason: 'DEV/TEST ONLY cleanup' });
+    templateRetired = true;
+    const afterRetire = read(GigDetailResponse, await gig('GET', `/gigs/${gigId}`, token), 200, '(19) GET the Gig after the template was retired');
+    assert(
+      afterRetire.gig.status === 'RETIRED' && afterRetire.versions.length === 2 && afterRetire.gig.gigTemplateCode === tpl,
+      '(19) the history of a Gig of a retired template stays readable',
+    );
+    for (const n of [1, 2]) {
+      const vr = read(GigVersionResponse, await gig('GET', `/gigs/${gigId}/versions/${n}`, token), 200, `(19) GET version ${n}`);
+      assert(
+        vr.template.templateStatus === 'RETIRED' && vr.template.gigTemplateVersionId === tplV1,
+        `(19) version ${n} still names its template version (template ${vr.template.templateStatus})`,
+      );
+    }
+    assert(
+      read(GigTemplateChoicesResponse, await gig('GET', '/gig-templates', token), 200, '(19) choices').templates.every((t: Json) => t.gigTemplateCode !== tpl),
+      '(19) a retired template is no longer offered',
+    );
+    const lateGig = refusal(
+      await gig('POST', '/gigs', token, { gigTemplateCode: tpl }),
+      [409],
+      ['GIG_TEMPLATE_NOT_AVAILABLE'],
+      '(19) a Gig from a retired template',
+    );
+    assert(
+      ['TEMPLATE_RETIRED', 'TEMPLATE_INACTIVE', 'NO_ACTIVE_VERSION'].includes(lateGig.json.error.details?.reason),
+      `(19) the refusal names why (${lateGig.json.error.details?.reason})`,
+    );
+
+    // (20) a Gig is NOT live: Go-Live is never evaluated, and no later-checkpoint capability exists in any response
+    const forbidden =
+      /^(variants?|addOns?|add_ons?|media|mediaItems?|photos?|gallery|serviceAreas?|serviceArea|radius|availability|capacity|bookings?|searchRank|ranking|live|isLive|bookable|goLiveEligible)$/i;
+    const walk = (value: Json, found: string[]): string[] => {
+      if (Array.isArray(value)) value.forEach((v) => walk(v, found));
+      else if (value && typeof value === 'object')
+        for (const [k, v] of Object.entries(value)) {
+          if (forbidden.test(k)) found.push(k);
+          walk(v, found);
+        }
+      return found;
+    };
+    let goLiveSeen = 0;
+    for (let i = 0; i < seen.length; i += 2) {
+      let body: Json;
+      try {
+        body = JSON.parse(seen[i]!);
+      } catch {
+        continue;
+      }
+      const bad = walk(body, []);
+      assert(bad.length === 0, `(20) a Gig response contains a field of a later checkpoint: ${bad.join()}`);
+      const stack: Json[] = [body];
+      while (stack.length) {
+        const cur = stack.pop();
+        if (Array.isArray(cur)) stack.push(...cur);
+        else if (cur && typeof cur === 'object') {
+          if ('goLive' in cur) {
+            goLiveSeen++;
+            assert(cur.goLive.evaluated === false && cur.goLive.eligible === false, '(20) Go-Live must never be evaluated or eligible');
+          }
+          stack.push(...Object.values(cur));
+        }
+      }
+    }
+    assert(goLiveSeen >= 1, '(20) the GigMenu readiness carries the Go-Live fact');
+    const req20 = (await registration('GET', '/requirements', token)).json.data;
+    assert(req20.overall.goLive.evaluated === false && req20.overall.goLive.eligible === false, '(20) the registration still does not evaluate Go-Live');
+    const noGoLive = await database.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema = 'provider' AND table_name ~* 'variant|add_?on|media|availability|area|capacity|go_?live|search'`,
+    );
+    assert(noGoLive[0]!.n === 0, `(20) the provider schema has no table of a later checkpoint (${noGoLive[0]!.n})`);
+
+    // (21) the database: bindings are exact, and the audit trail and outbox hold every change exactly once and never the provider's text
+    const versions = await database.query<{ gig_id: string; version_number: number; status: string; tpl_version: number; bound: string }>(
+      `SELECT v.gig_id, v.version_number, v.status, tv.version_number AS tpl_version, v.gig_template_version_id AS bound
+         FROM provider.gig_versions v JOIN catalog.gig_template_versions tv ON tv.gig_template_version_id = v.gig_template_version_id
+        WHERE v.gig_id IN ($1, $2) ORDER BY v.gig_id = $2, v.version_number`,
+      [gigId, gigBId],
+    );
+    assert(
+      versions.map((v) => `${v.version_number}:${v.status}:t${v.tpl_version}`).join() === '1:SUPERSEDED:t1,2:RETIRED:t1,1:RETIRED:t2' &&
+        versions[0]!.bound === tplV1 &&
+        versions[1]!.bound === tplV1 &&
+        versions[2]!.bound === tplV2,
+      `(21) the stored versions bind the exact template versions (${JSON.stringify(versions.map((v) => `${v.version_number}:${v.status}:t${v.tpl_version}`))})`,
+    );
+    const audit = await database.query<{ action: string; n: number }>(
+      `SELECT action, count(*)::int AS n FROM provider.gig_audit_events WHERE account_id = $1::uuid GROUP BY action`,
+      [accountId],
+    );
+    const a = Object.fromEntries(audit.map((r) => [r.action, r.n]));
+    assert(
+      a.GIG_CREATED === 2 &&
+        a.GIG_VERSION_PUBLISHED === 2 &&
+        a.GIG_VERSION_SUPERSEDED === 1 &&
+        a.GIG_RETIRED === 2 &&
+        (a.GIG_DRAFT_CREATED ?? 0) >= 1 &&
+        (a.GIG_DRAFT_UPDATED ?? 0) >= 2,
+      `(21) the audit trail holds each change as often as it happened; refused calls wrote nothing (${JSON.stringify(a)})`,
+    );
+    const events = await database.query<{ event_type: string; n: number }>(
+      `SELECT event_type, count(*)::int AS n FROM integration.outbox_events WHERE event_type LIKE 'bananagig.provider.gig-%' AND payload_json->>'accountId' = $1::text GROUP BY event_type`,
+      [accountId],
+    );
+    const e = Object.fromEntries(events.map((r) => [r.event_type, r.n]));
+    assert(
+      e['bananagig.provider.gig-created.v1'] === 2 && e['bananagig.provider.gig-version-published.v1'] === 2 && e['bananagig.provider.gig-retired.v1'] === 2,
+      `(21) the outbox holds each Gig event exactly once (${JSON.stringify(e)})`,
+    );
+    const stored = await database.query<{ s: string }>(
+      `SELECT coalesce((SELECT string_agg(changes::text, ' ') FROM provider.gig_audit_events WHERE account_id = $1::uuid), '') || ' ' ||
+              coalesce((SELECT string_agg(payload_json::text, ' ') FROM integration.outbox_events WHERE event_type LIKE 'bananagig.provider.gig-%' AND payload_json->>'accountId' = $1::text), '') AS s`,
+      [accountId],
+    );
+    for (const text of providerText) assert(!stored[0]!.s.includes(text), `(21) provider text appears in the audit trail or the outbox: ${text.slice(0, 20)}`);
+    assert(!stored[0]!.s.includes(email) && !stored[0]!.s.includes(e164), '(21) no contact in the audit trail or the outbox');
+
+    // (22) la-oc is untouched, nothing leaked into responses or logs
+    const laocAfter = (await mgmt('geography', admin, 'GET', '/markets/la-oc')).json.data.status as string;
+    assert(laocAfter === laocBefore, `(22) la-oc must stay as it was (${laocBefore} -> ${laocAfter})`);
+    const everything = seen.join('\n');
+    for (const [what, value] of [
+      ['email', email],
+      ['phone', e164],
+      ['account id', accountId],
+      ['access token', token],
+      ['password', password],
+    ] as const)
+      assert(!everything.includes(value), `(22) a Gig API response contains the ${what}`);
+    const query = async (q: string) =>
+      (await (
+        await expectOk(`${loki}/loki/api/v1/query_range?query=${encodeURIComponent(q)}&start=${flowStart}&end=${Date.now() * 1e6 + 60e9}&limit=5`)
+      ).json()) as { data: { result: unknown[] } };
+    await retry(
+      async () => {
+        if ((await query(`{service_name="bananagig-api"} | correlationId = \`${cid}\``)).data.result.length < 1)
+          throw new Error('this flow is not in Loki yet');
+      },
+      12,
+      2000,
+    );
+    await sleep(6000);
+    for (const [what, q] of [
+      ['Gig title', `{service_name=~"bananagig-.+"} |= \`${title1}\``],
+      ['Gig description', `{service_name=~"bananagig-.+"} |= \`Smoke gig description ${runId}\``],
+      ['vehicle notes', `{service_name=~"bananagig-.+"} |= \`${notes1}\``],
+      ['email', `{service_name=~"bananagig-.+"} |= \`${email}\``],
+      ['phone', `{service_name=~"bananagig-.+"} |= \`${e164}\``],
+      ['access token', `{service_name=~"bananagig-.+"} |= \`${token}\``],
+    ] as const)
+      assert((await query(q)).data.result.length === 0, `(22) the ${what} appears in the logs`);
+
+    return (
+      `throwaway provider (registration COMPLETED through the real flows) in a DEV/TEST market; ${tpl}: customer not eligible (403), templates offered only for the selected service type; Gig created from the ACTIVE template version (exact link, idempotent token), ` +
+      `eager draft validation (fixed/unknown/option/bounds/markup/length), incomplete publish blocked with identifiers, stale revisions 409, v1 published and frozen (GigMenu + GIGS step COMPLETE); template v2 did not move the Gig ` +
+      `(next draft binds template v1), v2 published, v1 SUPERSEDED but readable and unchanged; web pages render behind Caddy; another account gets 404 on every route (same as a missing Gig); retire is terminal, history readable after the ` +
+      `template was retired, a new Gig binds template v2; Go-Live never evaluated, no variant/add-on/media/area/search field anywhere; audit and outbox exact, no provider text in them or in the logs; la-oc ${laocBefore} untouched`
+    );
+  } finally {
+    // cleanup: the Gig template, service type and category are RETIRED and the DEV/TEST market deactivated (entities are never deleted; Gigs stay as history); the throwaway user is removed
+    try {
+      if (admin && marketCreated) {
+        if (!templateRetired) await request(`/catalog/gig-templates/${tpl}/status`, 'PUT', admin, { status: 'RETIRED', reason: 'smoke cleanup' });
+        await request(`/catalog/service-types/${serviceType}/status`, 'PUT', admin, { status: 'RETIRED', reason: 'smoke cleanup' });
+        await request(`/catalog/categories/${categoryCode}/status`, 'PUT', admin, { status: 'RETIRED', reason: 'smoke cleanup' });
+        await request(`/geography/markets/${marketCode}/activation`, 'POST', admin, { active: false, reason: 'smoke cleanup' });
+      }
     } catch {
       // best effort: the failure that got us here is the one to report
     }

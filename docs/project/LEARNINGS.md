@@ -1435,3 +1435,103 @@ When `Worker runtime` fails and nothing about the worker changed, look for a hos
 
 ### Evidence
 The `Worker runtime` check in `apps/smoke/src/index.ts` and `apps/worker/src/worker.ts` (`selfTest`); a host `tsx watch` worker (`pnpm dev`) next to the container `worker-service` on the same database; the TRUST-001 smoke runs that failed 13 of 42 checks and then passed on re-run without a code change.
+
+## LRN-0058 — Ajv coerces JSON bodies that are declared in the route schema: a strict zod pre-check does not protect a handler that reads `req.body`
+
+Date: 2026-10-18
+Checkpoint: CAT-003
+Domain: api
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/api/SKILL.md
+
+### Context
+The Gig draft body carries field values that are a union (`string | integer | boolean | null`). The routes validate the RAW body with a strict zod schema in `preValidation` (`strictBody`) and then read `req.body` in the handler. Fastify's Ajv runs with coercion for bodies declared in the OpenAPI schema, so by the time the handler ran, `3` had become `"3"`, `true` had become `"true"` and `null` had become `""`. The strict check had passed on the original values, so nothing flagged it.
+
+### Learning
+`strictBody` proves the request was valid; it does not make `req.body` the value that was proved. For any body whose schema has a union, a nullable scalar or a number, the handler must read the contract's PARSED copy that the pre-check produced, never `req.body`. The other modules (configuration, content, provider registration) are safe only because their bodies hold no unions (DEBT-0043 still lists the coerced integers and booleans of the management routes).
+
+### Why it matters
+A coerced value can change the meaning of a stored value silently (a boolean field becoming the text "true", a cleared value becoming an empty string) and the strict check gives false assurance.
+
+### Reuse rule
+In a new route with a typed body, store the pre-check's parse result (see `strictParsed` / `bodyOf` in `apps/api/src/modules/provider/gig-routes.ts`) and have the handler use it. Add a unit test that sends `3`, `true` and `null` as values and asserts the service receives exactly those.
+
+### Evidence
+`apps/api/src/modules/provider/gig-routes.ts` (`strictParsed`, `bodyOf`); the CAT-003 unit and integration tests that send mixed-type field values; the coercion observed by the API agent before the fix.
+
+## LRN-0059 — A guard trigger that locks another domain's rows must take them in that domain's own lock order
+
+Date: 2026-10-18
+Checkpoint: CAT-003
+Domain: database
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/database/SKILL.md
+
+### Context
+The Gig version guard read the exact template version `FOR SHARE` and then the template `FOR SHARE`. The catalogue service retires a template by locking the template `FOR UPDATE` and then its ACTIVE version `FOR UPDATE`. A publish and a template retirement running together deadlocked (SQLSTATE 40P01); the independent review reproduced it with two sessions. The Gig side maps 40P01 to a retryable conflict, so nothing was corrupted, but the victim was not controlled.
+
+### Learning
+Lock order is a contract of the OWNING domain. A guard that locks rows of another schema must follow the owner's order (parent before child: template, service type, then version), and it should lock only when the operation can depend on those rows (a version insert and a publication, not a draft save).
+
+### Why it matters
+A deadlock between a provider action and a staff action is rare enough to miss in review and in tests that run one side at a time, and it is expensive to find in production.
+
+### Reuse rule
+Before writing a guard that locks catalogue (or any foreign) rows, read the owner's service for the order in which it locks them and copy it. Add a model test where the owner's transaction holds the parent `FOR UPDATE`, the guarded statement waits, and the owner then requests the child: it must finish without 40P01 (see the lock-order test in `packages/testing/src/gig-model.itest.ts`).
+
+### Evidence
+`provider.guard_gig_versions` in `db/migrations/0020_provider_gigs.sql`; `GigTemplateService.setGigTemplateStatus` in `packages/catalog/src/gig-template-service.ts`; the lock-order cases in `packages/testing/src/gig-model.itest.ts`.
+
+## LRN-0060 — A validation regex on provider text must be linear: adjacent `\s*` quantifiers turn 80 KB of spaces into 13 seconds of blocked event loop
+
+Date: 2026-10-18
+Checkpoint: CAT-003
+Domain: api / security
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/api/SKILL.md
+
+### Context
+The markup check for provider text was `/<\s*\/?\s*[A-Za-z!?][^>]*>?/`. A description of `"a<"` followed by 79,990 spaces and a digit stays valid under the request schema (the body is about 80 KB) and takes the regex quadratic time: 13 s measured, on the main thread, blocking every other request. Single-line fields were safe only because their whitespace is collapsed first.
+
+### Learning
+Any regex that runs on text a user controls must have no adjacent quantifiers that can match the same characters (`\s*\/?\s*`) and no nested quantifiers. A test with a hostile 80,000 character input and a time budget is the only reliable check; a lint rule does not catch it.
+
+### Why it matters
+It is a one-request denial of service for the whole API process, available to any signed-in user.
+
+### Reuse rule
+Write user-text regexes so that each position is matched by one alternative (`/<[\s/]*[A-Za-z!?]/`), pre-cap the length before matching where possible, and add a regression test that feeds the validator spaces, slashes and repeated opener sequences and asserts it finishes in a fraction of a second.
+
+### Evidence
+`packages/contracts/src/gig.ts` (`HTML_TAG`) and the hostile-input tests in `packages/contracts/src/gig.test.ts` and `packages/provider/src/gig.test.ts`; the measured 13 s in the CAT-003 security review.
+
+## LRN-0061 — The database container's clock drifts from the host's: an integration test must not compare a database timestamp with the host's `Date.now()` at millisecond precision
+
+Date: 2026-10-18
+Checkpoint: CAT-003
+Domain: testing
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/testing/SKILL.md
+
+### Context
+`pnpm checkpoint:finalize CAT-003` failed twice in the integration step on `packages/content/src/content.itest.ts` (`expected 1792289931795 to be less than or equal to 1792289931794` and a "closed in the past" case), while the same suite passed 7713 of 7713 when run alone, twice. Measured afterwards: the PostgreSQL container's `clock_timestamp()` was about 20 ms AHEAD of the host clock (Docker's VM drifts and resynchronises), so a version published "now" by the database could carry a start time later than the host's `Date.now()` taken a few milliseconds afterwards. Nothing in CAT-003 touched the content package.
+
+### Learning
+Two clocks are in play in every integration test: the host (Node) and the database container. Their offset changes with the machine's load and sleep state, so a test that passes alone can fail inside a long run. CI runs both on one clock and is unaffected.
+
+### Why it matters
+A flaky check at the end of a 15 minute finalize costs a full rerun and tempts people to retry until green instead of finding the cause.
+
+### Reuse rule
+Compare database timestamps with each other (or build the instant in SQL with `clock_timestamp()`), or give a host comparison a generous tolerance (`CLOCK_SKEW_MS` in the content tests); never assert `dbTimestamp <= Date.now()` or build "a moment ago" from `Date.now()` and feed it back to a database guard that uses its own clock.
+
+### Evidence
+`packages/content/src/content.itest.ts` (`CLOCK_SKEW_MS` and the SQL `clock_timestamp()` form); the measured offset of about 20 ms between `docker exec ... clock_timestamp()` and the host; the two failed finalize runs and the two clean standalone runs.

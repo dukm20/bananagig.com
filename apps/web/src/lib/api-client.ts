@@ -9,6 +9,10 @@ import {
   DocumentUploadAuthorizationResponse,
   ProviderVerificationResponse,
   VerificationDocumentResponse,
+  GigDetailResponse,
+  GigMenuResponse,
+  GigTemplateChoicesResponse,
+  GigVersionResponse,
   MarketListResponse,
   ProviderRegistrationStateResponse,
   ProviderRequirementsResponse,
@@ -54,6 +58,13 @@ import {
   type DocumentUploadAuthorizationDto,
   type FinalizeDocumentRequest,
   type ProviderVerificationDto,
+  type CreateGigRequest,
+  type GigDetailDto,
+  type GigMenuDto,
+  type GigTemplateChoicesDto,
+  type GigVersionDto,
+  type PublishGigRequest,
+  type UpdateGigDraftRequest,
   type RequestDocumentUploadRequest,
   type SubmitVerificationRequest,
   type VerificationDocumentDto,
@@ -525,6 +536,77 @@ export function createApiClient(opts: ApiClientOptions) {
             method: 'POST',
             headers: roleHeader(o),
           },
+        )
+      ).data;
+    },
+    // ---------------------------------------------------------------- provider Gigs (CAT-003): the caller's own Gigs; no call carries an account id, a role, a status or a currency
+    /** GET /api/v1/provider/gig-templates: the Gig Templates the caller can start a Gig from now (market and selected service types already applied by the server). */
+    async listGigTemplateChoices(o: AccountCallOptions = {}): Promise<GigTemplateChoicesDto> {
+      return (await request('/provider/gig-templates', (j) => GigTemplateChoicesResponse.parse(j).data, undefined, { headers: roleHeader(o) })).data;
+    },
+    /** GET /api/v1/provider/gigs: the GigMenu (every Gig of the caller with its current version and draft, readiness, limits and whether creating is possible). */
+    async getGigMenu(o: AccountCallOptions = {}): Promise<GigMenuDto> {
+      return (await request('/provider/gigs', (j) => GigMenuResponse.parse(j).data, undefined, { headers: roleHeader(o) })).data;
+    },
+    /** POST /api/v1/provider/gigs: creates a Gig and its first draft from a template code (201), or returns the one an earlier request with the same `clientRequestId` created (200). */
+    async createGig(input: CreateGigRequest, o: AccountCallOptions = {}): Promise<{ created: boolean; detail: GigDetailDto }> {
+      const r = await request('/provider/gigs', (j) => GigDetailResponse.parse(j).data, input, { method: 'POST', headers: roleHeader(o) });
+      return { created: r.status === 201, detail: r.data };
+    },
+    /** GET /api/v1/provider/gigs/:gigId: one Gig with its current version, draft and history (404 for a Gig that is not the caller's). */
+    async getGig(gigId: string, o: AccountCallOptions = {}): Promise<GigDetailDto> {
+      return (await request(`/provider/gigs/${encodeURIComponent(gigId)}`, (j) => GigDetailResponse.parse(j).data, undefined, { headers: roleHeader(o) })).data;
+    },
+    /** POST /api/v1/provider/gigs/:gigId/versions: starts the next draft from the published version (takes no input). */
+    async createGigVersion(gigId: string, o: AccountCallOptions = {}): Promise<GigDetailDto> {
+      return (
+        await request(
+          `/provider/gigs/${encodeURIComponent(gigId)}/versions`,
+          (j) => GigDetailResponse.parse(j).data,
+          {},
+          { method: 'POST', headers: roleHeader(o) },
+        )
+      ).data;
+    },
+    /** GET /api/v1/provider/gigs/:gigId/versions/:version: one version of the caller's Gig, whatever its status. */
+    async getGigVersion(gigId: string, version: number, o: AccountCallOptions = {}): Promise<GigVersionDto> {
+      return (
+        await request(
+          `/provider/gigs/${encodeURIComponent(gigId)}/versions/${encodeURIComponent(String(version))}`,
+          (j) => GigVersionResponse.parse(j).data,
+          undefined,
+          {
+            headers: roleHeader(o),
+          },
+        )
+      ).data;
+    },
+    /** PUT /api/v1/provider/gigs/:gigId/draft: replaces the whole editable content of the draft (a stale revision is an ApiError 409). */
+    async updateGigDraft(gigId: string, input: UpdateGigDraftRequest, o: AccountCallOptions = {}): Promise<GigDetailDto> {
+      return (
+        await request(`/provider/gigs/${encodeURIComponent(gigId)}/draft`, (j) => GigDetailResponse.parse(j).data, input, {
+          method: 'PUT',
+          headers: roleHeader(o),
+        })
+      ).data;
+    },
+    /** POST /api/v1/provider/gigs/:gigId/publish: publishes the draft (the server checks completeness; a stale revision is an ApiError 409). */
+    async publishGig(gigId: string, input: PublishGigRequest, o: AccountCallOptions = {}): Promise<GigDetailDto> {
+      return (
+        await request(`/provider/gigs/${encodeURIComponent(gigId)}/publish`, (j) => GigDetailResponse.parse(j).data, input, {
+          method: 'POST',
+          headers: roleHeader(o),
+        })
+      ).data;
+    },
+    /** POST /api/v1/provider/gigs/:gigId/retire: retires the Gig for good (takes no input; the history stays readable). */
+    async retireGig(gigId: string, o: AccountCallOptions = {}): Promise<GigDetailDto> {
+      return (
+        await request(
+          `/provider/gigs/${encodeURIComponent(gigId)}/retire`,
+          (j) => GigDetailResponse.parse(j).data,
+          {},
+          { method: 'POST', headers: roleHeader(o) },
         )
       ).data;
     },

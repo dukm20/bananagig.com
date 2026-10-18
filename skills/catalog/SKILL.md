@@ -2,14 +2,14 @@
 
 ## Purpose
 
-Read and change the PLATFORM-OWNED taxonomy of what can be sold: categories (Auto Services), service types (Car Detailing; each belongs to exactly one category), their availability and display order per market and the flat prohibited-service list. Since CAT-002 also the versioned Gig Templates: the platform-approved structure a provider builds a Gig from. Providers later create Gigs (Full Detail) from a template version; nothing provider-specific lives here.
+Read and change the PLATFORM-OWNED taxonomy of what can be sold: categories (Auto Services), service types (Car Detailing; each belongs to exactly one category), their availability and display order per market and the flat prohibited-service list. Since CAT-002 also the versioned Gig Templates: the platform-approved structure a provider builds a Gig from. Since CAT-003 providers create Gigs (Full Detail) from a template version in the `provider` schema (`skills/provider`); nothing provider-specific lives here.
 
 ## When to use
 
 - A feature needs the list of categories or service types of a market (onboarding, the GigMenu, discovery, search, admin), or must reference a service type from another table (a Gig).
 - Adding or retiring a category, a service type or a prohibited service, changing its availability or order in a market, or touching the `catalog` schema, its API, events or cache.
 - Referencing a CATEGORY scope from configuration, or keying a policy (verification, fees) by category.
-- A feature builds on a Gig Template: the Gig builder (CAT-003), the requirements checkpoints (TRUST-001, SV-09), template administration, or anything that must reference "the structure a Gig was built from".
+- A feature builds on a Gig Template: the provider Gig builder (CAT-003, built), template adoption, CAT-004 (variants, add-ons, media), the requirements checkpoints (TRUST-001, SV-09), template administration, or anything that must reference "the structure a Gig was built from".
 - Anything that is tempted to store a category or service name, a category list or a menu order in code, configuration or a Gig table.
 
 ## Canonical files
@@ -19,11 +19,11 @@ Read and change the PLATFORM-OWNED taxonomy of what can be sold: categories (Aut
 - `packages/catalog/src/service.ts`, `gig-template-service.ts`, `gig-template-types.ts`, `cache.ts`, `scope-validator.ts`, `types.ts`, `errors.ts`
 - `apps/api/src/modules/catalog/{routes,gig-template-routes,dto,gig-template-dto,common,wiring}.ts`, `apps/api/src/plugins/auth.ts` (`CATALOG_PERMISSIONS`), `apps/api/src/index.ts`
 - `packages/testing/src/catalog-model.itest.ts`, `packages/catalog/src/catalog.itest.ts`, `apps/api/src/catalog.itest.ts`, `packages/testing/src/gig-template-model.itest.ts`, `packages/catalog/src/gig-template.itest.ts`, `apps/api/src/gig-template.itest.ts`
-- `docs/engineering/CATALOG.md`, `docs/engineering/GIG_TEMPLATES.md`, `docs/architecture/ADR-0040-platform-owned-taxonomy-with-stable-identities-and-status-based-retirement.md`, `docs/architecture/ADR-0041-versioned-platform-gig-templates-referenced-immutably-by-provider-gigs.md`
+- `docs/engineering/CATALOG.md`, `docs/engineering/GIG_TEMPLATES.md`, `docs/engineering/PROVIDER_GIGS.md`, `docs/architecture/ADR-0040-platform-owned-taxonomy-with-stable-identities-and-status-based-retirement.md`, `docs/architecture/ADR-0041-versioned-platform-gig-templates-referenced-immutably-by-provider-gigs.md`, `docs/architecture/ADR-0046-provider-gig-versions-bind-immutably-to-exact-gig-template-versions.md`
 
 ## Architecture rules
 
-- Boundary: Category and Service Type are PLATFORM-owned; Gig, variant, add-on, bundle, price, pitch, media, radius, capacity and availability are PROVIDER-owned and arrive later. Never add a provider-specific column (price, duration, radius, cap, media) to the catalogue, and never collapse a service type into a Gig. A Gig will reference `service_types.service_type_id` and take its category from it.
+- Boundary: Category and Service Type are PLATFORM-owned; Gig, variant, add-on, bundle, price, pitch, media, radius, capacity and availability are PROVIDER-owned (the Gig, its versions, price, duration and copy since CAT-003 in `provider.*`; the rest arrives later). Never add a provider-specific column (price, duration, radius, cap, media) to the catalogue, and never collapse a service type into a Gig. A Gig reaches its service type and category THROUGH its template (`gig_templates.service_type_id`); the Gig table stores neither.
 - The CODE is the identity: immutable lower-case snake_case (`^[a-z][a-z0-9]*(_[a-z0-9]+)*$`, 2 to 48), unique (service type codes across ALL service types), never reused, never an English display name. Ids and codes are what other tables, configuration scopes, URLs and search reference.
 - Names and descriptions are CONTENT (CFG-002): `name_content_key` is a stored generated column (`catalog.<kind>.<code>.name`) with a foreign key to `content.entries`; the description key is NULL or exactly `...<code>.description`. Create and publish the content entry FIRST, then the row. A rename is a content change and moves no id, code or order. Never store display text in the catalogue.
 - Taxonomy is reference data, NOT configuration: a category is what a CATEGORY scope names, not a parameter value. Do not put categories in `configuration.parameter_values`. The CATEGORY scope reference is validated against the catalogue through the scope port (DRAFT, ACTIVE and INACTIVE valid; RETIRED, unknown and non-canonical get the one generic reason).
@@ -39,8 +39,8 @@ Read and change the PLATFORM-OWNED taxonomy of what can be sold: categories (Aut
 
 ### Gig Templates (CAT-002)
 
-- **Three levels, three owners.** Service type (platform, what is sold: Car Detailing) > Gig Template (platform, the approved structure: Full Detail) > Gig (provider, what one provider sells: price, floor price, chosen duration, radius or area, pitch, photos, capacity, variants, add-ons, booking mode; CAT-003). Never put a provider value in a template row and never read the mutable template to learn what a Gig was built from.
-- **Identity and version are separate.** `gig_templates` = immutable code and service type, derived copy keys, status; `gig_template_versions` = the structure. The future Gig stores `gig_template_version_id` and validates against THAT frozen version. A published version and its field, option and requirement rows are frozen by guards; the fix for a mistake is a new version copied from it (`copyFromVersion`).
+- **Three levels, three owners.** Service type (platform, what is sold: Car Detailing) > Gig Template (platform, the approved structure: Full Detail) > Gig (provider, what one provider sells: price, chosen duration, pitch, description and the values of the provider-editable fields in CAT-003; floor price, radius or area, photos, capacity, variants, add-ons, booking mode later). Never put a provider value in a template row and never read the mutable template to learn what a Gig was built from.
+- **Identity and version are separate.** `gig_templates` = immutable code and service type, derived copy keys, status; `gig_template_versions` = the structure. A provider Gig version stores `gig_template_version_id` (CAT-003) and validates against THAT frozen version. A published version and its field, option and requirement rows are frozen by guards; the fix for a mistake is a new version copied from it (`copyFromVersion`).
 - **Version lifecycle.** `DRAFT` -> `ACTIVE` (publish) | `RETIRED` (discard); `ACTIVE` -> `SUPERSEDED` (automatic, only by publishing a newer version) | `RETIRED` (done by the retirement of the template; the machine allows it, the service offers no direct withdraw). One DRAFT and one ACTIVE per template, contiguous numbers, never deleted. No `IN_REVIEW` (no reviewer exists yet).
 - **Editing is whole-draft and token-guarded.** `PUT .../versions/:n` replaces the WHOLE definition with `expectedRevision`; a different revision is 409 `STALE_DRAFT`; an equal definition writes nothing. Publish takes the same token and is a no-op when repeated on an ACTIVE version with that revision.
 - **Fields are typed rows, not JSON.** 11 types, behaviour `PLATFORM_FIXED` / `PROVIDER_CONFIGURABLE` / `PROVIDER_REQUIRED` ("editable" and "required" are derived), sections, per-type metadata under a CHECK matrix (a column that does not belong to the type is NULL), enum options as rows, MONEY without numeric metadata (limits are configuration). A photo rule is a MEDIA field (`max_items = 0` = no photos, required = `PROVIDER_REQUIRED` with a minimum).
@@ -48,6 +48,7 @@ Read and change the PLATFORM-OWNED taxonomy of what can be sold: categories (Aut
 - **Pricing and area models are metadata**, not prices: FIXED, FIXED_WITH_VARIANTS (at least one base model), BUNDLE_ELIGIBLE, DROP_ELIGIBLE; RADIUS, POSTAL_CODES, POLYGON (at least one). Requirement rows (SKILL, EQUIPMENT, LICENSE, INSURANCE, BACKGROUND_CHECK) are hooks with an opaque, unvalidated reference code until TRUST-001 owns the catalogues.
 - **Publication needs** an ACTIVE template and service type (read FOR SHARE), at least one field, options for every enum, and the published copy. **Retiring a template** discards an open draft (audited), closes the ACTIVE version, keeps every version and the code. CAT-001 guards are NOT changed: a paused service type leaves its templates ACTIVE but unreachable (the public read re-checks the chain).
 - **Locks**: the service takes the TEMPLATE row first, then the version, in every version operation; raw statements that lock a version first can deadlock (retryable conflict). Availability per market is a plain row per (market, template) with the same one-retry race policy as the taxonomy.
+- **Consumers bind the exact version and are never migrated automatically (ADR-0046).** v1 of a Gig binds the ACTIVE version; later Gig versions keep the SAME template version, so superseding a template version changes nothing for existing Gigs and a RETIRED version/template/service type only blocks NEW drafts and publishing. A template change that adds a PROVIDER_REQUIRED field of a type the Gig cannot store yet (MONEY, MEDIA, EQUIPMENT_REFERENCE, SKILL_REFERENCE) makes the template unpublishable as a Gig until CAT-004. Adoption of a newer version is a later checkpoint.
 - **Public vs management**: the same routes, `Vary: Authorization`; the public view carries the safe structure of the ACTIVE version with resolved copy and never the status, revision, content keys, timestamps or other versions; management responses and every mutation are `Cache-Control: private, no-store`. Events: activated, deactivated, retired, published (with the exact version id), availability changed. The snapshot cache shares the taxonomy's generation counter.
 
 ## Implementation pattern
@@ -70,7 +71,7 @@ Read and change the PLATFORM-OWNED taxonomy of what can be sold: categories (Aut
 
 ## Data-model considerations
 
-Any change to the twelve tables or their guards needs the Data Model Review Gate and a forward migration (never edit 0015 or 0016). A new level (an alias, a requirement catalogue, a provider Gig) is a new table keyed by the stable ids, not a column here; a Gig references `gig_template_versions.gig_template_version_id`.
+Any change to the twelve tables or their guards needs the Data Model Review Gate and a forward migration (never edit 0015 or 0016). A new level (an alias, a requirement catalogue, a provider Gig) is a new table keyed by the stable ids, not a column here; a Gig references `gig_template_versions.gig_template_version_id` (done in CAT-003 by `provider.gig_versions`; mind its foreign keys when retiring or restructuring template rows).
 
 ## Common failure modes
 
@@ -86,6 +87,8 @@ Any change to the twelve tables or their guards needs the Data Model Review Gate
 - A draft naming content entries that do not exist yet, or publishing with copy that is only a draft in the content registry: create and publish the entries first (the errors name the keys).
 - Publishing under a template that is not ACTIVE or a service type that is not ACTIVE (409 `GIG_TEMPLATE_NOT_ACTIVE`, `SERVICE_TYPE_NOT_ACTIVE`).
 - Giving a template a provider value (a price, a radius) or reading the mutable template to validate a Gig.
+- Expecting a published Gig to follow a new template version, or to stop working because its template version was superseded: it keeps the version it was built from; only a RETIRED version, template or service type blocks new drafts and publishing.
+- Retiring a template while expecting its Gigs to disappear: they stay readable to their owners; the template just leaves the creation choices.
 
 ## Known BananaGig-specific lessons
 
@@ -100,7 +103,8 @@ Any change to the twelve tables or their guards needs the Data Model Review Gate
 
 ## Do not
 
-- Do not add Gig, variant, add-on, price, duration, radius, capacity, availability or media to this schema.
+- Do not add Gig, variant, add-on, price, duration, radius, capacity, availability or media to this schema (they live in `provider.*`, keyed by `gig_template_version_id`).
+- Do not migrate a provider Gig to a newer template version silently; adoption is an explicit provider act of a later checkpoint.
 - Do not delete, truncate, rename or re-code a category, service type or prohibited service, and never reuse a retired code.
 - Do not move a service type to another category.
 - Do not put display text, a menu order or a category list in code or configuration.
@@ -110,8 +114,8 @@ Any change to the twelve tables or their guards needs the Data Model Review Gate
 
 ## Related ADRs
 
-ADR-0016, ADR-0021, ADR-0022, ADR-0040, ADR-0041
+ADR-0016, ADR-0021, ADR-0022, ADR-0040, ADR-0041, ADR-0046
 
 ## Last reviewed
 
-2026-10-17 (CAT-002)
+2026-10-18 (CAT-003)

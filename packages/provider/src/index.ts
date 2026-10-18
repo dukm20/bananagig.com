@@ -5,3 +5,7 @@ export * from './types';
 export * from './policy';
 export * from './evaluator';
 export * from './service';
+export * from './gig-errors';
+export * from './gig-types';
+export * from './gig-policy';
+export * from './gig-service';

@@ -2711,9 +2711,11 @@ describe('I. seeded configuration: the six session, MFA and recovery parameters'
     expect(await count('configuration.parameters', "key LIKE 'verification.email.%'")).toBe(8);
     expect(await count('configuration.parameters', "key LIKE 'verification.phone.%'")).toBe(10);
     expect(await count('configuration.parameters', "key LIKE 'consent.%'")).toBe(4);
-    // plus the five provider.registration.* parameters of 0018 (asserted in provider-model.itest.ts) and the six trust.* parameters of 0019 (asserted in trust-model.itest.ts)
-    expect(await count('configuration.parameters', "key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'trust.%'")).toBe(28);
-    expect(await count('configuration.parameters')).toBe(39);
+    // plus the five provider.registration.* parameters of 0018 (asserted in provider-model.itest.ts) the six trust.* parameters of 0019 (asserted in trust-model.itest.ts) and the five provider.gig.* parameters of 0020 (asserted in gig-model.itest.ts)
+    expect(await count('configuration.parameters', "key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'provider.gig.%' AND key NOT LIKE 'trust.%'")).toBe(
+      28,
+    );
+    expect(await count('configuration.parameters')).toBe(44);
   });
 
   it.each(PARAM_SEEDS)(

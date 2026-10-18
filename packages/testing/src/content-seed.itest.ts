@@ -247,8 +247,8 @@ describe('migration 0006 seeded shell copy', () => {
     // migration 0006 seeds no product configuration (migrations 0010 and 0011 seed the verification.email.* and verification.phone.* parameters, tested in
     // email-model.itest.ts and phone-model.itest.ts; migration 0012 seeds the six session, MFA and recovery parameters, tested in security-model.itest.ts;
     // migration 0013 seeds the four consent.* policy parameters, tested in consent-model.itest.ts; migration 0018 seeds the five provider.registration.* policy
-    // parameters, tested in provider-model.itest.ts; migration 0019 seeds the six trust.* evidence policy parameters, tested in trust-model.itest.ts): the parameters that exist
-    // besides those are EXACTLY the twenty-one named here
+    // parameters, tested in provider-model.itest.ts; migration 0019 seeds the six trust.* evidence policy parameters, tested in trust-model.itest.ts; migration 0020 seeds the five provider.gig.* policy parameters, tested
+    // in gig-model.itest.ts): the parameters that exist besides those are EXACTLY the twenty-six named here
     const others = await iso.database.query<{ key: string }>(
       "SELECT key FROM configuration.parameters WHERE key NOT LIKE 'verification.email.%' AND key NOT LIKE 'verification.phone.%' ORDER BY key COLLATE \"C\"",
     );
@@ -257,6 +257,11 @@ describe('migration 0006 seeded shell copy', () => {
       'consent.privacy_policy.required_for',
       'consent.terms_of_service.reacceptance',
       'consent.terms_of_service.required_for',
+      'provider.gig.description.max_length',
+      'provider.gig.max_active',
+      'provider.gig.max_drafts',
+      'provider.gig.short_pitch.max_length',
+      'provider.gig.title.max_length',
       'provider.registration.market_statuses_allowed',
       'provider.registration.max_service_types',
       'provider.registration.min_service_types',

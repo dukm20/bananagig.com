@@ -12,6 +12,10 @@ import {
   CATALOG_EVENTS,
   GIG_TEMPLATE_EVENTS,
   PROVIDER_EVENTS,
+  GIG_EVENTS,
+  GigCreatedPayload,
+  GigVersionPublishedPayload,
+  GigRetiredPayload,
   TRUST_EVENTS,
   TrustCaseEventPayload,
   TrustRequirementEventPayload,
@@ -90,6 +94,7 @@ const app = await buildApp({
   catalog: {},
   gigTemplates: {},
   providerRegistrations: {},
+  providerGigs: {},
   trust: {},
   readiness: async () => ({}),
 });
@@ -431,6 +436,26 @@ const PROVIDER_MESSAGES = {
     'provider_registration',
   ],
 };
+const GIG_MESSAGES = {
+  gigCreated: [
+    'ProviderGigCreated',
+    'A provider created a Gig (identity and its first DRAFT version) from a Gig Template; the version is bound to the exact template version. A Gig is not live and not bookable.',
+    GigCreatedPayload,
+    'provider_gig',
+  ],
+  gigVersionPublished: [
+    'ProviderGigVersionPublished',
+    'A Gig version was published (frozen) and the previous published version, when there was one, was superseded in the same transaction. This does NOT make the provider live or bookable.',
+    GigVersionPublishedPayload,
+    'provider_gig',
+  ],
+  gigRetired: [
+    'ProviderGigRetired',
+    'A provider retired a Gig (terminal): its draft and published versions became RETIRED and the history stays. Nothing is deleted.',
+    GigRetiredPayload,
+    'provider_gig',
+  ],
+};
 const channels = {
   infraPing: {
     address: INFRA_PING_EVENT_TYPE,
@@ -624,6 +649,22 @@ for (const [k, [name, summary, payload, aggregate]] of Object.entries(PROVIDER_M
   };
   schemas[name] = typedEnvelope(type, payload);
 }
+for (const [k, [name, summary, payload, aggregate]] of Object.entries(GIG_MESSAGES)) {
+  const type = GIG_EVENTS[k];
+  channels[`gig_${k}`] = {
+    address: type,
+    description: `${summary} Published through the transactional outbox (aggregate ${aggregate}); the payload carries identifiers only, never a title, a pitch, a description or any provider text.`,
+    messages: { [name]: { $ref: `#/components/messages/${name}` } },
+  };
+  operations[`send${name}`] = { action: 'send', channel: { $ref: `#/channels/gig_${k}` }, summary };
+  messages[name] = {
+    name,
+    title: summary,
+    headers: { type: 'object', properties: { 'x-correlation-id': { type: 'string' } } },
+    payload: { $ref: `#/components/schemas/${name}` },
+  };
+  schemas[name] = typedEnvelope(type, payload);
+}
 for (const [k, [name, summary, payload, aggregate]] of Object.entries(TRUST_MESSAGES)) {
   const type = TRUST_EVENTS[k];
   channels[`trust_${k}`] = {
@@ -646,7 +687,7 @@ const asyncapi = {
     title: 'BananaGig Events',
     version: '1.0.0',
     description:
-      'Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events, the identity account events, the email verification events, the phone verification events, the account security events (sessions, second factor, password reset) the consent events (acceptance and withdrawal of a legal document version) the catalogue events (category and service type activation, market availability) the Gig Template events (activation, pause, retirement, publication of a version, market availability) and the provider registration events (started, completed, cancelled) exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.',
+      'Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events, the identity account events, the email verification events, the phone verification events, the account security events (sessions, second factor, password reset) the consent events (acceptance and withdrawal of a legal document version) the catalogue events (category and service type activation, market availability) the Gig Template events (activation, pause, retirement, publication of a version, market availability) the provider registration events (started, completed, cancelled), the provider verification events and the provider Gig events (created, version published, retired) exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.',
   },
   defaultContentType: 'application/json',
   channels,

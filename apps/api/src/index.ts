@@ -20,7 +20,7 @@ import {
 import { ConfigurationService, ValkeyConfigCache } from '@bananagig/configuration';
 import { ContentService } from '@bananagig/content';
 import { CatalogService, GigTemplateService, createCatalogScopeReferenceValidator } from '@bananagig/catalog';
-import { ProviderRegistrationService } from '@bananagig/provider';
+import { ProviderGigService, ProviderRegistrationService } from '@bananagig/provider';
 import { DisabledEvidenceScanner, DisabledVerificationProvider, FakeEvidenceScanner, FakeVerificationProvider, TrustService } from '@bananagig/trust';
 import { AccountAreaService, AccountService, ConsentService, EmailVerificationService, PhoneVerificationService, SecurityService } from '@bananagig/accounts';
 import {
@@ -36,6 +36,7 @@ import { buildApp } from './app';
 import { createContentSmsRenderer, createPhoneCountryDirectory, createPhonePolicyProvider } from './modules/account/phone-wiring';
 import { composeScopeReferenceValidators, createMarketGate } from './modules/catalog/wiring';
 import { createAccountPort, createCatalogPort, createConsentPort, createMarketPort, createProviderPolicyProvider } from './modules/provider/wiring';
+import { createGigPolicyProvider, createGigPrerequisites, createGigTemplatePort } from './modules/provider/gig-wiring';
 import { createProviderContextPort, createTrustPolicyProvider, createTrustPrerequisites } from './modules/trust/wiring';
 import { createConsentPolicyProvider, createDefaultLocaleResolver } from './modules/consent/wiring';
 import { createKeycloakSecurityIdentityProvider, createSecurityPolicyProvider, createUnavailableSecurityIdentityProvider } from './modules/security/wiring';
@@ -203,7 +204,7 @@ const accountArea = new AccountAreaService({ database });
 
 // The provider registration (PRO-001): the registration of an account that wants to become a provider. A provider is the SAME account; the contact, consent, market and catalogue
 // state it composes are read through ports over their owning services (no package imports another), the policy from the configuration registry, and its `verification` step is
-// answered by the verification domain (TRUST-001); subscription, profile and Gigs report NOT_AVAILABLE until their checkpoints exist. It shares the `database` of the account
+// answered by the verification domain (TRUST-001); subscription and profile report NOT_AVAILABLE until their checkpoints exist, and its `gigs` step is answered by the Gig domain (CAT-003). It shares the `database` of the account
 // service, so the role request joins its transaction.
 const providerAccountPort = createAccountPort(accounts);
 const providerPolicy = createProviderPolicyProvider(configuration);
@@ -220,6 +221,16 @@ const trust = new TrustService({
   scanner: cfg.trust.scanner === 'fake' ? new FakeEvidenceScanner() : new DisabledEvidenceScanner(),
   external: cfg.trust.externalProvider === 'fake' ? new FakeVerificationProvider() : new DisabledVerificationProvider(),
 });
+
+// The provider Gigs (CAT-003): the offers of a provider, built from the platform-owned Gig Templates. The template facts are read through a port over the Gig Template service (an
+// EXACT version: a Gig keeps the one it was built from), the policy from the configuration registry, the account facts through the same account port as the registration. The Gig
+// service reads the registration state in its own tables (nothing is injected from the registration), so the registration's `gigs` step can be answered by it without a cycle.
+const providerGigs = new ProviderGigService({
+  database,
+  accounts: providerAccountPort,
+  templates: createGigTemplatePort(gigTemplates),
+  policy: createGigPolicyProvider(configuration),
+});
 const providerRegistrations = (registrations.current = new ProviderRegistrationService({
   database,
   accounts: providerAccountPort,
@@ -227,7 +238,7 @@ const providerRegistrations = (registrations.current = new ProviderRegistrationS
   markets: createMarketPort(geography),
   catalog: createCatalogPort(catalog),
   policy: providerPolicy,
-  prerequisites: createTrustPrerequisites(trust),
+  prerequisites: createTrustPrerequisites(trust, createGigPrerequisites(providerGigs)),
 }));
 
 const app = await buildApp({
@@ -246,6 +257,7 @@ const app = await buildApp({
   catalog,
   gigTemplates,
   providerRegistrations,
+  providerGigs,
   trust,
   // Critical for serving requests: Postgres only. Valkey/NATS/OpenSearch/flagd outages must not take the API down.
   readiness: async () => ({ postgres: (await database.health()).ok ? 'up' : 'down' }),

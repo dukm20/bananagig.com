@@ -123,3 +123,4 @@ export * from './catalog';
 export * from './gig-template';
 export * from './provider';
 export * from './trust';
+export * from './gig';

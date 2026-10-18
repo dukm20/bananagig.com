@@ -4373,6 +4373,132 @@ describe("documented behaviour (not necessarily desired): the service inside a c
 });
 
 // ====================================================================== 16. shape and privacy
+describe('exact-version reads for the provider Gig (CAT-003)', () => {
+  it('getGigTemplateVersionById returns the exact version with the template, service type and category facts, the field identities and the requirements, whatever the status', async () => {
+    const env = await mkEnv();
+    const c = await mkPublic(env);
+    const v1 = await versionRow(c, 1);
+    const view = await bare.getGigTemplateVersionById(v1.gig_template_version_id as string);
+    expect(view).toMatchObject({
+      code: c,
+      templateStatus: 'ACTIVE',
+      serviceTypeCode: env.st,
+      serviceTypeStatus: 'ACTIVE',
+      categoryCode: env.category,
+      nameContentKey: nameKey(c),
+      descriptionContentKey: null,
+      instructionsContentKey: null,
+    });
+    expect(view.gigTemplateId).toBe((await templateRow(c)).gig_template_id);
+    expect(view.version).toMatchObject({
+      gigTemplateVersionId: v1.gig_template_version_id,
+      versionNumber: 1,
+      status: 'ACTIVE',
+      duration: { minMinutes: 60, maxMinutes: 240, suggestedMinutes: 120 },
+      pricingModels: ['FIXED', 'BUNDLE_ELIGIBLE'],
+    });
+    expect(view.fields.map((f) => f.fieldKey)).toEqual(['scope_notes', 'finish', 'vehicles', 'photos', 'intro', 'is_mobile']);
+    const stored = await fieldRows(c, 1);
+    for (const f of view.fields) expect(f.gigTemplateFieldId).toBe(stored.find((r) => r.field_key === f.fieldKey)!.gig_template_field_id);
+    const finish = view.fields.find((f) => f.fieldKey === 'finish')!;
+    expect(finish.options.map((o) => [o.optionCode, o.isDefault])).toEqual([
+      ['wax', true],
+      ['sealant', false],
+      ['ceramic', false],
+    ]);
+    expect(view.fields.find((f) => f.fieldKey === 'vehicles')).toMatchObject({
+      minNumber: 1,
+      maxNumber: 4,
+      behavior: 'PROVIDER_REQUIRED',
+      fieldType: 'INTEGER',
+    });
+    expect(view.requirements).toEqual([
+      { requirementType: 'LICENSE', referenceCode: null },
+      { requirementType: 'SKILL', referenceCode: 'wax_application' },
+    ]);
+    // a superseded version is still returned, with its own status, and the newer one is a different version
+    await createDraft(c, 1);
+    const v2 = await publish(c, 2, (await versionRow(c, 2)).revision as number);
+    expect((await bare.getGigTemplateVersionById(v1.gig_template_version_id as string)).version.status).toBe('SUPERSEDED');
+    expect((await bare.getGigTemplateVersionById(v2.gigTemplateVersionId)).version).toMatchObject({ versionNumber: 2, status: 'ACTIVE' });
+    // a retired template reports the identity status and the retired version
+    await setTpl(c, 'RETIRED');
+    const retired = await bare.getGigTemplateVersionById(v2.gigTemplateVersionId);
+    expect(retired.templateStatus).toBe('RETIRED');
+    expect(retired.version.status).toBe('RETIRED');
+    // an INACTIVE service type is reported as such
+    await setSt(env.st, 'INACTIVE');
+    expect((await bare.getGigTemplateVersionById(v2.gigTemplateVersionId)).serviceTypeStatus).toBe('INACTIVE');
+    await setSt(env.st, 'ACTIVE');
+  });
+
+  it('getGigTemplateVersionById is GIG_TEMPLATE_VERSION_NOT_FOUND for an unknown or malformed id, without touching the database for a malformed one', async () => {
+    await expectError(bare.getGigTemplateVersionById('00000000-0000-4000-8000-000000000000'), 'GIG_TEMPLATE_VERSION_NOT_FOUND');
+    const before = statements.length;
+    for (const bad of ['', 'x', "1' OR '1'='1", '00000000-0000-4000-8000-00000000000g', undefined as unknown as string, 7 as unknown as string])
+      await expectError(bare.getGigTemplateVersionById(bad), 'GIG_TEMPLATE_VERSION_NOT_FOUND');
+    expect(statements.length).toBe(before);
+  });
+
+  it('the read is one consistent snapshot: frame, version, fields, options, requirements, field ids, commit; it only reads', async () => {
+    const env = await mkEnv();
+    const c = await mkPublic(env);
+    const id = (await versionRow(c, 1)).gig_template_version_id as string;
+    const r = await counting(() => bare.getGigTemplateVersionById(id));
+    expect(r.sql[0]).toBe('start transaction isolation level repeatable read read only');
+    expect(r.sql.at(-1)).toBe('commit');
+    expect(r.sql).toHaveLength(7);
+    expect(r.sql.join('\n')).not.toMatch(/\b(insert|update|delete)\b|\bfor\s+(update|share|no key update|key share)\b/i);
+    expect(r.gate).toEqual([]);
+  });
+
+  it('getGigTemplateStructure returns the ACTIVE version, else the newest version that is not a draft, else not found', async () => {
+    const env = await mkEnv();
+    const c = await mkPublic(env);
+    expect((await bare.getGigTemplateStructure(c)).version).toMatchObject({ versionNumber: 1, status: 'ACTIVE' });
+    // a draft v2 is never returned
+    await createDraft(c, 1);
+    expect((await bare.getGigTemplateStructure(c)).version.versionNumber).toBe(1);
+    await publish(c, 2, (await versionRow(c, 2)).revision as number);
+    expect((await bare.getGigTemplateStructure(c)).version).toMatchObject({ versionNumber: 2, status: 'ACTIVE' });
+    // retired: the newest non-draft version (RETIRED) is returned so a caller can say why
+    await setTpl(c, 'RETIRED');
+    const r = await bare.getGigTemplateStructure(c);
+    expect(r).toMatchObject({ templateStatus: 'RETIRED', version: { versionNumber: 2, status: 'RETIRED' } });
+    // a template that never published a version, and an unknown code, are not found
+    const empty = await mkTemplate(env.st);
+    await expectError(bare.getGigTemplateStructure(empty), 'GIG_TEMPLATE_NOT_FOUND');
+    await expectError(bare.getGigTemplateStructure('devtest_nope'), 'GIG_TEMPLATE_NOT_FOUND');
+  });
+
+  it('isGigTemplateEnabledInMarket reflects the availability row only and is false for an unknown market, template or malformed id', async () => {
+    const env = await mkEnv();
+    const c = await mkPublic(env);
+    const id = (await templateRow(c)).gig_template_id as string;
+    expect(await bare.isGigTemplateEnabledInMarket(env.market, id)).toBe(true);
+    await tplAvail(env.market, c, false);
+    expect(await bare.isGigTemplateEnabledInMarket(env.market, id)).toBe(false);
+    await tplAvail(env.market, c, true);
+    expect(await bare.isGigTemplateEnabledInMarket(env.market, id)).toBe(true);
+    const other = await mkMarket();
+    expect(await bare.isGigTemplateEnabledInMarket(other, id)).toBe(false);
+    expect(await bare.isGigTemplateEnabledInMarket('nope', id)).toBe(false);
+    expect(await bare.isGigTemplateEnabledInMarket(env.market, 'not-a-uuid')).toBe(false);
+    expect(await bare.isGigTemplateEnabledInMarket(env.market, '00000000-0000-4000-8000-000000000000')).toBe(false);
+  });
+
+  it('the new reads write nothing', async () => {
+    const env = await mkEnv();
+    const c = await mkPublic(env);
+    const id = (await versionRow(c, 1)).gig_template_version_id as string;
+    const before = await worldHash();
+    await bare.getGigTemplateVersionById(id);
+    await bare.getGigTemplateStructure(c);
+    await bare.isGigTemplateEnabledInMarket(env.market, (await templateRow(c)).gig_template_id as string);
+    expect(await worldHash()).toBe(before);
+  });
+});
+
 describe('shape and privacy', () => {
   it('nothing provider-specific exists in the schema: the Gig Template tables hold exactly these columns (no price, floor price, chosen duration, radius, area, pitch, photo, capacity, variant, add-on, provider)', async () => {
     const cols = await q<{ table_name: string; columns: string[] }>(
