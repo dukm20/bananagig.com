@@ -827,7 +827,8 @@ describe('create, edit, publish, supersede, retire', () => {
     expect(types).toEqual(expect.arrayContaining([GIG_EVENTS.gigCreated, GIG_EVENTS.gigVersionPublished, GIG_EVENTS.gigRetired]));
     expect(events.filter((e: Json) => e.event_type === GIG_EVENTS.gigVersionPublished)).toHaveLength(2);
     for (const e of events) expect(e.aggregate_type).toBe('provider-gig');
-    const blob = JSON.stringify([audit, events]);
+    // random uuids (correlation ids, row ids) can contain any short digit run such as 5000 by chance: they are identifiers, not text values, so they are removed before the scan
+    const blob = JSON.stringify([audit, events]).replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, '<uuid>');
     for (const mark of [TEXT_MARK, 'sparkling', '4500', '5000']) expect(blob, mark).not.toContain(mark);
   });
 });

@@ -103,10 +103,14 @@ Any change to the ten tables or their guards needs the Data Model Review Gate an
 - Do not import another domain package from `@bananagig/trust`; add a port.
 - Do not edit an applied migration.
 
+### Public trust badges (PRO-002, ADR-0048)
+
+- A customer-facing badge is DERIVED, never stored: `TrustService.publicBadgeTypes(accountId, allowedTypes, now?)` returns requirement TYPE codes only, for types in `provider.profile.public_badge_types` whose current (non-cancelled case) non-superseded requirement is APPROVED and not expired by `effectiveStatus` at read time, in ONE statement with no cache. Nothing else (document type, number, dates, reasons, counts, ids, reviewer notes) may leave the trust package for a public surface. An expiring approval stops producing the badge on the next read; do not add a `verified` column anywhere.
+
 ## Related ADRs
 
-ADR-0042, ADR-0043, ADR-0044, ADR-0045
+ADR-0042, ADR-0043, ADR-0044, ADR-0045, ADR-0048
 
 ## Last reviewed
 
-2026-10-18 (TRUST-001)
+2026-10-18 (PRO-002)

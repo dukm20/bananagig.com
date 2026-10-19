@@ -1735,3 +1735,103 @@ Use `cp -Rc` for `node_modules`; run a sentinel mutant first. LRN-0065's worktre
 
 ### Evidence
 The red-team probes under the session scratchpad, and the mutation campaign notes in the CAT-004 entry of `docs/project/IMPLEMENTATION_HISTORY.md`.
+
+## LRN-0070 — An allow-list of container parts is not a sanitiser until every kept part is validated and rewritten to canonical form
+
+Date: 2026-10-18
+Checkpoint: PRO-002
+Domain: security
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0048
+Related skill: skills/provider/SKILL.md
+
+### Context
+The public profile photo is served as sanitised bytes because stored originals keep EXIF and GPS. The first sanitiser dropped the well-known metadata parts (EXIF, XMP, IPTC, comments, text chunks, trailing data) and KEPT a short list of parts by name: JFIF, ICC, Adobe, DQT, `pHYs`, `iCCP`, `VP8X`, `ANMF`. Its own fixtures proved the dropped parts were gone. An adversarial review then put secrets INSIDE the kept parts and they were published: a thumbnail after the JFIF header, text after an ICC or Adobe payload, a comment marker flipped into a frame marker, extra bytes in `VP8X`, a nested `EXIF` chunk inside an animation frame.
+
+### Learning
+Keeping a part by name copies its payload verbatim, so each kept part needs its exact layout checked (fixed lengths, table structure, sequence counts, size caps) and, where possible, rewritten to a canonical form (a JFIF header with a zero-size thumbnail); recurse into containers (animation frames); drop what is unrecognised and refuse what is structural and invalid. Each test needs a positive control (the input really contains the secret). Run the sanitiser over a large set of REAL files before trusting a strict allow-list: 360 real JPEG, PNG and WebP files on the development machine decoded to the same dimensions, and the only refusals were Apple's proprietary `CgBI` PNGs.
+
+### Why it matters
+A sanitiser that passes its own tests and leaks through the kept parts gives false assurance on a public, anonymous endpoint.
+
+### Reuse rule
+When a pipeline strips metadata by allow-list, add one hostile fixture per kept part, and run a real-file corpus (accepted count, refusal reasons, decode and dimension comparison) when the allow-list changes.
+
+### Evidence
+`packages/provider/src/image-sanitize.ts` and `image-sanitize.test.ts` (positive controls per kept part), `docs/engineering/PROVIDER_PUBLIC_PROFILE.md`, and the PRO-002 security review recorded in `IMPLEMENTATION_HISTORY.md`.
+
+## LRN-0071 — A hide or unpublish path must succeed with every other domain down
+
+Date: 2026-10-18
+Checkpoint: PRO-002
+Domain: process
+Status: ACTIVE
+Supersedes: none
+Related ADR: ADR-0048
+Related skill: skills/provider/SKILL.md
+
+### Context
+The first profile service built the owner's answer (badge facts, fallback name, photo types, limits) BEFORE the transaction, so making a public profile private failed with `UNAVAILABLE` whenever the trust port, the names port or the policy read was down. Hiding a profile is the exposure-control action.
+
+### Learning
+Do the state change with the minimum reads it needs, then compose the answer after the commit and degrade the optional derived fields instead of failing a committed change. Reading other domains first is acceptable for actions that expose (publish) and must fail closed.
+
+### Why it matters
+During a trust or identity outage an owner could not take a profile down, which is the one moment that matters.
+
+### Reuse rule
+For any exposure-reducing mutation, add a test that fails each dependency in turn and still expects the change to commit.
+
+### Evidence
+`packages/provider/src/profile-service.ts` (`mutate`), the dependency-failure tests in `packages/provider/src/profile.itest.ts`.
+
+## LRN-0072 — A concurrency test that carries the guard's own predicate cannot fail the guard
+
+Date: 2026-10-18
+Checkpoint: PRO-002
+Domain: testing
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/testing/SKILL.md
+
+### Context
+The model test for the revision guard raced two `UPDATE ... WHERE revision = 1` statements. Under READ COMMITTED the loser re-evaluates the predicate, sees zero rows and is "accepted", so the database guard that demands `revision = OLD + 1` was never reached; the assertion would have passed with the guard deleted.
+
+### Learning
+To test a database guard, send the statement WITHOUT the predicate the application normally adds, make the second session block on the row lock, and assert the guard's rule key when the first commits. Prove the test can fail by replacing the guard function with a no-op in a private database and watching the race end in a silent overwrite.
+
+### Why it matters
+A guard test that passes with the guard removed is decoration.
+
+### Reuse rule
+Every guard test in `packages/testing` should be mutation-checked once (guard replaced by a no-op) and say so.
+
+### Evidence
+`packages/testing/src/provider-profile-model.itest.ts` (`staleWriter` and the no-op companion test).
+
+## LRN-0073 — Wall-clock ratio tests need repeated samples and bounded retries, and the scaling should be measured directly when one fails
+
+Date: 2026-10-18
+Checkpoint: PRO-002
+Domain: testing
+Status: ACTIVE
+Supersedes: none
+Related ADR: none
+Related skill: skills/testing/SKILL.md
+
+### Context
+The sanitiser's "linear time" tests compare the time for 1x and 8x input. They passed alone and failed once (0.5 ms against 40 ms) while the whole workspace tested in parallel. Measuring the same shape at 1x, 2x, 4x, 8x, 16x and 32x gave 0.50, 0.91, 1.78, 3.57, 7.21 and 14.30 ms: the code is linear and the failure was a scheduling spike.
+
+### Learning
+Take many samples and the minimum, allow a few attempts and keep the threshold (a quadratic implementation fails every attempt), and when such a test fails first measure the scaling curve before changing the code or the threshold.
+
+### Why it matters
+Both "loosen the threshold" and "ignore the flake" hide a real regression sooner or later.
+
+### Reuse rule
+Use the attempts-with-best-ratio shape of `assertLinear` for any scaling test that must run inside the parallel `pnpm test`.
+
+### Evidence
+`packages/provider/src/image-sanitize.test.ts` (`assertLinear`).

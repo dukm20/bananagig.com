@@ -1242,3 +1242,72 @@ Four new tables, one new column on a catalogue table, one widened audit CHECK, s
 
 ### CAT-004 hardening (0022)
 Reviewed after three independent reviews; forward migration `0022_gig_media_hardening.sql`. No new table. `provider.media_assets` gains two nullable timestamps (`objects_removed_at`, `upload_key_removed_at`): facts about the private store, one-way, bounded by CHECKs, and the only columns a terminal asset still accepts; they are not derivable from the status (see the 3NF table) and they keep two partial indexes self-emptying. `object_key` is now checked against its derivation. `gig_version_variants` and `gig_version_add_ons` are never updated (`NO_UPDATE`): the set is replaced by delete and insert, which keeps the rows free of update anomalies and makes the consumer rule (`(gig_version_id, item_key)`, never the row id) the only stable reference. 1NF to BCNF are unchanged: the two added columns depend on the whole key `media_asset_id` and no determinant changed. Index changes: `idx_media_assets__account_status` became `idx_media_assets__account`, `idx_media_assets__ready_at` was dropped (honest debt above), two partial indexes were added.
+
+## PRO-002
+
+Date: 2026-10-18
+
+Tables reviewed: new, in the existing schema `provider`: `public_profiles`, `profile_audit_events`. Changed: `provider.media_assets` (one column, `purpose`) and the functions `provider.guard_media_assets` and `provider.guard_gig_version_media` (references and purpose only; no key or determinant changed). Reused WITHOUT change: `identity.accounts` (the owner, by id), `provider.media_assets` (the bytes of the photo, referenced by id), and, only at READ time and never copied, `identity.account_profiles` (the fallback name), the trust case tables (badges), `provider.gigs` / `gig_versions` and their children (Gig cards) and `provider.registrations` with `geography.markets` (the market).
+
+### 1NF
+PASS. Every column is an atomic scalar (`uuid`, `text`, `integer`, `timestamptz`). The profile stores no array, no list and no delimited value: the photo is one nullable reference, the pending upload is a second nullable reference (at most one unfinished upload is a design limit, not a repeating group), and the badge list is NOT a column (it is derived on read and the allowed types are configuration). The only JSON value is the audit `changes` object, an object of identifiers read back whole, never queried relationally.
+
+### 2NF
+PASS. `public_profiles` and `profile_audit_events` have single-column surrogate keys (`public_profile_id`, `audit_event_id`). The other candidate key of the profile, `account_id`, is single-column. Every non-key column is a fact about THIS profile: the name, bio, photo references, visibility, revision and timestamps. No composite key exists, so no partial dependency is possible.
+
+### 3NF
+PASS with documented lifecycle redundancy. The pairs checked:
+
+| Table | Pair checked | Verdict |
+|---|---|---|
+| `public_profiles` | `visibility_status` against `published_at` | `published_at` is the time of the latest PRIVATE to PUBLIC change; its nullness is determined by the status (`ck_public_profiles__lifecycle`). It is a lifecycle timestamp (the same shape as `completed_at` on a registration), maintained by the guard and never accepted from a caller, so it cannot disagree with the status |
+| `public_profiles` | `account_id` against the shown name | the fallback public name (first name and last initial) is a function of `identity.account_profiles` and is NOT stored; only the provider's own display name is stored. No transitive dependency, no copy that can go stale when the person edits their name |
+| `public_profiles` | `photo_asset_id` against the asset's facts (type, size, dimensions, hash, key) | the facts live on `provider.media_assets` and are reached through the reference; nothing about the file is repeated on the profile |
+| `public_profiles` | the profile against trust badges, Gig cards, market | none stored: derived on every read from the owning domain (the badge needs the CURRENT, APPROVED, unexpired requirement; a stored flag would outlive an expiry) |
+| `public_profiles` | `revision` against the content columns | a technical concurrency token, not a count or hash of the content; raised exactly by the guard |
+| `profile_audit_events` | `account_id` against `public_profile_id` | the account is the owner of the profile at the time of the event (derivable from the profile) and is repeated so a trail reads per account; `AUDIT_MISMATCH` checks the pair at insert and the row is immutable, so it cannot drift |
+| `media_assets` | `purpose` against the referrers | the purpose is a fact about the FILE (what it was authorized for), stored once and immutable; the two referrers (`gig_version_media`, `public_profiles`) are each guarded to accept only their purpose, so the pair is enforced, not repeated |
+
+No transitive dependency remains among the stored columns.
+
+### BCNF
+PASS. Determinants: `public_profile_id` and `account_id` (two candidate keys) in `public_profiles`; `audit_event_id` in `profile_audit_events`. Every determinant is a candidate key. The partial indexes on the photo pointers are not keys and impose no functional dependency; `ck_public_profiles__photo_distinct` only forbids the same asset in both pointers.
+
+### Duplicate concepts examined (the challenged choices)
+- PUBLIC ID versus ACCOUNT ID: two identifiers. The account id is internal and appears in logs, audit and other tables; exposing it in a URL would turn every public page into an account enumeration and correlation handle. A separate random `public_profile_id` (not derived from the account or the name) is the only public identifier and can be rotated or retired by a future migration without touching identity. The cost is one extra unique key (`account_id`), which is also the owner lookup.
+- DERIVED BADGES versus a stored flag or table: derived. A badge is true only while the CURRENT case has an APPROVED, unexpired requirement of a listed type; storing `is_verified` or a badge row would have to be invalidated by every expiry, rejection, supersession and configuration change, and a stale one is a false public claim. The read pays a bounded number of statements instead: the profile service's own statement count is pinned at 1 by its test; the statement counts of the per-adapter ports (trust summary, Gigs, market, account name) are NOT pinned.
+- DERIVED Gig SUMMARIES versus a copied card: derived. A card copied from a Gig would outlive a retirement or a price change. The profile reads ACTIVE Gigs with a PUBLISHED version; nothing about a Gig is stored on the profile.
+- PHOTO AS AN ASSET REFERENCE versus a URL, a key or a second upload table: reference to `provider.media_assets`. The asset pipeline (integrity checks, scan, promotion, reference-aware clean-up) already exists and is the only thing allowed to touch bytes; a second subsystem would duplicate P0 code, and trust evidence is not reused (a different retention and visibility rule).
+- TWO PHOTO POINTERS (`photo_asset_id`, `pending_photo_asset_id`) versus one pointer plus a status or a child table: two pointers. They make "the photo customers see" and "the upload in flight" independent facts, so a failed or abandoned upload never changes what is public, the replacement is one atomic pointer move, and the at-most-one-pending rule is structural. A child table of photos would permit history nobody asked for; the old photo simply becomes an orphan the clean-up removes. The pointers differ (CHECK), belong to the profile's account and have the right status and purpose (guard).
+- VISIBILITY AS TWO STATES versus a boolean or more states: a text status with two values (`PRIVATE`, `PUBLIC`). A boolean cannot be extended without a rewrite when moderation adds a state; a SUSPENDED or HIDDEN value is NOT added because nothing can reach it (the next state is added by a forward migration that has a use for it). `published_at` is a lifecycle timestamp, not a second source of truth.
+- ASSET PURPOSE versus a separate asset table or a naming convention: one immutable column. The purpose is enforced in both guards, so a profile photo can never be attached to a Gig and the reverse, without duplicating the table or the clean-up.
+- JSON for the profile: none. Typed columns keep the CHECKs (non-blank, NFC, ceilings) and the foreign keys in the database. The audit `changes` object is the only JSON value (identifiers read back whole), bounded to 2000 characters.
+- A stored public name, slug or "first name and last initial": NOT stored. The fallback is derived on read from the account profile so it follows a legal-name edit without a backfill, and the legal/full name is never shown. A slug is out of scope.
+- Ratings, reviews, service areas, availability, BananaDrop offers, moderation state: none stored (later checkpoints); the contract carries `ratings` and `drops` as `available: false` placeholders only.
+- Policy values (name and bio limits, required flags, photo size cap, the badge-type list, the eligibility gate) as columns or constants: NOT stored. They are 7 configuration parameters (CFG-001) read fresh by the service, which fails closed; two of them are CRITICAL. The CHECK ceilings (100, 5000) are structural integrity bounds, not policy. Display text: NOT stored; 78 content entries (CFG-002). The provider's name and bio are provider data stored on the row, never as content, and never in audit, events or logs.
+
+### Derived fields examined
+Stored although derivable: `published_at` (from the latest visibility change), `updated_at` (maintained by the guard) and `profile_audit_events.account_id` (the profile's owner). Everything a customer sees beyond the name and bio is NOT stored: the fallback public name, every badge, every Gig card, the market, the ratings and drops placeholders. Nothing is a count or a sum.
+
+### Intentional denormalization
+None beyond the lifecycle redundancy above (`published_at` next to the status, guarded by the CHECK and the guard) and the owner repeated on the audit row (guarded by `AUDIT_MISMATCH`, immutable). Recorded in `DATA_MODEL.md`.
+
+### Index review
+- `pk_public_profiles (public_profile_id)`: THE public lookup, one row by opaque id.
+- `uq_public_profiles__account (account_id)`: the one-profile-per-account rule, THE owner lookup (every owner read and mutation filters by account) and the support of the foreign key to the account (its leading column); no second index on `account_id`.
+- `idx_public_profiles__photo_asset (photo_asset_id) WHERE photo_asset_id IS NOT NULL` and `idx_public_profiles__pending_photo_asset (pending_photo_asset_id) WHERE pending_photo_asset_id IS NOT NULL` (partial): the support of the two foreign keys to the asset AND the reference lookups of the asset guard (is this asset a profile photo or a pending upload?), the reference-aware orphan sweep and the expired-pending sweep. Partial because most profiles have no pending upload and many no photo; the lookups are equalities, which imply NOT NULL. The model test proves only that each index CAN serve its predicate (EXPLAIN with enable_seqscan off on a near-empty table); it does not prove the planner's choice at volume, which gets a measured review when the tables are large.
+- `idx_profile_audit_events__profile (public_profile_id, occurred_at)`: the history of ONE profile in time order and the support of the foreign key to the profile (its leading column).
+- Foreign key deliberately WITHOUT a supporting index: `profile_audit_events.account_id` (accounts are never deleted and the trail is read per profile; the owner lookup of an account goes through `uq_public_profiles__account`).
+- NOT created: a partial index on `visibility_status = 'PUBLIC'`. Nothing lists, searches or counts public profiles (SEARCH and PRO-003 come later) and the one public read is by primary key. A listing index gets its own review when that query exists (speculative search indexes are refused).
+- Unchanged for the asset: `idx_media_assets__account`, the three partial sweep indexes and `uq_media_assets__object_key`; the new `purpose` column is not indexed (no query filters on it alone: the sweeps read the asset, the references, not the purpose).
+
+### Final decision
+Two new tables, one new immutable column on an existing table, two replaced guards and three new functions, two partial reference indexes, one audit index, a presentation aggregate with its own opaque public id, derived trust, Gig, name and market data, a photo by reference with two independent pointers, a two-state visibility, a purpose that separates profile and Gig photos in both guards, and seven configuration parameters and 78 copy entries (all values flagged as assumptions in the migration header). Migration risk is low: additive, the new column has a constant default, and the replaced guards behave identically for every row that exists. Backfill: none. Rollback: forward-fix only.
+
+### PRO-002 copy addition (0025): content only, no schema change
+Migration `0025_provider_profile_copy_fix.sql` adds seven `provider.profile.*` content entries through the real content lifecycle (correlation `seed-0025`). No table, column, constraint, index, function or trigger changes, so 1NF to BCNF, the index review and the final decision above are unchanged. Copy is not stored on the profile; the new entries are registry data (CFG-002) like the 78 of 0024.
+
+### PRO-002 accepted behaviours (review; no schema change)
+- A PUBLIC profile stays PUBLIC in storage while the read-time conditions (ACTIVE account, ACTIVE provider role, COMPLETED registration, optional marketplace eligibility) hide it, and reappears when they hold again. `visibility_status` is the owner's preference; eligibility is derived on every read and deliberately not stored, so there is nothing to repair when a role or registration is restored.
+- A photo authorization and the clean-up sweeps change `pending_photo_asset_id`, and the service raises the profile revision when they do (the guard allows keeping it or raising it by one for a pending-only change). An open owner page can therefore hold a stale revision after a sweep and receives 409 STALE_PROFILE on its next write.
+- The orphan-sweep grace period runs from the asset's `ready_at` (0021, 0022), not from the moment the pointer was cleared or moved: a replaced photo that has been READY for longer than the grace is removable at once.

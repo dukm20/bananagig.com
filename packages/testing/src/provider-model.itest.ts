@@ -41,7 +41,8 @@ import { createIsolatedDatabase, createTestPool, migrationsDir, rejection, sleep
 // Since 0020 (CAT-003) the same schema also holds the four Gig tables, their functions, triggers and indexes (all named with `gig`); they are asserted in gig-model.itest.ts. Every
 // schema-wide count or list below is scoped to the PRO-001 objects (relation, index, trigger, constraint and function names without `gig`).
 // Since 0021 (CAT-004) it also holds provider.gig_version_variants, provider.gig_version_add_ons, provider.gig_version_media and provider.media_assets (asserted in gig-options-media-model.itest.ts); the first three are
-// named with `gig`, media_assets is excluded by name explicitly, so every filter below reads `!~ '(gig|media_assets)'`.
+// named with `gig`, media_assets is excluded by name explicitly, so every filter below reads `!~ '(gig|media_assets|profile)'`.
+// Since 0024 (PRO-002) it also holds provider.public_profiles and provider.profile_audit_events with their functions, triggers and indexes (asserted in provider-profile-model.itest.ts); every object name holds `profile`, so the same filters exclude them.
 const GIG_TABLES = [
   'provider.gigs',
   'provider.gig_versions',
@@ -51,6 +52,8 @@ const GIG_TABLES = [
   'provider.gig_version_add_ons',
   'provider.gig_version_media',
   'provider.media_assets',
+  'provider.public_profiles',
+  'provider.profile_audit_events',
 ];
 const MUTANT_DIR = process.env.PROVIDER_MODEL_MIGRATIONS_DIR;
 const MIGRATION_18 = '0018_provider_registration.sql';
@@ -673,14 +676,14 @@ describe('A. schema shape: three tables, three functions and six triggers in a n
     expect(
       (
         await q<{ table_name: string }>(
-          "SELECT table_name FROM information_schema.tables WHERE table_schema = 'provider' AND table_type = 'BASE TABLE' AND table_name !~ '(gig|media_assets)' ORDER BY 1",
+          "SELECT table_name FROM information_schema.tables WHERE table_schema = 'provider' AND table_type = 'BASE TABLE' AND table_name !~ '(gig|media_assets|profile)' ORDER BY 1",
         )
       ).map((r) => r.table_name),
     ).toEqual(['audit_events', 'registration_service_types', 'registrations']);
     // every relation of the schema: three ordinary tables and five indexes (3 primary keys + 2 unique keys on registrations, one of them partial); nothing else
     expect(
       await q(
-        "SELECT relkind, count(*)::int AS n FROM pg_class WHERE relnamespace = 'provider'::regnamespace AND relname !~ '(gig|media_assets)' GROUP BY 1 ORDER BY 1",
+        "SELECT relkind, count(*)::int AS n FROM pg_class WHERE relnamespace = 'provider'::regnamespace AND relname !~ '(gig|media_assets|profile)' GROUP BY 1 ORDER BY 1",
       ),
     ).toEqual([
       { relkind: 'i', n: 5 },
@@ -743,7 +746,7 @@ describe('A. schema shape: three tables, three functions and six triggers in a n
 
   it('has 17 primary key, unique, foreign key and check constraints (3 + 1 + 5 + 8) and no exclusion constraint, and no table has a NOT NULL beyond the columns documented', async () => {
     const n = await q<{ contype: string; n: number }>(
-      "SELECT c.contype, count(*)::int AS n FROM pg_constraint c WHERE c.connamespace = 'provider'::regnamespace AND c.conrelid::regclass::text !~ '(gig|media_assets)' GROUP BY 1 ORDER BY 1",
+      "SELECT c.contype, count(*)::int AS n FROM pg_constraint c WHERE c.connamespace = 'provider'::regnamespace AND c.conrelid::regclass::text !~ '(gig|media_assets|profile)' GROUP BY 1 ORDER BY 1",
     );
     expect(n).toEqual([
       { contype: 'c', n: 8 },
@@ -776,11 +779,13 @@ describe('A. schema shape: three tables, three functions and six triggers in a n
   it('has exactly five indexes in the schema, one of them partial, none on market_id, service_type_id, the audit registration, a status alone or a timestamp (the documented deliberate omissions)', async () => {
     expect(Object.values(INDEX_DEFS).reduce((a, d) => a + Object.keys(d).length, 0)).toBe(5);
     expect(
-      await q("SELECT indexname FROM pg_indexes WHERE schemaname = 'provider' AND indexdef ~ ' WHERE ' AND indexname !~ '(gig|media_assets)' ORDER BY 1"),
+      await q(
+        "SELECT indexname FROM pg_indexes WHERE schemaname = 'provider' AND indexdef ~ ' WHERE ' AND indexname !~ '(gig|media_assets|profile)' ORDER BY 1",
+      ),
     ).toEqual([{ indexname: 'uq_registrations__live' }]);
     expect(
       await q(
-        "SELECT indexname FROM pg_indexes WHERE schemaname = 'provider' AND (indexdef ~ 'INCLUDE' OR indexdef ~ '(market_id|created_at|updated_at|completed_at|cancelled_at|occurred_at|actor|action|revision|changes)') AND indexname !~ '(gig|media_assets)'",
+        "SELECT indexname FROM pg_indexes WHERE schemaname = 'provider' AND (indexdef ~ 'INCLUDE' OR indexdef ~ '(market_id|created_at|updated_at|completed_at|cancelled_at|occurred_at|actor|action|revision|changes)') AND indexname !~ '(gig|media_assets|profile)'",
       ),
     ).toEqual([]);
     // the foreign key columns WITHOUT a supporting index are exactly the three the migration documents (never-deleted targets, no filtered query on the referencing column)
@@ -788,7 +793,7 @@ describe('A. schema shape: three tables, three functions and six triggers in a n
       (
         await q<{ tbl: string; conname: string }>(
           `SELECT conrelid::regclass::text AS tbl, conname FROM pg_constraint c
-          WHERE contype = 'f' AND connamespace = 'provider'::regnamespace AND conname !~ '(gig|media_assets)'
+          WHERE contype = 'f' AND connamespace = 'provider'::regnamespace AND conname !~ '(gig|media_assets|profile)'
             AND NOT EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.conrelid AND i.indkey[0] = c.conkey[1])`,
         )
       )
@@ -811,7 +816,7 @@ describe('A. schema shape: three tables, three functions and six triggers in a n
     expect(
       (
         await q<{ tgname: string }>(
-          "SELECT g.tgname FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid WHERE c.relnamespace = 'provider'::regnamespace AND c.relname !~ '(gig|media_assets)' AND NOT g.tgisinternal ORDER BY 1",
+          "SELECT g.tgname FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid WHERE c.relnamespace = 'provider'::regnamespace AND c.relname !~ '(gig|media_assets|profile)' AND NOT g.tgisinternal ORDER BY 1",
         )
       ).length,
     ).toBe(6);
@@ -825,7 +830,7 @@ describe('A. schema shape: three tables, three functions and six triggers in a n
 
   it('defines the three functions as plpgsql trigger functions, VOLATILE, not SECURITY DEFINER, without a custom search_path, not leakproof or strict, with a comment each', async () => {
     const rows = await q<{ proname: string; args: string; volatility: string; result: string }>(
-      `SELECT p.proname, pg_get_function_identity_arguments(p.oid) AS args, p.provolatile AS volatility, pg_get_function_result(p.oid) AS result FROM pg_proc p WHERE p.pronamespace = 'provider'::regnamespace AND p.proname !~ '(gig|media_assets)' ORDER BY 1`,
+      `SELECT p.proname, pg_get_function_identity_arguments(p.oid) AS args, p.provolatile AS volatility, pg_get_function_result(p.oid) AS result FROM pg_proc p WHERE p.pronamespace = 'provider'::regnamespace AND p.proname !~ '(gig|media_assets|profile)' ORDER BY 1`,
     );
     expect(rows).toEqual(FUNCTIONS);
     expect(
@@ -937,7 +942,7 @@ describe('A. schema shape: three tables, three functions and six triggers in a n
     expect(
       (
         await q<{ target: string }>(
-          `SELECT DISTINCT confrelid::regclass::text AS target FROM pg_constraint WHERE contype = 'f' AND connamespace = 'provider'::regnamespace AND conrelid::regclass::text !~ '(gig|media_assets)' AND confrelid::regclass::text NOT LIKE 'provider.%' ORDER BY 1`,
+          `SELECT DISTINCT confrelid::regclass::text AS target FROM pg_constraint WHERE contype = 'f' AND connamespace = 'provider'::regnamespace AND conrelid::regclass::text !~ '(gig|media_assets|profile)' AND confrelid::regclass::text NOT LIKE 'provider.%' ORDER BY 1`,
         )
       ).map((r) => r.target),
     ).toEqual(['catalog.service_types', 'geography.markets', 'identity.accounts']);
@@ -2966,7 +2971,7 @@ describe('J. the provider tables cannot hold, and do not hold, anything about a 
 
   it('has no column named after a person, a contact, an address, a token, a document, a legal text, a price, a role, a verification or a subscription: every word of every column name belongs to the registration vocabulary', async () => {
     const rows = await q<{ table_name: string; column_name: string; data_type: string }>(
-      "SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = 'provider' AND table_name !~ '(gig|media_assets)' ORDER BY 1, ordinal_position",
+      "SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = 'provider' AND table_name !~ '(gig|media_assets|profile)' ORDER BY 1, ordinal_position",
     );
     expect(rows).toHaveLength(Object.values(COLUMNS_BY_TABLE).reduce((a, c) => a + c.length, 0));
     expect(rows).toHaveLength(21);
@@ -3010,7 +3015,7 @@ describe('J. the provider tables cannot hold, and do not hold, anything about a 
   it("stores no duplicate of state owned elsewhere: no column repeats the account status, the role membership, the contact state, the consent state, a market code, a service type code or a name (only ids and the registration's own lifecycle)", async () => {
     const cols = (
       await q<{ column_name: string }>(
-        "SELECT column_name FROM information_schema.columns WHERE table_schema = 'provider' AND table_name !~ '(gig|media_assets)'",
+        "SELECT column_name FROM information_schema.columns WHERE table_schema = 'provider' AND table_name !~ '(gig|media_assets|profile)'",
       )
     ).map((r) => r.column_name);
     for (const dup of [
@@ -3035,7 +3040,7 @@ describe('J. the provider tables cannot hold, and do not hold, anything about a 
     const src = Object.fromEntries(
       (
         await q<{ proname: string; prosrc: string }>(
-          "SELECT proname, prosrc FROM pg_proc WHERE pronamespace = 'provider'::regnamespace AND proname !~ '(gig|media_assets)'",
+          "SELECT proname, prosrc FROM pg_proc WHERE pronamespace = 'provider'::regnamespace AND proname !~ '(gig|media_assets|profile)'",
         )
       ).map((r) => [r.proname, r.prosrc]),
     );

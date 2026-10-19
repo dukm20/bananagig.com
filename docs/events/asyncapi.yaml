@@ -3,7 +3,7 @@ asyncapi: 3.0.0
 info:
   title: BananaGig Events
   version: 1.0.0
-  description: Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events, the identity account events, the email verification events, the phone verification events, the account security events (sessions, second factor, password reset) the consent events (acceptance and withdrawal of a legal document version) the catalogue events (category and service type activation, market availability) the Gig Template events (activation, pause, retirement, publication of a version, market availability) the provider registration events (started, completed, cancelled), the provider verification events and the provider Gig events (created, version published, retired) exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.
+  description: Event contract. The generic envelope, the infrastructure self-test event, the configuration registry events, the content registry events, the geography registry events, the identity account events, the email verification events, the phone verification events, the account security events (sessions, second factor, password reset) the consent events (acceptance and withdrawal of a legal document version) the catalogue events (category and service type activation, market availability) the Gig Template events (activation, pause, retirement, publication of a version, market availability) the provider registration events (started, completed, cancelled), the provider verification events, the provider Gig events (created, version published, retired) and the provider profile events (updated, visibility changed) exist; other product events arrive with their features. Subjects follow bananagig.<domain>.<event>.v<version>.
 defaultContentType: application/json
 channels:
   infraPing:
@@ -354,6 +354,18 @@ channels:
     messages:
       ProviderGigRetired:
         $ref: "#/components/messages/ProviderGigRetired"
+  profile_profileUpdated:
+    address: bananagig.provider.profile-updated.v1
+    description: A provider changed the presentation of their public profile (display name, bio or photo). The payload carries the revision and the field NAMES that changed, never the text, the photo or any reference to it. A profile is not live and not bookable. Published through the transactional outbox (aggregate provider_profile); the payload carries identifiers and field names only, never a name, a bio, a photo reference or any provider text.
+    messages:
+      ProviderProfileUpdated:
+        $ref: "#/components/messages/ProviderProfileUpdated"
+  profile_profileVisibilityChanged:
+    address: bananagig.provider.profile-visibility-changed.v1
+    description: "A provider showed (PUBLIC) or hid (PRIVATE) their public profile. PUBLIC is a preference: it does not make the provider live or bookable and nothing lists or searches profiles. Published through the transactional outbox (aggregate provider_profile); the payload carries identifiers and field names only, never a name, a bio, a photo reference or any provider text."
+    messages:
+      ProviderProfileVisibilityChanged:
+        $ref: "#/components/messages/ProviderProfileVisibilityChanged"
   trust_caseOpened:
     address: bananagig.trust.verification-case-opened.v1
     description: A verification case was opened for a provider account (the requirements policy derived from the registration). Verification is multi-dimensional and an approved case is NOT Go-Live. Published through the transactional outbox (aggregate verification_case); the payload carries identifiers and codes only, never a contact, a name or a text.
@@ -687,6 +699,16 @@ operations:
     channel:
       $ref: "#/channels/gig_gigRetired"
     summary: "A provider retired a Gig (terminal): its draft and published versions became RETIRED and the history stays. Nothing is deleted."
+  sendProviderProfileUpdated:
+    action: send
+    channel:
+      $ref: "#/channels/profile_profileUpdated"
+    summary: A provider changed the presentation of their public profile (display name, bio or photo). The payload carries the revision and the field NAMES that changed, never the text, the photo or any reference to it. A profile is not live and not bookable.
+  sendProviderProfileVisibilityChanged:
+    action: send
+    channel:
+      $ref: "#/channels/profile_profileVisibilityChanged"
+    summary: "A provider showed (PUBLIC) or hid (PRIVATE) their public profile. PUBLIC is a preference: it does not make the provider live or bookable and nothing lists or searches profiles."
   sendProviderVerificationCaseOpened:
     action: send
     channel:
@@ -1304,6 +1326,26 @@ components:
             type: string
       payload:
         $ref: "#/components/schemas/ProviderGigRetired"
+    ProviderProfileUpdated:
+      name: ProviderProfileUpdated
+      title: A provider changed the presentation of their public profile (display name, bio or photo). The payload carries the revision and the field NAMES that changed, never the text, the photo or any reference to it. A profile is not live and not bookable.
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/ProviderProfileUpdated"
+    ProviderProfileVisibilityChanged:
+      name: ProviderProfileVisibilityChanged
+      title: "A provider showed (PUBLIC) or hid (PRIVATE) their public profile. PUBLIC is a preference: it does not make the provider live or bookable and nothing lists or searches profiles."
+      headers:
+        type: object
+        properties:
+          x-correlation-id:
+            type: string
+      payload:
+        $ref: "#/components/schemas/ProviderProfileVisibilityChanged"
     ProviderVerificationCaseOpened:
       name: ProviderVerificationCaseOpened
       title: A verification case was opened for a provider account (the requirements policy derived from the registration). Verification is multi-dimensional and an approved case is NOT Go-Live.
@@ -5902,6 +5944,163 @@ components:
           required:
             - accountId
             - gigId
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    ProviderProfileUpdated:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.provider.profile-updated.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            accountId:
+              type: string
+            publicProfileId:
+              type: string
+            revision:
+              type: integer
+              minimum: -9007199254740991
+              maximum: 9007199254740991
+            changedFields:
+              type: array
+              items:
+                type: string
+                enum:
+                  - displayName
+                  - bio
+                  - photo
+                  - visibility
+          required:
+            - accountId
+            - publicProfileId
+            - revision
+            - changedFields
+          additionalProperties: false
+      required:
+        - eventId
+        - eventType
+        - eventVersion
+        - occurredAt
+        - correlationId
+        - causationId
+        - actor
+        - aggregateType
+        - aggregateId
+        - payload
+      additionalProperties: false
+    ProviderProfileVisibilityChanged:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        eventType:
+          type: string
+          const: bananagig.provider.profile-visibility-changed.v1
+        eventVersion:
+          type: integer
+          exclusiveMinimum: 0
+          maximum: 9007199254740991
+        occurredAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$
+        correlationId:
+          type: string
+        causationId:
+          type:
+            - string
+            - "null"
+        actor:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - user
+                - system
+                - service
+            id:
+              type:
+                - string
+                - "null"
+          required:
+            - type
+            - id
+          additionalProperties: false
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        payload:
+          type: object
+          properties:
+            accountId:
+              type: string
+            publicProfileId:
+              type: string
+            visibility:
+              type: string
+              enum:
+                - PRIVATE
+                - PUBLIC
+          required:
+            - accountId
+            - publicProfileId
+            - visibility
           additionalProperties: false
       required:
         - eventId

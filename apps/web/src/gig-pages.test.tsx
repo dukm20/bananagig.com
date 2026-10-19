@@ -310,6 +310,13 @@ describe('provider Gig pages', () => {
       expect(html).not.toContain('role="alert"');
       expect(html).not.toContain('<form');
     });
+    it('links to the public profile page (PRO-002) with the registry title as its text, and without the copy there is no link', async () => {
+      signedIn();
+      stub.catalog = withCopy({ ...EXTRA, 'provider.profile.page.title': 'Registry profile page title' });
+      expect(await renderMenu()).toContain('<p><a href="/provider/profile">Registry profile page title</a></p>');
+      stub.catalog = withCopy();
+      expect(await renderMenu()).not.toContain('/provider/profile');
+    });
     it('a provider who cannot create (not eligible) gets no create form, no template read, and a link to the registration', async () => {
       signedIn();
       api.menu = menuDto([], { canCreate: false, cannotCreateReason: 'PROVIDER_NOT_ELIGIBLE' });

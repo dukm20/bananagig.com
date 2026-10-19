@@ -3,7 +3,7 @@ import swagger from '@fastify/swagger';
 import type { AppConfig } from '@bananagig/config';
 import { API_PREFIX } from '@bananagig/contracts';
 import type { CatalogService, GigTemplateService } from '@bananagig/catalog';
-import type { ProviderGigService, ProviderRegistrationService } from '@bananagig/provider';
+import type { ProfilePhotoApi, ProviderGigService, ProviderProfileService, ProviderRegistrationService } from '@bananagig/provider';
 import type { TrustService } from '@bananagig/trust';
 import type { ConfigurationService } from '@bananagig/configuration';
 import type { ContentService } from '@bananagig/content';
@@ -29,6 +29,7 @@ import { accountRoutes } from './modules/account/routes';
 import { catalogRoutes } from './modules/catalog/routes';
 import { providerRoutes } from './modules/provider/routes';
 import { providerGigRoutes } from './modules/provider/gig-routes';
+import { providerProfileRoutes, publicProfileRoutes } from './modules/provider/profile-routes';
 import { trustAdminRoutes } from './modules/trust/admin-routes';
 import { trustProviderRoutes } from './modules/trust/routes';
 import { consentRoutes } from './modules/consent/routes';
@@ -96,6 +97,12 @@ export interface AppDeps {
   providerRegistrations?: ProviderRegistrationService;
   /** The provider Gigs (CAT-003): the GigMenu and the Gig versions of the caller; the routes act on the account of the verified token, so they need `accounts`. */
   providerGigs?: ProviderGigService;
+  /**
+   * The provider public profile (PRO-002) and its photo service: the owner routes act on the account of the verified token, so they need `accounts`; the public routes
+   * (/providers/{publicProfileId}) need no authentication. Both services are needed together (the photo routes read through the profile's rules).
+   */
+  providerProfiles?: ProviderProfileService;
+  profilePhotos?: ProfilePhotoApi;
   /** Provider verification (TRUST-001): the provider routes act on the account of the verified token, so they need `accounts`; the reviewer routes need the `trust-*` admin roles. */
   trust?: TrustService;
 }
@@ -177,12 +184,22 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
         {
           name: 'provider',
           description:
-            'The provider registration of the caller (PRO-001): the same account, not a second one. The application role (identity), the registration (market, service types, status) and Go-Live eligibility (PRO-003) are separate. Contact and agreement state are composed from their owners, never stored here; verification (TRUST-001) and Gigs (CAT-003) report their own state; subscription and profile are future prerequisites reported as not available. Owner only: every route acts on the account of the verified token.',
+            'The provider registration of the caller (PRO-001): the same account, not a second one. The application role (identity), the registration (market, service types, status) and Go-Live eligibility (PRO-003) are separate. Contact and agreement state are composed from their owners, never stored here; verification (TRUST-001), Gigs (CAT-003) and the public profile (PRO-002) report their own state; subscription is a future prerequisite reported as not available. Owner only: every route acts on the account of the verified token.',
         },
         {
           name: 'gigs',
           description:
             "The provider GigMenu (CAT-003): the offers of the caller, each built from a platform-owned Gig Template and kept as an identity with immutable versions (a draft is edited in place, publishing freezes it and supersedes the previous version, retiring is terminal and nothing is deleted). Every version is bound to the EXACT template version it was built from. A Gig is not live and not bookable: Go-Live (PRO-003), service areas, availability and search are later checkpoints. CAT-004 adds, to the DRAFT of a version, whole-set variants (mutually exclusive alternatives) and add-ons (independent extras), each adding a non-negative delta to the base price and duration, and photos for the MEDIA fields of the template version (an authorized, presigned upload that the server verifies, scans and promotes; the file never passes through the API; a short-lived owner-only preview URL); a published version's variants, add-ons and photos never change, and the next draft copies them. The price currency is the market currency, set by the server. Owner only: every route acts on the account of the verified token and another account's Gig is not found.",
+        },
+        {
+          name: 'provider-profile',
+          description:
+            "The provider's OWN public profile (PRO-002), owner only: display name, bio, one photo and the visibility (PRIVATE by default, PUBLIC when the owner chooses). The profile is a presentation aggregate: it stores only what the provider authors; the fallback name (first name and last initial), the trust badges, the Gig cards and the market are DERIVED from their owners on every read. The photo reuses the private media pipeline and is always served as sanitised bytes. A preview shows exactly what the public route would. PUBLIC does not mean live or bookable (Go-Live is PRO-003). Every route acts on the account of the verified token.",
+        },
+        {
+          name: 'providers',
+          description:
+            'The PUBLIC provider profile (PRO-002): what a customer may see of a provider who chose to show a profile, found only by its opaque public id (never the account id; nothing lists or searches profiles yet). No authentication is required and an Authorization header is ignored. An unknown, private, ineligible or malformed id is one identical 404. The projection never carries an email, phone, account id, legal name, object key, hash or verification detail; the photo is sanitised bytes served with a forced content type. A public profile is not live and not bookable.',
         },
         {
           name: 'gig-templates',
@@ -239,6 +256,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     });
     if (deps.providerRegistrations) await app.register(providerRoutes, { prefix: `${API_PREFIX}/provider`, registrations: deps.providerRegistrations });
     if (deps.providerGigs) await app.register(providerGigRoutes, { prefix: `${API_PREFIX}/provider`, gigs: deps.providerGigs });
+    if (deps.providerProfiles && deps.profilePhotos)
+      await app.register(providerProfileRoutes, { prefix: `${API_PREFIX}/provider`, profiles: deps.providerProfiles, photos: deps.profilePhotos });
     if (deps.trust) await app.register(trustProviderRoutes, { prefix: `${API_PREFIX}/provider/verification`, trust: deps.trust });
     if (deps.security) {
       const security = deps.security;
@@ -249,6 +268,10 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     }
     if (deps.consent) await app.register(consentRoutes, { prefix: API_PREFIX });
   }
+
+  // the public profile needs no account: registered whenever its services exist
+  if (deps.providerProfiles && deps.profilePhotos)
+    await app.register(publicProfileRoutes, { prefix: `${API_PREFIX}/providers`, profiles: deps.providerProfiles, photos: deps.profilePhotos });
 
   app.get('/metrics', { schema: { hide: true } }, async (_req, reply) => reply.type(metrics.contentType).send(await metrics.metrics()));
   if (deps.diagnostics) {

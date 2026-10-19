@@ -124,3 +124,4 @@ export * from './gig-template';
 export * from './provider';
 export * from './trust';
 export * from './gig';
+export * from './provider-profile';

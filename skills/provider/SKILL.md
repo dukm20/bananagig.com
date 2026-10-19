@@ -145,10 +145,19 @@ Any change to the registration tables or their guards needs the Data Model Revie
 - Do not edit an applied migration.
 - Do not put a BananaDrop, tier, threshold, ladder, group price or Drop-eligibility flag on a Gig, variant or add-on before the DROP checkpoints define them (DROP-002 owns eligibility, DROP-005 owns tiers), and do not present a future tier price as a currently bookable price anywhere.
 
+### Provider public profile (PRO-002, ADR-0048, `docs/engineering/PROVIDER_PUBLIC_PROFILE.md`)
+
+- **A presentation aggregate, not a source of truth.** `provider.public_profiles` stores the provider's display name, bio, two photo pointers and a two-state visibility with a revision. Names (identity), badges (TRUST-001), Gig cards (CAT-003/004) and the market (PRO-001) are DERIVED on every read by the ONE `buildPublicProfile` (the preview is the same function plus `visibility` and `preview: true`); never copy a verified flag, a Gig field, a price or a rating into the profile.
+- **The only public identifier is the opaque `public_profile_id`.** The account id is a separate unique internal key and never appears in a public payload, URL or log of the public path; unknown, PRIVATE, ineligible, malformed and flag-gated ids answer the identical 404.
+- **PUBLIC is a preference, not live.** A public read also needs, at read time, an ACTIVE account, an ACTIVE PROVIDER role, a COMPLETED registration, a public name and (config flag, seeded false) `MarketplaceEligibilityPort`; PRO-003 and SEARCH gate exposure through that port. `profileComplete` in the readiness facts is not Go-Live.
+- **Photos reuse the CAT-004 asset pipeline with `media_assets.purpose`** (`GIG_PHOTO` / `PROFILE_PHOTO`, immutable, guarded both ways). Public and owner photo responses are the SANITISED bytes (pure container-level allow-list sanitiser, also run at finalize), never the stored object, because the stored original keeps EXIF/GPS; reference-aware sweeps treat the profile pointers as references.
+- **Mutations** go through `ProfileMutator.mutateProfile` (lock account, profile at `expectedRevision`, then assets): the callback writes `revision = ctx.revision + 1` in the SAME UPDATE as the change (the DB guard refuses a revision-only update), the primitive writes one audit row (field names only) and the outbox event; pending-pointer-only changes report `publicChange:false` (no event). Hiding (PRIVATE) and removing depend on no other service; a change that would break the prerequisites of a PUBLIC profile is refused with `PROFILE_INCOMPLETE`.
+- **Provider text** (display name, bio) is plain text normalised with `normalizeProviderText` plus a profile-level blank-looking check; it never reaches audit, events, logs or error details.
+
 ## Related ADRs
 
-ADR-0025, ADR-0038, ADR-0040, ADR-0041, ADR-0042, ADR-0046, ADR-0047
+ADR-0025, ADR-0038, ADR-0040, ADR-0041, ADR-0042, ADR-0046, ADR-0047, ADR-0048
 
 ## Last reviewed
 
-2026-10-18 (CAT-004)
+2026-10-18 (PRO-002)

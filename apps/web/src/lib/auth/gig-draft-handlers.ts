@@ -82,7 +82,7 @@ const MEDIA_REFUSED = 'GIG_MEDIA_REFUSED';
 /** How long the hand-over of one file to the object store may take. */
 const PUT_TIMEOUT_MS = 60_000;
 /** Room for the other upload fields and the multipart framing around the file. */
-const UPLOAD_FRAMING_BYTES = 65_536;
+export const UPLOAD_FRAMING_BYTES = 65_536;
 const ROW_FIELD = /^row\.(0|[1-9][0-9]?)\.(key|name|description|price|duration)$/;
 type RowPart = 'name' | 'description' | 'price' | 'duration';
 const INTENT = /^(?:(save|add)|(remove|up|down):(0|[1-9][0-9]?))$/;
@@ -103,7 +103,7 @@ const NEVER_FORWARDED = new Set([
   'expect',
 ]);
 /** The headers of the PUT: the content type, the length, and the other signed headers the API listed (plain names and values only). */
-function putHeaders(contentType: string, signed: Record<string, string>, length: number): Record<string, string> {
+export function putHeaders(contentType: string, signed: Record<string, string>, length: number): Record<string, string> {
   const out: Record<string, string> = { 'content-type': contentType };
   for (const [name, value] of Object.entries(signed)) {
     const key = name.toLowerCase();
@@ -117,7 +117,7 @@ function putHeaders(contentType: string, signed: Record<string, string>, length:
  * PUTs the bytes to the one-time upload URL and returns the HTTP status (0 when it could not be sent). It deliberately does NOT use the global `fetch` (Next.js wraps `fetch` in a
  * tracing span named after the full URL, and this URL carries its signature). No redirect is followed, only http(s) is spoken, and the request carries no cookie or token.
  */
-function putBytes(url: string, headers: Record<string, string>, bytes: Uint8Array): Promise<number> {
+export function putBytes(url: string, headers: Record<string, string>, bytes: Uint8Array): Promise<number> {
   return new Promise((resolve) => {
     let target: URL;
     try {
@@ -143,10 +143,10 @@ function putBytes(url: string, headers: Record<string, string>, bytes: Uint8Arra
 }
 
 // ---------------------------------------------------------------- form reading
-const tooLarge = (): Response => new Response('Payload too large', { status: 413, headers: NO_STORE });
+export const tooLarge = (): Response => new Response('Payload too large', { status: 413, headers: NO_STORE });
 
 /** The form of the request (urlencoded or multipart), read as a bounded stream; `too_large` once it exceeds `max`, undefined when it is not a form. */
-async function readForm(req: Request, max: number, multipart: boolean): Promise<FormData | 'too_large' | undefined> {
+export async function readForm(req: Request, max: number, multipart: boolean): Promise<FormData | 'too_large' | undefined> {
   const type = (req.headers.get('content-type') ?? '').toLowerCase();
   if (!(multipart ? type.startsWith('multipart/form-data') : type.startsWith('application/x-www-form-urlencoded') || type.startsWith('multipart/form-data')))
     return undefined;
@@ -166,7 +166,7 @@ async function readForm(req: Request, max: number, multipart: boolean): Promise<
 }
 
 /** The text fields of a form that holds each allowed name EXACTLY once as text (and every required one); undefined for a file, a repeat, an unknown name or a missing one. */
-function textFields(form: FormData, allowed: readonly string[], required: readonly string[], rows = false): Map<string, string> | undefined {
+export function textFields(form: FormData, allowed: readonly string[], required: readonly string[], rows = false): Map<string, string> | undefined {
   const out = new Map<string, string>();
   let dynamic = 0;
   for (const name of new Set(form.keys())) {

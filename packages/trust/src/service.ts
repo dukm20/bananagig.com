@@ -30,6 +30,7 @@ import {
   type TrustExternalStatus,
   type TrustRequirementEventPayload,
   type TrustRequirementStatus,
+  type TrustRequirementType,
   type TrustReviewDecision,
   type TrustScanStatus,
 } from '@bananagig/contracts';
@@ -40,6 +41,7 @@ import type { z } from 'zod';
 import { DisabledEvidenceScanner, DisabledVerificationProvider } from './adapters';
 import { deriveStatus, effectiveStatus, evaluateVerification } from './derive';
 import { TrustError, isDatabaseOutage } from './errors';
+import { queryPublicBadgeTypes } from './public-badges';
 import { matchesSignature } from './signatures';
 import type {
   AdminRequirementView,
@@ -421,6 +423,10 @@ export class TrustService {
       if (!ctx) throw new TrustError('ACCOUNT_NOT_ACTIVE', 'the account is not active', { reason: 'ACCOUNT_NOT_FOUND' });
       return this.buildView(this.db, accountId, ctx);
     });
+  }
+  /** PRO-002: the requirement TYPE codes (a subset of `allowedTypes`) the provider currently holds as approved and unexpired; derived on every call, one statement, nothing else leaves. */
+  publicBadgeTypes(accountId: string, allowedTypes: readonly TrustRequirementType[], now: Date = this.now()): Promise<TrustRequirementType[]> {
+    return this.read(() => queryPublicBadgeTypes(this.db, accountId, allowedTypes, now));
   }
   private async buildView(ex: Executor, accountId: string, ctx: ProviderContext): Promise<ProviderVerificationView> {
     const [required, liveCase, documentTypes] = await Promise.all([

@@ -1239,3 +1239,46 @@ erDiagram
 **Consumer rule.** A booking, a BananaDrop or a bundle references a variant or an add-on by `(gig_version_id, item_key)`, never by `variant_id` or `add_on_id` (row ids are regenerated in every version; the key is stable). The base price is the price with no variant selected; whether a booking must pick one is a booking rule.
 
 **No currency on a child.** A child inherits the currency of its parent version (the market currency), so a currency cannot disagree with the price it is added to. The template rule for photos is read from the exact bound template version through the field and never copied.
+
+## Provider public profile (PRO-002)
+
+The `provider` schema gains the PUBLIC PROFILE: a presentation aggregate (one row per provider account, with its own opaque public id) that references its photo by asset, and an immutable audit trail. Trust badges, Gig summaries, the fallback public name and the market are DERIVED on read from their owners and are deliberately NOT drawn as relationships here: the profile has no foreign key to them.
+
+```mermaid
+erDiagram
+  PP_ACCOUNTS {
+    uuid account_id PK "same table as identity.accounts"
+  }
+  PP_MEDIA_ASSETS {
+    uuid media_asset_id PK "same table as provider.media_assets (CAT-004)"
+    text purpose "0024: GIG_PHOTO or PROFILE_PHOTO, immutable"
+    text status "UPLOAD_PENDING, READY, ABANDONED, DELETED"
+  }
+  PROVIDER_PUBLIC_PROFILES {
+    uuid public_profile_id PK "opaque, the only public identifier"
+    uuid account_id FK "restrict, UNIQUE, internal, immutable"
+    text display_name "NULL or plain text, at most 100"
+    text bio "NULL or plain text, at most 5000"
+    uuid photo_asset_id FK "restrict, READY PROFILE_PHOTO of the same account"
+    uuid pending_photo_asset_id FK "restrict, UPLOAD_PENDING PROFILE_PHOTO, at most one"
+    text visibility_status "PRIVATE or PUBLIC"
+    integer revision "optimistic concurrency token"
+    timestamptz published_at "set exactly while PUBLIC"
+  }
+  PROVIDER_PROFILE_AUDIT_EVENTS {
+    uuid audit_event_id PK
+    uuid account_id FK "owner at the time of the event"
+    uuid public_profile_id FK "restrict"
+    text action "four actions"
+    jsonb changes "field names, revision, visibility only"
+  }
+  PP_ACCOUNTS ||--o| PROVIDER_PUBLIC_PROFILES : "one profile per provider account"
+  PP_MEDIA_ASSETS |o--o| PROVIDER_PUBLIC_PROFILES : "photo (READY)"
+  PP_MEDIA_ASSETS |o--o| PROVIDER_PUBLIC_PROFILES : "pending upload (at most one)"
+  PROVIDER_PUBLIC_PROFILES ||--o{ PROVIDER_PROFILE_AUDIT_EVENTS : "audited"
+  PP_ACCOUNTS ||--o{ PROVIDER_PROFILE_AUDIT_EVENTS : "owner"
+```
+
+**Presentation, not a source of truth.** The profile holds provider-authored presentation only. A public read composes the rest on the fly: the fallback name from `identity.account_profiles`, badges from the live verification case, Gig cards from ACTIVE Gigs with a PUBLISHED version, the market from the COMPLETED registration. Nothing is copied, so there is no drift to repair.
+
+**Photo by reference.** The profile points at an asset; the asset's `purpose` keeps a profile photo from ever being attached to a Gig version and the reverse. A pointer blocks the abandon and delete of its asset (`ASSET_REFERENCED`), so bytes a profile shows are never removed from under it; the service clears the pointer first and the clean-up removes the orphan.

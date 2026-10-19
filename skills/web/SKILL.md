@@ -95,8 +95,12 @@ The web app has no database access and no data-model impact. Needing data means 
 - Do not offer an Accept control for text you did not verify to be the version in force, build the form from anything but that verified document, or let a page or a GET record a consent.
 - Do not add visual polish, a theme or a component library to a temporary screen, and do not compute BananaDrop progress, tiers or protected prices in web code.
 
+### Provider profile pages (PRO-002)
+
+- `/provider/profile` (owner), `/provider/profile/preview` and the public `/providers/[publicProfileId]` (server-rendered from the public API with no token, `noindex`, the same `ProfileView` as the preview, the standard not-found page for every non-public id). Photos are same-origin `<img>` to the API photo routes (sanitised bytes); the web never renders a storage URL. Handlers are POST-only, same-origin, exact fields, closed notice/error words; a refused save redirects to the error/issue summary (`tabindex=-1`) and loses the typed text (DEBT-0109). The public page states that booking is not open next to any price and shows no rating or BananaDrop placeholder.
+
 ## Related ADRs
 ADR-0006, ADR-0007, ADR-0014, ADR-0026, ADR-0033, ADR-0034, ADR-0036, ADR-0037, ADR-0039
 
 ## Last reviewed
-2026-10-18 (PRD-TRP-001)
+2026-10-18 (PRO-002)

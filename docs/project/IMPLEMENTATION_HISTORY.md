@@ -1187,3 +1187,38 @@ None: tooling and process, no architecture decision.
 
 ### Known follow-up
 DEBT-0001 (retitled: CI not enforced before merge) and DEBT-0102 to DEBT-0105. Owner actions C-1 (apply the `main` ruleset), C-2 (required scans, secret scanning), C-4 (visibility), C-6 (approve or remove MIT-0001 to MIT-0006) and plan item C-7 (`data-model:check` with an empty base ref). Hardening checkpoints R-04 to R-17 are proposed, not approved. Next: PRO-002 Provider Public Profile.
+
+## PRO-002 — 2026-10-18
+
+Status: COMPLETE
+Commit: find it with `git log --grep "(PRO-002)"`.
+Summary: Provider Public Profile. A presentation aggregate (ADR-0048): `provider.public_profiles` stores only the provider's display name, bio, two photo pointers and a two-state visibility (PRIVATE default, PUBLIC) with a revision; the opaque `public_profile_id` is the only public identifier; the fallback public name, trust badges (type codes only), published Gig cards and the market are DERIVED on every read by ONE projection function that the owner preview shares. PUBLIC is a preference, not Go-Live: a public read also requires an ACTIVE account, an ACTIVE provider role, a COMPLETED registration and, behind a configuration flag, `MarketplaceEligibilityPort`. Profile photos reuse the CAT-004 asset pipeline (`media_assets.purpose`) and are served only as container-sanitised bytes. Not built: Go-Live, search or listing, ratings, reviews, BananaDrop offers, service areas, availability, moderation, slugs, business profiles, a CDN.
+
+### Housekeeping at the start
+`checkpoint:start` ran after ENG-GOV-001 was committed (`198827f`). Local `main` was NOT equal to `origin/main` (three local commits ahead, none pushed: the checkpoint-id tooling fix `9b7fb6c`, ENG-GOV-001 and this one), so the prompt's pre-flight "local main equals origin/main" did not hold; the owner asked to run everything and nothing was pushed. CAT-004's CI result (Success, 20m 1s, run id not provided) was already recorded. `la-oc` stays PLANNED; DEBT-0030, 0064, 0065, 0070 and 0076 to 0105 stay OPEN.
+
+### Delivered
+- Migrations 0024 (the `purpose` column, `public_profiles`, `profile_audit_events`, the guards, seven configuration parameters, 78 content entries; the two replaced asset guard functions are the earlier bodies plus the profile references and the purpose check) and 0025 (seven more copy entries). 0001 to 0023 untouched.
+- Contracts `provider-profile.ts` (requests, strict DTOs, issues, events, 12 error codes, policy keys); `derivePublicName` delegates to the account area's `publicDisplayName`.
+- Services: `ProviderProfileService` (create, update, visibility, preview, public read, readiness facts, the `ProfileMutator` primitive used by the photo service, the onboarding PROFILE step), `profile-projection`, `profile-validate` (plus a profile-level blank-looking check), `ProfilePhotoService` (authorize, finalize that also sanitises, remove, owner and public serving, ETag/304), the pure `image-sanitize` allow-list sanitiser (JPEG, PNG, WebP), `TrustService.publicBadgeTypes`, and reference-aware changes to the CAT-004 clean-up (the profile pointers count as references).
+- API: nine owner routes and two public routes, OpenAPI and AsyncAPI regenerated (two events: `profile-updated`, `profile-visibility-changed`). Web (temporary): owner page, preview, public page, controlled photo route, handlers. Smoke scenario `Provider public profile` (44 checks in total).
+- Docs: ADR-0048, `docs/engineering/PROVIDER_PUBLIC_PROFILE.md` (every public field and its owner), data model documents, skills (provider, trust, catalog, web), DEBT-0106 to DEBT-0109 (DEBT-0099 narrowed), LRN-0070 to LRN-0073.
+- Quality process: seven writing agents against one spec and contract (database, profile service, photo and sanitiser, trust badges, API, web, smoke); three independent read-only reviews (security and privacy, data and concurrency, UX and accessibility; no blocker, 4 UX HIGH items); a fix wave; a bounded mutation campaign of 69 mutants (56 killed, 13 survived: 5 equivalent, 7 redundant, 1 real gap now covered by a test). Defects found and fixed before the commit: the sanitiser copied the payload of every kept part verbatim (JFIF thumbnails, ICC and Adobe tails, PNG and WebP parts, nested animation chunks); finalize accepted photos the sanitiser would later refuse; hiding a profile and removing a photo depended on trust, names and policy being up; a PUBLIC profile could silently fall below its prerequisites; blank-looking names built from fillers and marks; an upload authorization emitted a `profile-updated` event; the public page showed prices with no "booking is not open" note and the owner had no link to the public page. Test defects fixed: a revision-guard race test that could not fail, an unfalsifiable port budget assertion, a timing ratio test that flaked under load, and a CAT-003 integration test that forbade the substring "5000" in random UUIDs.
+
+### Schema
+Migrations 0024 and 0025: two tables, one column, three new and two replaced guard functions, the constraints and indexes listed and justified in NORMALIZATION_LOG, content and configuration seeds (0025 is content only). NORMALIZATION_LOG, DATA_MODEL, DATA_DICTIONARY, ERD, DATA_MODEL_CHANGELOG and SCHEMA_SNAPSHOT updated; Data Model Review Gate passed (public id versus account id; derived badges versus stored flags; derived Gig summaries; photo as an asset reference with two pointers; two-state visibility; no JSON; BCNF reviewed).
+
+### Contracts
+`packages/contracts/src/provider-profile.ts`; two events; eleven routes (nine owner, two public). OpenAPI and AsyncAPI regenerated and valid; `openapi:lint` keeps its 15 existing warnings.
+
+### Tests
+Unit 14113 and 317 root script tests, integration 8341 in 67 files, smoke 44 checks (44/44 on the final code; one earlier full run failed once in the unrelated `Provider GigMenu` phone step while the machine was loaded by the mutation campaign and passed on the isolated rerun). The sanitiser was also run over about 4,300 real image files on the development machine: all 363 JPEG and 446 WebP files were accepted, the only refusals were Apple's proprietary `CgBI` PNGs (22), and 360 sampled outputs decoded to the same dimensions. One provider unit test failed once under the parallel `pnpm test` load and did not reproduce in five further runs (its name was not captured).
+
+### Skills updated
+`skills/provider`, `skills/trust`, `skills/catalog`, `skills/web`.
+
+### ADRs
+ADR-0048.
+
+### Known follow-up
+DEBT-0106 (assumed values, display-name rule, moderation), DEBT-0107 (unthrottled public routes, sanitising per request), DEBT-0108 (not one snapshot, read-time states), DEBT-0109 (temporary web limits). Next: PRO-003 Provider Go-Live Eligibility, which consumes `getProfileReadinessFacts` and decides `MarketplaceEligibilityPort`.

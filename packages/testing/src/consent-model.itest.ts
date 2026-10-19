@@ -2580,11 +2580,11 @@ describe('J2. seeded configuration: the four consent policy parameters', () => {
       'consent.terms_of_service.reacceptance',
       'consent.terms_of_service.required_for',
     ]);
-    // 28 of 0010 to 0013 plus the five provider.registration.* parameters of 0018 (asserted in provider-model.itest.ts) plus the six trust.* parameters of 0019 (asserted in trust-model.itest.ts) plus the five provider.gig.* parameters of 0020 (asserted in gig-model.itest.ts) plus the fifteen variant, add-on and media parameters of 0021 (asserted in gig-options-media-model.itest.ts)
-    expect(await sq('SELECT count(*)::int AS n FROM configuration.parameters')).toEqual([{ n: 59 }]);
+    // 28 of 0010 to 0013 plus the five provider.registration.* parameters of 0018 (asserted in provider-model.itest.ts) plus the six trust.* parameters of 0019 (asserted in trust-model.itest.ts) plus the five provider.gig.* parameters of 0020 (asserted in gig-model.itest.ts) plus the fifteen variant, add-on and media parameters of 0021 (asserted in gig-options-media-model.itest.ts) plus the seven provider.profile.* parameters of 0024 (asserted in provider-profile-model.itest.ts)
+    expect(await sq('SELECT count(*)::int AS n FROM configuration.parameters')).toEqual([{ n: 66 }]);
     expect(
       await sq(
-        "SELECT count(*)::int AS n FROM configuration.parameters WHERE key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'provider.gig.%' AND key NOT LIKE 'trust.%'",
+        "SELECT count(*)::int AS n FROM configuration.parameters WHERE key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'provider.gig.%' AND key NOT LIKE 'provider.profile.%' AND key NOT LIKE 'trust.%'",
       ),
     ).toEqual([{ n: 28 }]);
   });

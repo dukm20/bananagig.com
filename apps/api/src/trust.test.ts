@@ -914,6 +914,9 @@ describe('Cache-Control: no-store on every response of both prefixes', () => {
       '/api/v1/provider',
       '/api/v1/provider/verification',
       '/api/v1/provider/verification/documents',
+      // PRO-002: the public profile routes are a prefix of their own (their errors are never stored; the photo sets its own policy on success)
+      '/api/v1/providers',
+      '/api/v1/providers/9b1f2c3d-4e5a-4b6c-8d7e-0f1a2b3c4d5e/photo',
       '/api/v1/account/me',
       '/api/v1/auth/x',
     ])
@@ -923,7 +926,8 @@ describe('Cache-Control: no-store on every response of both prefixes', () => {
       '/api/v1/admin/trust-x/cases',
       '/api/v1/admin',
       '/api/v1/admin/',
-      '/api/v1/providers',
+      '/api/v1/providersx',
+      '/api/v1/provider-x',
       '/api/v1/catalog/categories',
     ])
       expect(isNoStorePath(u), u).toBe(false);

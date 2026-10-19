@@ -1513,9 +1513,11 @@ describe('secrecy: no contact, legal text or token in any response, log line or 
     }
     expect(dump).not.toContain(LEGAL_MARK);
     // CAT-004: the `name` of a variant or an add-on is the provider's label of an offer (plain text, no contact or document), the one deliberate exception
+    // PRO-002: `display_name` of public_profiles is the provider's chosen public name (plain text, never a legal name, contact or document); the account's legal names stay in identity
     const columns = await q<{ column_name: string }>(
       `SELECT column_name FROM information_schema.columns WHERE table_schema = 'provider'
-          AND NOT (column_name = 'name' AND table_name IN ('gig_version_variants', 'gig_version_add_ons'))`,
+          AND NOT (column_name = 'name' AND table_name IN ('gig_version_variants', 'gig_version_add_ons'))
+          AND NOT (column_name = 'display_name' AND table_name = 'public_profiles')`,
     );
     expect(columns.map((c) => c.column_name).filter((c) => /email|phone|name|address|body|token|subject|document/i.test(c))).toEqual([]);
   });

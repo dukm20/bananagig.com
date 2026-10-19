@@ -75,6 +75,7 @@ import {
   WEB_REDIRECT_URI,
   type KeycloakTarget,
 } from '@bananagig/identity/testing';
+import { providerPublicProfileScenario } from './provider-public-profile';
 
 type Result = { name: string; ok: boolean; note: string; label?: string };
 type Diag = Record<string, { ok: boolean; detail?: any; error?: string }>; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -5119,7 +5120,9 @@ await check('Provider registration', async () => {
         stepOf(req0, 'CONTACT').status === 'NOT_STARTED' &&
         // VERIFICATION is answered by the verification domain (TRUST-001): identity verification applies to everyone and has not started; the later steps are not built yet
         stepOf(req0, 'VERIFICATION').status === 'NOT_STARTED' &&
-        ['SUBSCRIPTION', 'PROFILE'].every((s) => stepOf(req0, s).status === 'NOT_AVAILABLE') &&
+        // SUBSCRIPTION is not built yet; PROFILE is answered by the public profile domain (PRO-002): no profile row exists, so it has not started
+        stepOf(req0, 'SUBSCRIPTION').status === 'NOT_AVAILABLE' &&
+        stepOf(req0, 'PROFILE').status === 'NOT_STARTED' &&
         // GIGS is answered by the Gig domain (CAT-003): no Gig exists, so it has not started
         stepOf(req0, 'GIGS').status === 'NOT_STARTED' &&
         req0.overall.registrationReady === false &&
@@ -5635,9 +5638,10 @@ await check('Provider registration', async () => {
         reqDone.overall.goLive.evaluated === false &&
         reqDone.overall.goLive.eligible === false &&
         stepOf(reqDone, 'VERIFICATION').status === 'NOT_STARTED' &&
-        ['SUBSCRIPTION', 'PROFILE'].every((s) => stepOf(reqDone, s).status === 'NOT_AVAILABLE') &&
+        stepOf(reqDone, 'SUBSCRIPTION').status === 'NOT_AVAILABLE' &&
+        stepOf(reqDone, 'PROFILE').status === 'NOT_STARTED' &&
         stepOf(reqDone, 'GIGS').status === 'NOT_STARTED',
-      '(13) completing the registration is not Go-Live and does not need verification: VERIFICATION (TRUST-001) is not started, GIGS (CAT-003) has no Gig, later steps are NOT_AVAILABLE and Go-Live is not evaluated',
+      '(13) completing the registration is not Go-Live and does not need verification: VERIFICATION (TRUST-001) is not started, GIGS (CAT-003) has no Gig, SUBSCRIPTION is NOT_AVAILABLE, PROFILE (PRO-002) has no profile yet and Go-Live is not evaluated',
     );
     const submitAgain = ok(await provider('POST', '/submit', token, { expectedRevision: done.registration.revision }), 200, '(13) submit again');
     assert(submitAgain.registration.status === 'COMPLETED', '(13) submitting a completed registration is idempotent');
@@ -9307,6 +9311,31 @@ await check('Provider variants, add-ons and media', async () => {
   }
 });
 
+// ---------------------------------------------------------------- Provider public profile (PRO-002)
+await check('Provider public profile', () =>
+  providerPublicProfileScenario({
+    api,
+    kcUrl,
+    loginAs: async (client, creds) => {
+      const clientId = client === 'web' ? 'bananagig-web' : 'bananagig-admin';
+      const redirectUri = client === 'web' ? WEB_REDIRECT_URI : ADMIN_REDIRECT_URI;
+      const l = await authorizationCodeLogin(kc, { clientId, redirectUri, ...creds });
+      return (await exchangeAuthorizationCode({ tokenEndpoint: ep.token, clientId, redirectUri, code: l.code, codeVerifier: l.verifier })).accessToken;
+    },
+    adminCreds: DEV_USERS.admin,
+    openSmsInbox: (valkey) => new FakeSmsInbox(valkey),
+    extractSmsCode,
+    env,
+    get,
+    retry,
+    sleep,
+    expectOk,
+    clearLimiterBuckets,
+    ensureDevtestGeography,
+    kcMasterToken,
+  }),
+);
+
 await check('Caddy Proxy auth routes', async () => {
   const expectStatus = async (host: string, path: string, ok: (s: number) => boolean, what: string) => {
     const r = await proxy(host, path);
@@ -9367,6 +9396,7 @@ const order = [
   'Consent',
   'Provider registration',
   'Provider verification',
+  'Provider public profile',
   'NATS Events',
   'JetStream',
   'SeaweedFS Storage',

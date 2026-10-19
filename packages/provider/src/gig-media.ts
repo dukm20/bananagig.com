@@ -39,6 +39,7 @@ import type { z } from 'zod';
 import { isDatabaseOutage } from './errors';
 import { GigError } from './gig-errors';
 import { deleteMediaObjects, loadGigMedia, uploadKeyOf, writeMediaAudit } from './gig-media-model';
+import type { Executor } from './gig-sql';
 import type { DraftMutationContext, DraftMutator, GigMediaScanner, GigPolicyProvider } from './gig-types';
 
 export interface GigMediaServiceDeps {
@@ -169,9 +170,175 @@ const SYSTEM_ACTOR = 'system:gig-media-cleanup';
 /** How often a refusal retries its own bookkeeping when the draft revision moves under it. */
 const ABANDON_ATTEMPTS = 3;
 
+// ---------------------------------------------------------------- shared with the profile photo flow (PRO-002): the integrity pipeline and the object bookkeeping
+/** The final object key of an asset (the database derives the same key and refuses any other). */
+export const mediaFinalKey = (assetId: string): string => `${FINAL_PREFIX}${assetId}`;
+
+/** The limits an upload is verified against. The profile photo flow passes the media policy with `maxFileSizeBytes` lowered to its own cap. */
+export type MediaVerifyPolicy = Pick<
+  ProviderGigMediaPolicy,
+  'allowedMimeTypes' | 'maxFileSizeBytes' | 'minEdgePixels' | 'maxEdgePixels' | 'maxPixels' | 'requireCleanScan'
+>;
+/** What the pipeline needs to know of the asset row (never leaves the process). */
+export interface MediaAssetFacts {
+  objectKey: string;
+  mimeType: string;
+  sizeBytes: number;
+}
+export interface MediaRefused {
+  kind: 'refused';
+  /** A reason code (MIME_NOT_ALLOWED, FILE_TOO_LARGE, OBJECT_MISSING, SIZE_MISMATCH, ...). */
+  reason: string;
+  scan?: 'INFECTED';
+  /** false = the asset stays open (the browser may still be uploading); true = the caller abandons it. */
+  closes: boolean;
+}
+export type MediaInspection =
+  | MediaRefused
+  | { kind: 'store-unavailable' }
+  | { kind: 'scan-unavailable' }
+  | { kind: 'verified'; bytes: Buffer; version: string; sha256: string; width: number; height: number; scanned: 'CLEAN' | 'ERROR' };
+
+/**
+ * The integrity checks of an upload, in the order CAT-004 defined them: policy (type, size), then ONE bounded versioned read of the UPLOAD key (existence, size, content type), signature,
+ * header dimensions within the limits, the caller's SHA-256, then the scan. Pure of the database: the caller decides what a refusal does to its own rows. The object store is read ONCE.
+ */
+export async function inspectUpload(
+  deps: { store: PrivateObjectStore; scanner: GigMediaScanner },
+  asset: MediaAssetFacts,
+  policy: MediaVerifyPolicy,
+  expectedSha256?: string,
+): Promise<MediaInspection> {
+  const refusal = (reason: string, scan?: 'INFECTED', closes = true): MediaRefused => ({ kind: 'refused', reason, ...(scan ? { scan } : {}), closes });
+  // the policy may have changed since the authorization: a type or size no longer allowed is refused
+  if (!(policy.allowedMimeTypes as readonly string[]).includes(asset.mimeType)) return refusal('MIME_NOT_ALLOWED');
+  if (asset.sizeBytes > policy.maxFileSizeBytes) return refusal('FILE_TOO_LARGE');
+
+  const uploadKey = uploadKeyOf(asset.objectKey);
+  let read: { bytes: Buffer; version: string } | null;
+  try {
+    const info = await deps.store.head(uploadKey);
+    if (info === null) return refusal('OBJECT_MISSING', undefined, false); // not abandoned: the browser may still be uploading or may upload again
+    if (info.size !== asset.sizeBytes) return refusal('SIZE_MISMATCH');
+    if (mimeOf(info.contentType) !== asset.mimeType) return refusal('CONTENT_TYPE_MISMATCH');
+    read = await deps.store.readVersioned(uploadKey, asset.sizeBytes);
+  } catch (err) {
+    if (err instanceof ObjectStoreError && err.code === 'TOO_LARGE') return refusal('SIZE_MISMATCH');
+    if (err instanceof ObjectStoreError && err.code === 'CHANGED') return refusal('OBJECT_CHANGED');
+    log('error', 'gig media object store unavailable', { error: err instanceof Error ? err.name : 'unknown' });
+    return { kind: 'store-unavailable' };
+  }
+  if (read === null) return refusal('OBJECT_MISSING', undefined, false);
+  const { bytes } = read;
+  if (bytes.byteLength !== asset.sizeBytes) return refusal('SIZE_MISMATCH');
+  if (!matchesImageSignature(asset.mimeType, bytes)) return refusal('SIGNATURE_MISMATCH');
+  // dimensions from the HEADER only (the image is never decoded): a decompression bomb is a small file with a huge claimed size
+  const dims = readImageDimensions(asset.mimeType, bytes);
+  if (dims === null) return refusal('IMAGE_INVALID');
+  if (dims.width < policy.minEdgePixels || dims.height < policy.minEdgePixels) return refusal('IMAGE_TOO_SMALL');
+  if (dims.width > policy.maxEdgePixels || dims.height > policy.maxEdgePixels || dims.width * dims.height > policy.maxPixels) return refusal('IMAGE_TOO_LARGE');
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  if (expectedSha256 !== undefined && expectedSha256 !== sha256) return refusal('HASH_MISMATCH');
+
+  let scanned: 'CLEAN' | 'INFECTED' | 'ERROR';
+  try {
+    scanned = (await deps.scanner.scan({ key: asset.objectKey, size: bytes.byteLength, bytes })).status;
+  } catch {
+    scanned = 'ERROR';
+  }
+  if (scanned === 'INFECTED') return refusal('SCAN_INFECTED', 'INFECTED');
+  if (scanned === 'ERROR' && policy.requireCleanScan) return { kind: 'scan-unavailable' };
+  return { kind: 'verified', bytes, version: read.version, sha256, width: dims.width, height: dims.height, scanned };
+}
+
+/**
+ * PROMOTE: copies exactly the bytes that were hashed and scanned from the upload key to the final key (only while the upload object still has the version that was read), then checks what
+ * landed there. After this nothing reads the upload key again: a replayed PUT can only write an object nobody reads.
+ */
+export async function promoteUpload(
+  store: PrivateObjectStore,
+  asset: MediaAssetFacts,
+  read: { version: string },
+  sha256: string,
+): Promise<{ kind: 'promoted' } | MediaRefused | { kind: 'store-unavailable' }> {
+  try {
+    await store.copyIfVersion(uploadKeyOf(asset.objectKey), asset.objectKey, read.version);
+    const landed = await store.read(asset.objectKey, asset.sizeBytes);
+    if (landed === null || !createHash('sha256').update(landed).digest().equals(Buffer.from(sha256, 'hex')))
+      return { kind: 'refused', reason: 'OBJECT_CHANGED', closes: true };
+    return { kind: 'promoted' };
+  } catch (err) {
+    if (err instanceof ObjectStoreError && err.code === 'CHANGED') return { kind: 'refused', reason: 'OBJECT_CHANGED', closes: true };
+    log('error', 'gig media object store unavailable', { error: err instanceof Error ? err.name : 'unknown' });
+    return { kind: 'store-unavailable' };
+  }
+}
+
+/**
+ * After two finalizations raced: compares the final object with the hash the winner recorded. A difference cannot be repaired here (the integrity window of a concurrent finalize plus a
+ * replayed PUT is accepted debt); it is reported as a counts-only warning. Best effort, no lock.
+ */
+export async function verifyFinalObject(db: Executor, store: PrivateObjectStore, assetId: string, finalKey: string, size: number): Promise<void> {
+  try {
+    const recorded = (await sql<Raw>`SELECT sha256 FROM provider.media_assets WHERE media_asset_id = ${assetId}::uuid`.execute(db)).rows[0]?.sha256 as
+      string | null | undefined;
+    const landed = await store.read(finalKey, size);
+    if (!recorded || landed === null || createHash('sha256').update(landed).digest('hex') !== recorded)
+      log('warn', 'a gig photo final object differs from its recorded hash', { mismatches: 1 });
+  } catch (e) {
+    log('warn', 'could not verify a gig photo final object', { error: e instanceof Error ? e.name : 'unknown' });
+  }
+}
+
+/** Records that the objects of terminal assets are gone; returns how many rows were marked (the ones whose authorization has ended). Best effort. */
+export async function markObjectsRemoved(db: Executor, finalKeys: readonly string[]): Promise<number> {
+  try {
+    return Number(
+      (
+        await sql<Raw>`WITH m AS (
+            UPDATE provider.media_assets SET objects_removed_at = now()
+             WHERE object_key = ANY(${[...finalKeys]}::text[]) AND status IN ('ABANDONED', 'DELETED') AND objects_removed_at IS NULL AND upload_expires_at <= now()
+            RETURNING 1)
+          SELECT count(*) AS n FROM m`.execute(db)
+      ).rows[0]!.n,
+    );
+  } catch (e) {
+    log('warn', 'could not record the removal of gig photo objects', { error: e instanceof Error ? e.name : 'unknown' });
+    return 0;
+  }
+}
+/** Records that the upload object of READY assets is gone (once their authorization has ended). */
+export async function markUploadKeysRemoved(db: Executor, finalKeys: readonly string[]): Promise<number> {
+  try {
+    return Number(
+      (
+        await sql<Raw>`WITH m AS (
+            UPDATE provider.media_assets SET upload_key_removed_at = now()
+             WHERE object_key = ANY(${[...finalKeys]}::text[]) AND status = 'READY' AND upload_key_removed_at IS NULL AND upload_expires_at <= now()
+            RETURNING 1)
+          SELECT count(*) AS n FROM m`.execute(db)
+      ).rows[0]!.n,
+    );
+  } catch (e) {
+    log('warn', 'could not record the removal of gig photo upload objects', { error: e instanceof Error ? e.name : 'unknown' });
+    return 0;
+  }
+}
+/** After the commit that abandoned or deleted these assets: deletes the final and the upload object of each final key, then records `objects_removed_at`. A failed deletion leaves it NULL (the clean-up repeats it). */
+export async function removeAssetObjects(db: Executor, store: PrivateObjectStore, finalKeys: readonly string[]): Promise<boolean> {
+  if (finalKeys.length === 0) return true;
+  const ok = await deleteMediaObjects(
+    store,
+    finalKeys.flatMap((k) => [k, uploadKeyOf(k)]),
+  );
+  if (ok) await markObjectsRemoved(db, finalKeys);
+  return ok;
+}
+
 const notFoundMedia = () => new GigError('MEDIA_NOT_FOUND', 'the photo was not found', {});
 const refused = (reason: string) => new GigError('MEDIA_REFUSED', 'the file did not match what was described', { reason });
 const stale = () => new GigError('STALE_DRAFT', 'the draft changed since it was read: read it again', { reason: 'STALE_DRAFT' });
+const storeDown = (): GigError => new GigError('UNAVAILABLE', 'photos are unavailable', { reason: 'MEDIA_STORE_UNAVAILABLE' });
 /** An object-store failure as the typed error the callers speak: the cause is logged by name only (never a key, a URL or the driver's text). */
 const storeUnavailable = (err: unknown): GigError => {
   log('error', 'gig media object store unavailable', { error: err instanceof Error ? err.name : 'unknown' });
@@ -255,47 +422,13 @@ export class GigMediaService {
    * authorization has ended, because a presigned PUT could still recreate the upload object before that). A failed deletion leaves the column NULL: the clean-up repeats it.
    */
   private async removeObjects(finalKeys: readonly string[]): Promise<boolean> {
-    if (finalKeys.length === 0) return true;
-    const ok = await deleteMediaObjects(
-      this.deps.store,
-      finalKeys.flatMap((k) => [k, uploadKeyOf(k)]),
-    );
-    if (ok) await this.markObjectsRemoved(finalKeys);
-    return ok;
+    return removeAssetObjects(this.db, this.deps.store, finalKeys);
   }
-  /** Records that the objects of terminal assets are gone; returns how many rows were marked (the ones whose authorization has ended). Best effort. */
   private async markObjectsRemoved(finalKeys: readonly string[]): Promise<number> {
-    try {
-      return Number(
-        (
-          await sql<Raw>`WITH m AS (
-              UPDATE provider.media_assets SET objects_removed_at = now()
-               WHERE object_key = ANY(${[...finalKeys]}::text[]) AND status IN ('ABANDONED', 'DELETED') AND objects_removed_at IS NULL AND upload_expires_at <= now()
-              RETURNING 1)
-            SELECT count(*) AS n FROM m`.execute(this.db)
-        ).rows[0]!.n,
-      );
-    } catch (e) {
-      log('warn', 'could not record the removal of gig photo objects', { error: e instanceof Error ? e.name : 'unknown' });
-      return 0;
-    }
+    return markObjectsRemoved(this.db, finalKeys);
   }
-  /** Records that the upload object of READY assets is gone (once their authorization has ended). */
   private async markUploadKeysRemoved(finalKeys: readonly string[]): Promise<number> {
-    try {
-      return Number(
-        (
-          await sql<Raw>`WITH m AS (
-              UPDATE provider.media_assets SET upload_key_removed_at = now()
-               WHERE object_key = ANY(${[...finalKeys]}::text[]) AND status = 'READY' AND upload_key_removed_at IS NULL AND upload_expires_at <= now()
-              RETURNING 1)
-            SELECT count(*) AS n FROM m`.execute(this.db)
-        ).rows[0]!.n,
-      );
-    } catch (e) {
-      log('warn', 'could not record the removal of gig photo upload objects', { error: e instanceof Error ? e.name : 'unknown' });
-      return 0;
-    }
+    return markUploadKeysRemoved(this.db, finalKeys);
   }
 
   /** The attachment of the account's Gig (never by id alone): MEDIA_NOT_FOUND for an unknown one, one of another account's Gig, or one of another Gig. */
@@ -534,62 +667,26 @@ export class GigMediaService {
       if (closes) await this.abandon(accountId, gigId, mediaId, reason, scan);
       throw refused(reason);
     };
-    // the policy may have changed since the authorization: a type or size no longer allowed is refused
-    if (!(policy.allowedMimeTypes as readonly string[]).includes(owned.mimeType)) return gone('MIME_NOT_ALLOWED');
-    if (owned.sizeBytes > policy.maxFileSizeBytes) return gone('FILE_TOO_LARGE');
-
-    const uploadKey = uploadKeyOf(owned.objectKey);
-    let read: { bytes: Buffer; version: string } | null;
-    try {
-      const info = await this.deps.store.head(uploadKey);
-      if (info === null) return await gone('OBJECT_MISSING', undefined, false); // not abandoned: the browser may still be uploading or may upload again
-      if (info.size !== owned.sizeBytes) return await gone('SIZE_MISMATCH');
-      if (mimeOf(info.contentType) !== owned.mimeType) return await gone('CONTENT_TYPE_MISMATCH');
-      read = await this.deps.store.readVersioned(uploadKey, owned.sizeBytes);
-    } catch (err) {
-      if (err instanceof GigError) throw err;
-      if (err instanceof ObjectStoreError && err.code === 'TOO_LARGE') return gone('SIZE_MISMATCH');
-      if (err instanceof ObjectStoreError && err.code === 'CHANGED') return gone('OBJECT_CHANGED');
-      throw storeUnavailable(err);
-    }
-    if (read === null) return gone('OBJECT_MISSING', undefined, false);
-    const { bytes } = read;
-    if (bytes.byteLength !== owned.sizeBytes) return gone('SIZE_MISMATCH');
-    if (!matchesImageSignature(owned.mimeType, bytes)) return gone('SIGNATURE_MISMATCH');
-    // dimensions from the HEADER only (the image is never decoded): a decompression bomb is a small file with a huge claimed size
-    const dims = readImageDimensions(owned.mimeType, bytes);
-    if (dims === null) return gone('IMAGE_INVALID');
-    if (dims.width < policy.minEdgePixels || dims.height < policy.minEdgePixels) return gone('IMAGE_TOO_SMALL');
-    if (dims.width > policy.maxEdgePixels || dims.height > policy.maxEdgePixels || dims.width * dims.height > policy.maxPixels) return gone('IMAGE_TOO_LARGE');
-    const sha256 = createHash('sha256').update(bytes).digest('hex');
-    if (body.sha256 !== undefined && body.sha256 !== sha256) return gone('HASH_MISMATCH');
-
-    let scanned: 'CLEAN' | 'INFECTED' | 'ERROR';
-    try {
-      scanned = (await this.deps.scanner.scan({ key: owned.objectKey, size: bytes.byteLength, bytes })).status;
-    } catch {
-      scanned = 'ERROR';
-    }
-    if (scanned === 'INFECTED') return gone('SCAN_INFECTED', 'INFECTED');
-    if (scanned === 'ERROR' && policy.requireCleanScan)
+    // the shared integrity pipeline (type and size policy, one bounded versioned read, signature, header dimensions, hash, scan): see inspectUpload
+    const inspected = await inspectUpload(this.deps, owned, policy, body.sha256);
+    if (inspected.kind === 'refused') return gone(inspected.reason, inspected.scan, inspected.closes);
+    if (inspected.kind === 'store-unavailable') throw storeDown();
+    if (inspected.kind === 'scan-unavailable')
       throw new GigError('MEDIA_SCAN_UNAVAILABLE', 'we could not check the file right now', { reason: 'SCAN_UNAVAILABLE', retryable: true });
+    const { sha256, version } = inspected;
+    const dims = { width: inspected.width, height: inspected.height };
+    const scanned = inspected.scanned;
+    const uploadKey = uploadKeyOf(owned.objectKey);
 
     // someone else may have finished (or closed) this upload while the bytes were being checked: do not write over a finished asset
     const state = await this.assetStatus(owned.assetId);
     if (state === 'READY') return this.currentDetail(accountId, gigId);
     if (state !== 'UPLOAD_PENDING') throw notFoundMedia();
 
-    // PROMOTE: copy exactly the bytes that were hashed and scanned to the final key (only while the upload object still has the version that was read), check what landed there, and
-    // stop reading the upload key. The provider's presigned PUT may still be valid, but it can only ever write an object nothing reads again.
-    try {
-      await this.deps.store.copyIfVersion(uploadKey, owned.objectKey, read.version);
-      const landed = await this.deps.store.read(owned.objectKey, owned.sizeBytes);
-      if (landed === null || !createHash('sha256').update(landed).digest().equals(Buffer.from(sha256, 'hex'))) return await gone('OBJECT_CHANGED');
-    } catch (err) {
-      if (err instanceof GigError) throw err;
-      if (err instanceof ObjectStoreError && err.code === 'CHANGED') return gone('OBJECT_CHANGED');
-      throw storeUnavailable(err);
-    }
+    // PROMOTE: copy exactly the bytes that were hashed and scanned to the final key and stop reading the upload key (see promoteUpload)
+    const promoted = await promoteUpload(this.deps.store, owned, { version }, sha256);
+    if (promoted.kind === 'refused') return gone(promoted.reason, promoted.scan, promoted.closes);
+    if (promoted.kind === 'store-unavailable') throw storeDown();
 
     let detail: GigDetailDto;
     let outcome: 'attached' | 'already';
@@ -630,20 +727,8 @@ export class GigMediaService {
     return detail;
   }
 
-  /**
-   * After two finalizations raced: compares the final object with the hash the winner recorded. A difference cannot be repaired here (the integrity window of a concurrent finalize plus a
-   * replayed PUT is accepted debt); it is reported as a counts-only warning. Best effort, no lock.
-   */
   private async verifyFinal(assetId: string, finalKey: string, size: number): Promise<void> {
-    try {
-      const recorded = (await sql<Raw>`SELECT sha256 FROM provider.media_assets WHERE media_asset_id = ${assetId}::uuid`.execute(this.db)).rows[0]?.sha256 as
-        string | null | undefined;
-      const landed = await this.deps.store.read(finalKey, size);
-      if (!recorded || landed === null || createHash('sha256').update(landed).digest('hex') !== recorded)
-        log('warn', 'a gig photo final object differs from its recorded hash', { mismatches: 1 });
-    } catch (e) {
-      log('warn', 'could not verify a gig photo final object', { error: e instanceof Error ? e.name : 'unknown' });
-    }
+    await verifyFinalObject(this.db, this.deps.store, assetId, finalKey, size);
   }
 
   // ------------------------------------------------------------------ edit the draft's photos
@@ -790,7 +875,9 @@ export class GigMediaService {
    *  (e) UPLOAD_PENDING assets whose attachments are ALL on RETIRED versions (a Gig retired with a photo in flight) are abandoned;
    *  (b) READY assets that NO attachment references, READY for longer than the grace period, are marked DELETED and their objects deleted;
    *  (c) terminal assets (ABANDONED, DELETED) whose objects were not confirmed removed get their objects deleted again (a store outage, or a PUT that recreated the upload object);
-   *  (d) READY assets whose upload authorization has ended and whose upload object was not removed yet lose that object (this also removes bytes a replayed PUT recreated).
+   *  (d) READY assets whose upload authorization has ended and whose upload object was not removed yet lose that object (this also removes bytes a replayed PUT recreated);
+   *  (f) PRO-002: UPLOAD_PENDING profile photos past their authorization lose the profile's pending pointer and are abandoned. A profile reference (photo_asset_id or
+   *      pending_photo_asset_id) counts as a reference everywhere above: (b) never deletes a photo a profile shows or is finishing.
    * Every transaction follows the lock order of the service (account, Gig, version, asset); a row someone else holds is left for the next run. `limit` applies to each pass.
    * Returns counts only; logs carry counts only.
    */
@@ -824,9 +911,19 @@ export class GigMediaService {
         WHERE a.status = 'UPLOAD_PENDING' AND a.upload_expires_at <= now()
           AND NOT EXISTS (SELECT 1 FROM provider.gig_version_media m JOIN provider.gig_versions v ON v.gig_version_id = m.gig_version_id
                            WHERE m.media_asset_id = a.media_asset_id AND v.status <> 'DRAFT')
+          AND NOT EXISTS (SELECT 1 FROM provider.public_profiles p WHERE p.pending_photo_asset_id = a.media_asset_id)
         ORDER BY a.upload_expires_at LIMIT ${limit}::integer`.execute(this.db),
     ))
       if (await attempt(() => this.abandonPending(c.media_asset_id as string, c.account_id as string, cid, 'EXPIRED'))) abandoned++;
+
+    // (f) expired profile photo uploads (PRO-002): the profile's pending pointer is cleared first, then the asset is closed
+    for (const c of await candidates(() =>
+      sql<Raw>`SELECT a.media_asset_id, a.account_id FROM provider.media_assets a
+        WHERE a.status = 'UPLOAD_PENDING' AND a.upload_expires_at <= now()
+          AND EXISTS (SELECT 1 FROM provider.public_profiles p WHERE p.pending_photo_asset_id = a.media_asset_id)
+        ORDER BY a.upload_expires_at LIMIT ${limit}::integer`.execute(this.db),
+    ))
+      if (await attempt(() => this.abandonProfilePending(c.media_asset_id as string, c.account_id as string, cid))) abandoned++;
 
     // (e) pending uploads stuck on RETIRED versions
     for (const c of await candidates(() =>
@@ -844,6 +941,7 @@ export class GigMediaService {
       sql<Raw>`SELECT a.media_asset_id, a.account_id FROM provider.media_assets a
         WHERE a.status = 'READY' AND a.ready_at <= now() - make_interval(secs => ${policy.orphanGraceSeconds}::double precision)
           AND NOT EXISTS (SELECT 1 FROM provider.gig_version_media m WHERE m.media_asset_id = a.media_asset_id)
+          AND NOT EXISTS (SELECT 1 FROM provider.public_profiles p WHERE p.photo_asset_id = a.media_asset_id OR p.pending_photo_asset_id = a.media_asset_id)
         ORDER BY a.ready_at LIMIT ${limit}::integer`.execute(this.db),
     ))
       if (await attempt(() => this.deleteOrphan(c.media_asset_id as string, c.account_id as string, policy))) deleted++;
@@ -934,6 +1032,35 @@ export class GigMediaService {
     });
   }
 
+  /**
+   * One expired profile photo upload, in one transaction (account, profile, then the asset, all without waiting): the profile's pending pointer is cleared (the revision rises: the owner's
+   * view changed) and the asset is abandoned. This is a PENDING-POINTER-ONLY change, like the authorization of an upload: the revision rises and one audit row is written (by field NAME only), but NO `profile-updated`
+   * outbox event is emitted, because nothing a customer sees changed (the same `publicChange: false` rule as ProfilePhotoService). Returns the final key to clean up after the commit, or null when nothing was to do (or the rows are busy).
+   */
+  private async abandonProfilePending(assetId: string, accountId: string, cid: string): Promise<string | null> {
+    return this.deps.database.transaction(async (trx) => {
+      if (!(await this.lockAccountIfFree(trx, accountId))) return null;
+      const p = (
+        await sql<Raw>`SELECT public_profile_id, revision FROM provider.public_profiles
+          WHERE pending_photo_asset_id = ${assetId}::uuid FOR UPDATE SKIP LOCKED`.execute(trx)
+      ).rows[0];
+      if (!p) return null;
+      const a = (
+        await sql<Raw>`SELECT object_key FROM provider.media_assets
+          WHERE media_asset_id = ${assetId}::uuid AND status = 'UPLOAD_PENDING' AND upload_expires_at <= now() FOR UPDATE SKIP LOCKED`.execute(trx)
+      ).rows[0];
+      if (!a) return null;
+      const revision = Number(p.revision);
+      await sql`UPDATE provider.public_profiles SET pending_photo_asset_id = NULL, revision = revision + 1, updated_at = now()
+        WHERE public_profile_id = ${p.public_profile_id as string}::uuid`.execute(trx);
+      await sql`UPDATE provider.media_assets SET status = 'ABANDONED', updated_at = now() WHERE media_asset_id = ${assetId}::uuid`.execute(trx);
+      await sql`INSERT INTO provider.profile_audit_events (actor, action, account_id, public_profile_id, changes, correlation_id)
+        VALUES (${SYSTEM_ACTOR}, 'PROVIDER_PROFILE_PHOTO_CHANGED', ${accountId}::uuid, ${p.public_profile_id as string}::uuid,
+                ${JSON.stringify({ changedFields: ['photo'], revision: [revision, revision + 1], reason: 'UPLOAD_EXPIRED' })}::jsonb, ${cid})`.execute(trx);
+      return a.object_key as string;
+    });
+  }
+
   /** One unreferenced READY asset, in one transaction. The re-check under the asset lock is what makes an attach and the sweep unable to race. */
   private async deleteOrphan(assetId: string, accountId: string, policy: ProviderGigMediaPolicy): Promise<string | null> {
     return this.deps.database.transaction(async (trx) => {
@@ -942,6 +1069,7 @@ export class GigMediaService {
         await sql<Raw>`SELECT a.object_key FROM provider.media_assets a
           WHERE a.media_asset_id = ${assetId}::uuid AND a.status = 'READY' AND a.ready_at <= now() - make_interval(secs => ${policy.orphanGraceSeconds}::double precision)
             AND NOT EXISTS (SELECT 1 FROM provider.gig_version_media m WHERE m.media_asset_id = a.media_asset_id)
+            AND NOT EXISTS (SELECT 1 FROM provider.public_profiles p WHERE p.photo_asset_id = a.media_asset_id OR p.pending_photo_asset_id = a.media_asset_id)
           FOR UPDATE OF a SKIP LOCKED`.execute(trx)
       ).rows[0];
       if (!a) return null;

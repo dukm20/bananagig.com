@@ -563,6 +563,20 @@ describe('provider registration page', () => {
       stub.catalog = PROVIDER_COPY;
       expect(await render()).not.toContain('/provider/gigs');
     });
+    it('COMPLETED links to the public profile page (PRO-002) with the registry title as its text; no other state does, and without the copy there is no link', async () => {
+      signedIn();
+      const profileTitle = 'Registry profile page title';
+      stub.catalog = { 'en-US': { ...PROVIDER_COPY['en-US']!, 'provider.profile.page.title': { value: profileTitle } } };
+      setRegistration(live({ status: 'COMPLETED', marketCode: 'us-orange-county' }));
+      expect(await render()).toContain(`<p><a href="/provider/profile">${profileTitle}</a></p>`);
+      for (const reg of [null, live(), live({ status: 'CANCELLED' })]) {
+        setRegistration(reg);
+        expect(await render(), String(reg?.status)).not.toContain('/provider/profile');
+      }
+      setRegistration(live({ status: 'COMPLETED', marketCode: 'us-orange-county' }));
+      stub.catalog = PROVIDER_COPY;
+      expect(await render()).not.toContain('/provider/profile');
+    });
     it('the Go-Live note belongs to COMPLETED only', async () => {
       signedIn();
       for (const reg of [null, live(), live({ status: 'CANCELLED' })]) {

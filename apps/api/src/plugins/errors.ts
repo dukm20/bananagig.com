@@ -1,6 +1,6 @@
 import fp from 'fastify-plugin';
 import type { FastifyError, FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { CORRELATION_HEADER, ERROR_STATUS, type ErrorCategory, type ErrorResponse } from '@bananagig/contracts';
+import { CORRELATION_HEADER, ERROR_STATUS, profileErrorKey, type ErrorCategory, type ErrorResponse } from '@bananagig/contracts';
 import { log, resolveCorrelationId } from '@bananagig/observability';
 import { AppError } from '../errors';
 
@@ -9,15 +9,17 @@ const body = (req: { correlationId: string }, category: ErrorCategory, code: str
 });
 
 /**
- * Everything under /api/v1/account, /api/v1/auth and /api/v1/provider (the provider registration of the caller) concerns one person's sessions, contacts or credentials (or is a reset request): every response there, errors
+ * Everything under /api/v1/account, /api/v1/auth, /api/v1/provider (the provider registration of the caller) and /api/v1/providers (the public profile: its errors are never stored, and its photo sets its own revalidation policy on success) concerns one person's sessions, contacts or credentials (or is a reset request): every response there, errors
  * included, is `Cache-Control: no-store`. The routes set it in an onRequest hook, but router-level failures and unknown paths never reach a route hook, so the error
  * paths set it here from the URL.
  */
-const NO_STORE_PREFIXES = ['/api/v1/account', '/api/v1/auth', '/api/v1/provider', '/api/v1/admin/trust'];
+const NO_STORE_PREFIXES = ['/api/v1/account', '/api/v1/auth', '/api/v1/provider', '/api/v1/providers', '/api/v1/admin/trust'];
 export const isNoStorePath = (url: string): boolean => {
   const path = (url.split(/[?#]/)[0] ?? '').toLowerCase();
   return NO_STORE_PREFIXES.some((p) => path === p || path.startsWith(`${p}/`));
 };
+/** The two public profile routes: the opaque id is one path segment. */
+const PUBLIC_PROFILE_PATH = /^\/api\/v1\/providers\/[^/]+(?:\/photo)?$/;
 const noStoreFor = (req: { url: string }, reply: FastifyReply): void => {
   if (isNoStorePath(req.url)) void reply.header('cache-control', 'no-store');
 };
@@ -32,6 +34,12 @@ export const frameworkErrors = (err: FastifyError, req: FastifyRequest, reply: F
   const code = err.code === 'FST_ERR_MAX_PARAM_LENGTH' ? 'PATH_PARAMETER_TOO_LONG' : 'BAD_URL';
   const message = code === 'BAD_URL' ? 'The request URL is not valid' : 'A path parameter exceeds the maximum allowed length';
   noStoreFor(req, reply);
+  // PRO-002: on the PUBLIC profile routes an id the router refuses (too long, or a malformed percent-escape) is "not a profile id" like any other malformed id: the same 404 (a 400 would tell it apart)
+  if (PUBLIC_PROFILE_PATH.test((req.url.split(/[?#]/)[0] ?? '').toLowerCase()))
+    return void reply
+      .header(CORRELATION_HEADER, correlationId)
+      .status(ERROR_STATUS.NOT_FOUND)
+      .send(body({ correlationId }, 'NOT_FOUND', 'PROFILE_NOT_FOUND', 'The profile was not found', { messageKey: profileErrorKey('PROFILE_NOT_FOUND') }));
   void reply
     .header(CORRELATION_HEADER, correlationId)
     .status(ERROR_STATUS.VALIDATION)

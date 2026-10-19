@@ -18,6 +18,8 @@ export const metadata: Metadata = { title: 'Your Gigs', robots: { index: false, 
 export const dynamic = 'force-dynamic';
 
 const k = gigKey;
+/** The next step after the Gigs: the public profile (PRO-002); the link text is its page title, omitted when the registry cannot serve it. */
+const PROFILE_LINK_KEY = 'provider.profile.page.title';
 
 interface SearchParams {
   notice?: string | string[];
@@ -99,6 +101,7 @@ export default async function ProviderGigsPage({ searchParams }: { searchParams:
           k('menu.photos'),
           k('menu.photos_missing'),
           k('editor.version'),
+          PROFILE_LINK_KEY,
           ...(m.gigs.length === 0 ? [k('menu.empty')] : []),
           ...(m.cannotCreateReason === 'PROVIDER_NOT_ELIGIBLE' ? [k('menu.not_eligible')] : []),
           ...(m.cannotCreateReason === 'DRAFT_LIMIT_REACHED' ? [k('menu.draft_limit')] : []),
@@ -284,6 +287,11 @@ export default async function ProviderGigsPage({ searchParams }: { searchParams:
             </p>
           ) : m.cannotCreateReason === 'DRAFT_LIMIT_REACHED' && text(k('menu.draft_limit')) ? (
             <p>{text(k('menu.draft_limit'))}</p>
+          ) : null}
+          {text(PROFILE_LINK_KEY) ? (
+            <p>
+              <a href="/provider/profile">{text(PROFILE_LINK_KEY)}</a>
+            </p>
           ) : null}
         </>
       ) : null}

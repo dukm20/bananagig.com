@@ -36,6 +36,8 @@ const GENERIC_ERROR_KEY = providerErrorKey('UNAVAILABLE');
 const NOTICE_KEYS: Readonly<Record<string, string>> = { submitted: page('completed_notice'), cancelled: page('cancelled_notice') };
 /** The next step after a completed registration: the provider's Gigs (CAT-003); the link text is the Gigs page title, omitted when the registry cannot serve it. */
 const GIGS_LINK_KEY = 'provider.gig.page.title';
+/** ... and the public profile (PRO-002); the link text is the profile page title (`provider.profile.page.title`), omitted when the registry cannot serve it. */
+const PROFILE_LINK_KEY = 'provider.profile.page.title';
 /** The most markets and service types the page lists (the lists are bounded by the platform; this bounds one render). */
 const MAX_OPTIONS = 200;
 
@@ -131,7 +133,7 @@ export default async function ProviderRegistrationPage({ searchParams }: { searc
           ...(steps.some((s) => s.step === 'LEGAL' && s.status !== 'COMPLETE' && s.status !== 'NOT_REQUIRED') ? [page('legal_hint')] : []),
         ]
       : []),
-    ...(completed ? [page('golive_note'), GIGS_LINK_KEY] : []),
+    ...(completed ? [page('golive_note'), GIGS_LINK_KEY, PROFILE_LINK_KEY] : []),
   ]);
   const text = (k: string) => renderContent(copy[k]);
 
@@ -258,6 +260,11 @@ export default async function ProviderRegistrationPage({ searchParams }: { searc
       {completed && text(GIGS_LINK_KEY) ? (
         <p>
           <a href="/provider/gigs">{text(GIGS_LINK_KEY)}</a>
+        </p>
+      ) : null}
+      {completed && text(PROFILE_LINK_KEY) ? (
+        <p>
+          <a href="/provider/profile">{text(PROFILE_LINK_KEY)}</a>
         </p>
       ) : null}
     </div>

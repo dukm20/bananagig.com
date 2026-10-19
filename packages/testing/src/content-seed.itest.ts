@@ -248,7 +248,7 @@ describe('migration 0006 seeded shell copy', () => {
     // email-model.itest.ts and phone-model.itest.ts; migration 0012 seeds the six session, MFA and recovery parameters, tested in security-model.itest.ts;
     // migration 0013 seeds the four consent.* policy parameters, tested in consent-model.itest.ts; migration 0018 seeds the five provider.registration.* policy
     // parameters, tested in provider-model.itest.ts; migration 0019 seeds the six trust.* evidence policy parameters, tested in trust-model.itest.ts; migration 0020 seeds the five provider.gig.* policy parameters, tested
-    // in gig-model.itest.ts; migration 0021 seeds the fifteen provider.gig variant, add-on and media policy parameters, tested in gig-options-media-model.itest.ts): the parameters that exist besides those are EXACTLY the forty-one named here
+    // in gig-model.itest.ts; migration 0021 seeds the fifteen provider.gig variant, add-on and media policy parameters, tested in gig-options-media-model.itest.ts; migration 0024 seeds the seven provider.profile.* public profile policy parameters, tested in provider-profile-model.itest.ts): the parameters that exist besides those are EXACTLY the forty-eight named here
     const others = await iso.database.query<{ key: string }>(
       "SELECT key FROM configuration.parameters WHERE key NOT LIKE 'verification.email.%' AND key NOT LIKE 'verification.phone.%' ORDER BY key COLLATE \"C\"",
     );
@@ -277,6 +277,13 @@ describe('migration 0006 seeded shell copy', () => {
       'provider.gig.short_pitch.max_length',
       'provider.gig.title.max_length',
       'provider.gig.variant.max_count',
+      'provider.profile.bio.max_length',
+      'provider.profile.bio.required',
+      'provider.profile.display_name.max_length',
+      'provider.profile.photo.max_file_size_bytes',
+      'provider.profile.photo.required',
+      'provider.profile.public_badge_types',
+      'provider.profile.public_requires_marketplace_eligibility',
       'provider.registration.market_statuses_allowed',
       'provider.registration.max_service_types',
       'provider.registration.min_service_types',

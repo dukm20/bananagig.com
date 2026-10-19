@@ -117,10 +117,14 @@ Any change to the twelve tables or their guards needs the Data Model Review Gate
 - Do not model a BananaDrop, a tier or a group price in the catalogue or in a template; template flags such as `DROP_ELIGIBLE` are permissions, not Drop state.
 - Do not store a variant, add-on, photo or media rule instance in the catalogue, and do not copy a template permission or MEDIA bound onto the Gig; the Gig reads the exact bound version.
 
+### Gig summaries on the public profile (PRO-002, ADR-0048)
+
+- The public profile shows a Gig card only for an ACTIVE Gig with a PUBLISHED version (title, short pitch, base price, duration, option and READY photo counts); drafts, retired Gigs and superseded versions never appear, and the service name comes from the EXACT bound template version in one batch (`GigServiceNamePort`), never from the mutable template. The card is derived on every read and stores nothing; it carries no tier, ladder, Drop or availability data, and the public page says booking is not open.
+
 ## Related ADRs
 
-ADR-0016, ADR-0021, ADR-0022, ADR-0040, ADR-0041, ADR-0046, ADR-0047
+ADR-0016, ADR-0021, ADR-0022, ADR-0040, ADR-0041, ADR-0046, ADR-0047, ADR-0048
 
 ## Last reviewed
 
-2026-10-18 (CAT-004)
+2026-10-18 (PRO-002)

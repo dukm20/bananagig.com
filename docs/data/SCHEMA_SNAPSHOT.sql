@@ -1474,6 +1474,7 @@ CREATE TABLE provider.media_assets (
   updated_at timestamp with time zone NOT NULL DEFAULT now(),
   objects_removed_at timestamp with time zone,
   upload_key_removed_at timestamp with time zone,
+  purpose text NOT NULL DEFAULT 'GIG_PHOTO'::text,
   CONSTRAINT pk_media_assets PRIMARY KEY (media_asset_id),
   CONSTRAINT uq_media_assets__object_key UNIQUE (object_key),
   CONSTRAINT fk_media_assets__account_id FOREIGN KEY (account_id) REFERENCES identity.accounts(account_id) ON DELETE RESTRICT,
@@ -1485,6 +1486,7 @@ CREATE TABLE provider.media_assets (
   CONSTRAINT ck_media_assets__object_key CHECK (((length(object_key) >= 1) AND (length(object_key) <= 500))),
   CONSTRAINT ck_media_assets__object_key_derived CHECK ((object_key = ('provider/gig-media/'::text || (media_asset_id)::text))),
   CONSTRAINT ck_media_assets__objects_removed CHECK (((objects_removed_at IS NULL) OR (status = ANY (ARRAY['ABANDONED'::text, 'DELETED'::text])))),
+  CONSTRAINT ck_media_assets__purpose CHECK ((purpose = ANY (ARRAY['GIG_PHOTO'::text, 'PROFILE_PHOTO'::text]))),
   CONSTRAINT ck_media_assets__scan_status CHECK ((scan_status = ANY (ARRAY['PENDING'::text, 'CLEAN'::text, 'INFECTED'::text, 'ERROR'::text]))),
   CONSTRAINT ck_media_assets__sha256 CHECK (((sha256 IS NULL) OR (sha256 ~ '^[0-9a-f]{64}$'::text))),
   CONSTRAINT ck_media_assets__size CHECK (((size_bytes > 0) AND (size_bytes <= 26214400))),
@@ -1495,6 +1497,51 @@ CREATE INDEX idx_media_assets__account ON provider.media_assets USING btree (acc
 CREATE INDEX idx_media_assets__objects_to_remove ON provider.media_assets USING btree (updated_at) WHERE ((status = ANY (ARRAY['ABANDONED'::text, 'DELETED'::text])) AND (objects_removed_at IS NULL));
 CREATE INDEX idx_media_assets__pending_expiry ON provider.media_assets USING btree (upload_expires_at) WHERE (status = 'UPLOAD_PENDING'::text);
 CREATE INDEX idx_media_assets__upload_key_sweep ON provider.media_assets USING btree (upload_expires_at) WHERE ((status = 'READY'::text) AND (upload_key_removed_at IS NULL));
+
+CREATE TABLE provider.profile_audit_events (
+  audit_event_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  occurred_at timestamp with time zone NOT NULL DEFAULT clock_timestamp(),
+  actor text NOT NULL,
+  account_id uuid NOT NULL,
+  public_profile_id uuid NOT NULL,
+  action text NOT NULL,
+  changes jsonb,
+  correlation_id text NOT NULL,
+  CONSTRAINT pk_profile_audit_events PRIMARY KEY (audit_event_id),
+  CONSTRAINT fk_profile_audit_events__account_id FOREIGN KEY (account_id) REFERENCES identity.accounts(account_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_profile_audit_events__public_profile_id FOREIGN KEY (public_profile_id) REFERENCES provider.public_profiles(public_profile_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_profile_audit_events__action CHECK ((action = ANY (ARRAY['PROVIDER_PUBLIC_PROFILE_CREATED'::text, 'PROVIDER_PUBLIC_PROFILE_UPDATED'::text, 'PROVIDER_PROFILE_PHOTO_CHANGED'::text, 'PROVIDER_PROFILE_VISIBILITY_CHANGED'::text]))),
+  CONSTRAINT ck_profile_audit_events__actor CHECK (((length(btrim(actor)) > 0) AND (length(actor) <= 200))),
+  CONSTRAINT ck_profile_audit_events__changes_object CHECK (((changes IS NULL) OR ((jsonb_typeof(changes) = 'object'::text) AND (length((changes)::text) <= 2000))))
+);
+CREATE INDEX idx_profile_audit_events__profile ON provider.profile_audit_events USING btree (public_profile_id, occurred_at);
+
+CREATE TABLE provider.public_profiles (
+  public_profile_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  account_id uuid NOT NULL,
+  display_name text,
+  bio text,
+  photo_asset_id uuid,
+  pending_photo_asset_id uuid,
+  visibility_status text NOT NULL DEFAULT 'PRIVATE'::text,
+  revision integer NOT NULL DEFAULT 1,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  published_at timestamp with time zone,
+  CONSTRAINT pk_public_profiles PRIMARY KEY (public_profile_id),
+  CONSTRAINT uq_public_profiles__account UNIQUE (account_id),
+  CONSTRAINT fk_public_profiles__account_id FOREIGN KEY (account_id) REFERENCES identity.accounts(account_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_public_profiles__pending_photo_asset_id FOREIGN KEY (pending_photo_asset_id) REFERENCES provider.media_assets(media_asset_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_public_profiles__photo_asset_id FOREIGN KEY (photo_asset_id) REFERENCES provider.media_assets(media_asset_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_public_profiles__bio CHECK (((bio IS NULL) OR ((length(btrim(bio)) > 0) AND (char_length(bio) <= 5000) AND (bio !~ '(^\s|\s$)'::text) AND (bio IS NFC NORMALIZED) AND (bio !~ '[\u0001-\u0008\u000B-\u001F\u007F-\u009F\u00AD\u0600-\u0605\u061C\u06DD\u070F\u180E\u200B\u200E\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\u3164\u2800\uFEFF\uFFF9-\uFFFB]'::text)))),
+  CONSTRAINT ck_public_profiles__display_name CHECK (((display_name IS NULL) OR ((length(btrim(display_name)) > 0) AND (char_length(display_name) <= 100) AND (display_name !~ '(^\s|\s$)'::text) AND (display_name IS NFC NORMALIZED) AND (display_name !~ '[\u0001-\u001F\u007F-\u009F\u00AD\u0600-\u0605\u061C\u06DD\u070F\u180E\u200B\u200E\u200F\u2028\u2029\u202A-\u202E\u2060-\u2064\u2066-\u206F\u3164\u2800\uFEFF\uFFF9-\uFFFB]'::text)))),
+  CONSTRAINT ck_public_profiles__lifecycle CHECK (((visibility_status = 'PUBLIC'::text) = (published_at IS NOT NULL))),
+  CONSTRAINT ck_public_profiles__photo_distinct CHECK (((photo_asset_id IS NULL) OR (pending_photo_asset_id IS NULL) OR (photo_asset_id <> pending_photo_asset_id))),
+  CONSTRAINT ck_public_profiles__revision CHECK ((revision >= 1)),
+  CONSTRAINT ck_public_profiles__visibility CHECK ((visibility_status = ANY (ARRAY['PRIVATE'::text, 'PUBLIC'::text])))
+);
+CREATE INDEX idx_public_profiles__pending_photo_asset ON provider.public_profiles USING btree (pending_photo_asset_id) WHERE (pending_photo_asset_id IS NOT NULL);
+CREATE INDEX idx_public_profiles__photo_asset ON provider.public_profiles USING btree (photo_asset_id) WHERE (photo_asset_id IS NOT NULL);
 
 CREATE TABLE provider.registration_service_types (
   provider_registration_id uuid NOT NULL,

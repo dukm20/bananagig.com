@@ -359,3 +359,36 @@ main:has(.account-shell) {
   display: block;
   font-weight: 600;
 }
+
+/* Provider public profile (PRO-002, temporary structure only): the photo never overflows the column, the bio keeps its line breaks, the badges are a plain list of words. Links
+   in the profile areas are 44px targets (an inline link ignores min-height, so they are inline-flex), the list of named problems looks like the Gig editor's, and the global
+   two-column definition grid is reset here: the facts and the checklist are rows of their own (.gig-row), one under the other. The message a redirect lands on shows a focus ring. */
+.provider-profile a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+}
+.provider-profile dl {
+  display: block;
+}
+.provider-profile #profile-issues {
+  border: 2px solid var(--fg);
+  padding: 0.5rem 1rem 0.5rem 2rem;
+  margin: 0 0 1rem;
+}
+.provider-profile [tabindex='-1']:focus-visible {
+  outline: 3px solid var(--fg);
+  outline-offset: 2px;
+}
+.provider-profile .profile-photo {
+  display: block;
+  max-width: min(100%, 16rem);
+  height: auto;
+  margin: 0 0 1rem;
+}
+.provider-profile .profile-badges {
+  padding-left: 1.25rem;
+}
+.provider-profile textarea {
+  min-height: 8rem;
+}

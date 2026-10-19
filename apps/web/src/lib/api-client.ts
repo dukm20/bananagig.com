@@ -15,6 +15,11 @@ import {
   GigMenuResponse,
   GigTemplateChoicesResponse,
   GigVersionResponse,
+  OwnerProfileStateResponse,
+  PreviewProviderProfileResponse,
+  PROFILE_PHOTO_MIME_TYPES,
+  ProfilePhotoUploadResponse,
+  PublicProviderProfileResponse,
   MarketListResponse,
   ProviderRegistrationStateResponse,
   ProviderRequirementsResponse,
@@ -69,6 +74,15 @@ import {
   type GigMenuDto,
   type GigTemplateChoicesDto,
   type GigVersionDto,
+  type FinalizeProfilePhotoRequest,
+  type OwnerProfileStateDto,
+  type PreviewProviderProfileDto,
+  type ProfilePhotoUploadDto,
+  type PublicProviderProfileDto,
+  type RemoveProfilePhotoRequest,
+  type RequestProfilePhotoUploadRequest,
+  type SetProfileVisibilityRequest,
+  type UpdateProviderProfileRequest,
   type PublishGigRequest,
   type ReorderGigMediaRequest,
   type ReplaceGigAddOnsRequest,
@@ -146,6 +160,12 @@ export class ApiError extends Error {
     this.name = 'ApiError';
   }
 }
+
+/** The owner's own profile photo as the API serves it (sanitised bytes, an opaque weak validator), or "not modified" for a matching `If-None-Match`. */
+export type ProfilePhotoResponse =
+  { kind: 'bytes'; bytes: Uint8Array; contentType: string; etag: string | undefined } | { kind: 'not-modified'; etag: string | undefined };
+/** The most bytes the web reads of a photo answer (the structural ceiling of any upload; the API serves at most the configured profile limit). */
+const PHOTO_ANSWER_CEILING = 26_214_400;
 
 export interface ApiClientOptions {
   baseUrl: string;
@@ -696,6 +716,107 @@ export function createApiClient(opts: ApiClientOptions) {
           ? `/provider/gigs/${encodeURIComponent(gigId)}/draft/media/${encodeURIComponent(mediaId)}/preview`
           : `/provider/gigs/${encodeURIComponent(gigId)}/versions/${encodeURIComponent(String(version))}/media/${encodeURIComponent(mediaId)}/preview`;
       return (await request(path, (j) => GigMediaPreviewResponse.parse(j).data, undefined, { headers: roleHeader(o) })).data;
+    },
+    // ---------------------------------------------------------------- provider public profile (PRO-002): the caller's own profile; no call carries an account id
+    /** GET /api/v1/provider/profile: the owner's state (`exists: false` before a profile was created) with the readiness facts and the limits of the form. */
+    async getProviderProfile(o: AccountCallOptions = {}): Promise<OwnerProfileStateDto> {
+      return (await request('/provider/profile', (j) => OwnerProfileStateResponse.parse(j).data, undefined, { headers: roleHeader(o) })).data;
+    },
+    /** POST /api/v1/provider/profile: creates the PRIVATE profile (201) or returns the existing one unchanged (200). `created` tells which. */
+    async createProviderProfile(o: AccountCallOptions = {}): Promise<{ created: boolean; state: OwnerProfileStateDto }> {
+      const r = await request('/provider/profile', (j) => OwnerProfileStateResponse.parse(j).data, {}, { method: 'POST', headers: roleHeader(o) });
+      return { created: r.status === 201, state: r.data };
+    },
+    /** PATCH /api/v1/provider/profile: changes the display name and/or the bio (an absent field stays, null clears it; a stale revision is an ApiError 409). */
+    async updateProviderProfile(input: UpdateProviderProfileRequest, o: AccountCallOptions = {}): Promise<OwnerProfileStateDto> {
+      return (await request('/provider/profile', (j) => OwnerProfileStateResponse.parse(j).data, input, { method: 'PATCH', headers: roleHeader(o) })).data;
+    },
+    /** POST /api/v1/provider/profile/visibility: PRIVATE or PUBLIC (PUBLIC needs the configured prerequisites: 409 PROFILE_INCOMPLETE otherwise). Never "live" or "bookable". */
+    async setProviderProfileVisibility(input: SetProfileVisibilityRequest, o: AccountCallOptions = {}): Promise<OwnerProfileStateDto> {
+      return (await request('/provider/profile/visibility', (j) => OwnerProfileStateResponse.parse(j).data, input, { method: 'POST', headers: roleHeader(o) }))
+        .data;
+    },
+    /** POST /api/v1/provider/profile/photo/uploads: authorizes ONE photo upload (201). The answer carries a one-time PUT target: never store, log, render or redirect it. */
+    async requestProviderProfilePhotoUpload(input: RequestProfilePhotoUploadRequest, o: AccountCallOptions = {}): Promise<ProfilePhotoUploadDto> {
+      return (
+        await request('/provider/profile/photo/uploads', (j) => ProfilePhotoUploadResponse.parse(j).data, input, { method: 'POST', headers: roleHeader(o) })
+      ).data;
+    },
+    /** POST /api/v1/provider/profile/photo/finalize: the server verifies the stored file, scans it and makes it the profile photo. Repeatable while the scan is unavailable. */
+    async finalizeProviderProfilePhoto(input: FinalizeProfilePhotoRequest, o: AccountCallOptions = {}): Promise<OwnerProfileStateDto> {
+      return (
+        await request('/provider/profile/photo/finalize', (j) => OwnerProfileStateResponse.parse(j).data, input, { method: 'POST', headers: roleHeader(o) })
+      ).data;
+    },
+    /** DELETE /api/v1/provider/profile/photo: removes the photo and any unfinished upload (the JSON body carries the revision). */
+    async removeProviderProfilePhoto(input: RemoveProfilePhotoRequest, o: AccountCallOptions = {}): Promise<OwnerProfileStateDto> {
+      return (await request('/provider/profile/photo', (j) => OwnerProfileStateResponse.parse(j).data, input, { method: 'DELETE', headers: roleHeader(o) }))
+        .data;
+    },
+    /** GET /api/v1/provider/profile/preview: exactly the public projection of the caller's own profile, whatever its visibility, plus `visibility` and `preview: true`. */
+    async getProviderProfilePreview(o: AccountCallOptions = {}): Promise<PreviewProviderProfileDto> {
+      return (await request('/provider/profile/preview', (j) => PreviewProviderProfileResponse.parse(j).data, undefined, { headers: roleHeader(o) })).data;
+    },
+    /**
+     * GET /api/v1/provider/profile/photo: the owner's own photo as SANITISED bytes (bearer token; the browser cannot send one, so the web server proxies it). The read is bounded,
+     * the content type must be an allowed image type and a matching `If-None-Match` is answered "not modified". A missing photo is an ApiError (404).
+     */
+    async getProviderProfilePhoto(o: AccountCallOptions = {}, q: { ifNoneMatch?: string } = {}): Promise<ProfilePhotoResponse> {
+      const headers: Record<string, string> = { accept: 'image/*', ...roleHeader(o) };
+      const cid = opts.correlationId?.();
+      if (cid) headers[CORRELATION_HEADER] = cid;
+      const token = opts.accessToken?.();
+      if (token) headers.authorization = `Bearer ${token}`;
+      if (q.ifNoneMatch !== undefined) headers['if-none-match'] = q.ifNoneMatch;
+      let res: Response;
+      try {
+        res = await f(`${opts.baseUrl.replace(/\/$/, '')}${API_PREFIX}/provider/profile/photo`, { method: 'GET', headers, cache: 'no-store' });
+      } catch (err) {
+        throw new ApiError(0, 'API_UNREACHABLE', 'DEPENDENCY', `API request failed: ${err instanceof Error ? err.message : String(err)}`, cid);
+      }
+      const etag = res.headers.get('etag') ?? undefined;
+      if (res.status === 304) return { kind: 'not-modified', etag };
+      const correlationId = res.headers.get(CORRELATION_HEADER) ?? undefined;
+      if (!res.ok) {
+        const e = ErrorResponse.safeParse(await res.json().catch(() => undefined));
+        if (e.success)
+          throw new ApiError(res.status, e.data.error.code, e.data.error.category, e.data.error.message, e.data.error.correlationId, e.data.error.details);
+        throw new ApiError(res.status, 'UNEXPECTED_RESPONSE', 'INTERNAL', `Unexpected ${res.status} response`, correlationId);
+      }
+      const unexpected = (why: string): ApiError => new ApiError(res.status, 'UNEXPECTED_RESPONSE', 'INTERNAL', `Photo answer refused: ${why}`, correlationId);
+      const contentType = (res.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
+      if (!(PROFILE_PHOTO_MIME_TYPES as readonly string[]).includes(contentType)) throw unexpected('content type');
+      const declared = res.headers.get('content-length');
+      if (declared !== null && !(Number(declared) <= PHOTO_ANSWER_CEILING)) throw unexpected('too large');
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      if (res.body !== null) {
+        const reader = res.body.getReader();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          total += value.byteLength;
+          if (total > PHOTO_ANSWER_CEILING) {
+            await reader.cancel().catch(() => undefined);
+            throw unexpected('too large');
+          }
+          chunks.push(value);
+        }
+      }
+      const bytes = new Uint8Array(total);
+      let at = 0;
+      for (const c of chunks) {
+        bytes.set(c, at);
+        at += c.byteLength;
+      }
+      return { kind: 'bytes', bytes, contentType, etag };
+    },
+    /**
+     * GET /api/v1/providers/:publicProfileId (PUBLIC, no token): the public projection of a provider whose profile is publicly readable. Everything else (unknown id, private
+     * profile, ineligible provider) is the SAME ApiError 404. Nothing here names an account.
+     */
+    async getPublicProviderProfile(publicProfileId: string): Promise<PublicProviderProfileDto> {
+      return (await request(`/providers/${encodeURIComponent(publicProfileId)}`, (j) => PublicProviderProfileResponse.parse(j).data)).data;
     },
     // ---------------------------------------------------------------- the shared account area (ACC-001): every call acts as the session's active role (x-active-role)
     /** GET /api/v1/account/navigation: the enabled sections of the active role (registry data, in menu order), the switchable roles and the contact summary. */

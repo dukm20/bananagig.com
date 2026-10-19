@@ -1129,6 +1129,7 @@ Owner/domain: provider / platform / trust
 Description: Photos are private assets (JPEG, PNG, WebP) verified by the server (existence, size, content type, magic bytes, SHA-256, header dimensions within configured bounds, scan) and attached to the DRAFT; a published version's attachments are frozen. Accepted limits: (1) **HEIC is not accepted** although the PRD lists JPG, PNG or HEIC (PR-03.07): there is no verified HEIC reader; SVG is never accepted; (2) **verification is header-only**: a file with a valid image header and a hostile or truncated tail passes (no IEND, EOI or RIFF-size check, because phone JPEGs legitimately carry trailing data), nothing is re-encoded and EXIF/GPS is not stripped, so the bytes must never be delivered publicly as they are; (3) **no thumbnails, derivatives, CDN, public delivery URL or search projection**; the preview is a short-lived owner-only link; (4) **no moderation** of photos or alt text (DEBT-0090) and no AI alt text; no video; (5) **assumed policy values** the owner has not confirmed: minimum edge 200 px, maximum edge 12000 px, maximum 50 megapixels, upload authorization 900 s, preview link 60 s, orphan grace 86400 s, alt text 200 characters (the PRD gives 10 MB, 50 photos and the file types only); (6) **production has no malware scanner** (DEBT-0087): with `provider.gig.media.require_clean_scan` true (the seeded value) nothing can be attached in production, and with it false unscanned photos are attachable and publishable (development and test only); a photo accepted while the flag was false becomes unusable when it is turned on and reports "not ready"; (7) there is no per-account storage quota and the orphan sweep scans all READY assets (linear in their number; no index is used); (8) the photo count of the menu is READY photos only while the editor also lists unfinished uploads.
 Why deferred: each needs a decoder or vendor (HEIC, re-encoding, scanner), a delivery architecture or a product decision.
 Exit criteria: a media derivatives checkpoint re-encodes (strips metadata, validates structure), adds thumbnails and a delivery path; HEIC is added with a verified reader and its signature test; the owner confirms or changes the assumed values; a scanner adapter exists for production; a quota and an indexed sweep exist before volume.
+Narrowed by PRO-002: the PROFILE photo (not Gig photos) is now delivered publicly, only as sanitised bytes through the API (a pure container-level sanitiser strips EXIF, GPS, XMP, IPTC, comments and trailing data; no re-encoding, no thumbnails, no HEIC; DEBT-0107). Gig photos remain private owner-only previews.
 Target checkpoint: the media delivery and public profile checkpoints (PRO-002 and the SEARCH/CU checkpoints), and the production scanner (DEBT-0087)
 
 ## DEBT-0100 — Provider Gig photos: upload handling and concurrency accepted limits
@@ -1197,3 +1198,47 @@ Why deferred: each needs measurement and tuning before it can be required.
 Exit criteria: remediation items R-13 and R-14 of the plan; the advisory jobs are made required (C-2).
 Target checkpoint: ENG-GOV-004 and ENG-GOV-002
 
+
+## DEBT-0106 — Provider public profile: assumed policy values, open product questions and deliberately missing capabilities
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: PRO-002
+Owner/domain: provider / product
+Description: PRO-002 built the profile (display name, bio, one photo, PRIVATE/PUBLIC, derived badges, Gig cards, market code, readiness facts, preview, public read) and left out, by design: (1) **Assumed configuration values the PRD does not give:** `provider.profile.display_name.max_length` 60, `bio.max_length` 1000, `bio.required` false, `photo.required` false, `photo.max_file_size_bytes` 2 MiB, `public_badge_types` IDENTITY, BACKGROUND_CHECK, INSURANCE, and `public_requires_marketplace_eligibility` false (the two that decide exposure are marked CRITICAL). (2) **Open owner question:** whether a provider-entered display name may differ from first name plus last initial (PRD CU-02.11 shows only the latter; PR-09.02 lists display name and legal name separately); the default permits it. (3) **No moderation** of display name, bio or photo (impersonation, off-platform contact details, offensive content): a COMPLETED registration can publish a page with no review. (4) **No slug**, only the opaque id; no business provider profiles; no ratings or reviews (`ratings.available` false); no BananaDrop offers (`drops.available` false); no service-area summary (market code only); no CDN or stored sanitised derivative; no HEIC. (5) **Badge wording** ("Background check completed", "Insurance on file") is engineering copy awaiting product and legal review, and the badge set is a configuration list. (6) **The 404 for a profile is final:** there is no `SUSPENDED` state until moderation exists.
+Why deferred: each needs a product or legal decision, a vendor or a later domain (RATE, DROP, AREA, SEARCH, admin moderation).
+Exit criteria: the owner confirms or changes the assumed values; a moderation checkpoint adds a state and a review path by forward migration; the SEARCH and PRO-003 checkpoints decide marketplace exposure through `MarketplaceEligibilityPort`; DROP and RATE fill their placeholders.
+Target checkpoint: PRO-003 (Go-Live), the admin moderation checkpoints, RATE-* and DROP-*
+
+## DEBT-0107 — Provider public profile: the public routes are unthrottled and the photo is sanitised on every request
+
+Status: OPEN
+Severity: MEDIUM
+Introduced by: PRO-002
+Owner/domain: api / platform
+Description: (1) `GET /api/v1/providers/{id}` and `/photo` are unauthenticated and not rate limited (DEBT-0030 now covers them): a request without `If-None-Match` costs about six statements plus ports, and the photo path reads the object (up to the configured cap, 25 MiB structural ceiling), hashes it and runs the sanitiser; (2) the sanitised bytes are not stored, so every uncached request repeats the work (a stored derivative also removes the question whether the container walk can ever be wrong for a given file); (3) the names port costs several identity statements per public read because `AccountService` has no narrow name read; (4) an authenticated provider can authorize photo uploads in a loop (each creates an asset row, an audit row and a revision bump) until the limiter exists, the same open pattern as DEBT-0087 for trust evidence; (5) a finalize that overlaps an abandon of the same pending upload can leave a promoted original (with its metadata) in the bucket that no sweep deletes (the CAT-004 pattern; it is never served); (6) the public page returns HTTP 200 with an alert when a dependency is down.
+Why deferred: the limiter policy per route class and the derivatives pipeline are separate checkpoints.
+Exit criteria: DEBT-0030 applies a per-IP budget to `/api/v1/providers/*` (a higher one for conditional requests); a sanitised derivative is stored at finalize; a narrow name read exists; authorization is throttled per profile; the object sweep covers the overlap; the outage page answers 503.
+Target checkpoint: the rate-limit policy checkpoint (R-11) and the media delivery checkpoint
+
+## DEBT-0108 — Provider public profile: the projection is not a single snapshot and several states are decided at read time
+
+Status: OPEN
+Severity: LOW
+Introduced by: PRO-002
+Owner/domain: provider
+Description: (1) The profile, eligibility, market code, photo and published Gig facts come from ONE statement; trust badges, the fallback name, service names and the market status are separate reads in the same request, so a response can mix states up to one request apart (the spec asked for one repeatable-read snapshot; ports cannot join a caller's snapshot). (2) A PUBLIC profile stays PUBLIC in storage while read-time eligibility hides it (account, role or registration not active, flag without port); it reappears without owner action when eligibility returns. (3) Authorization of an upload, its abandonment and the expired-upload sweep raise the profile revision (an open owner form then gets 409 `STALE_PROFILE`) but emit no `profile-updated` event. (4) The orphan-sweep grace for a replaced photo runs from the asset's `ready_at`, not from the detach time, so a long-ready photo replaced just now can be deleted at the next sweep. (5) Owner mutations require only an ACTIVE account (public exposure is gated at read time), so a provider with an inactive role can still edit and upload. (6) After a committed hide or photo removal the answer degrades field by field when a dependency is down; the degraded echo is indistinguishable from a real zero, so a client must reread. (7) The `serve` path hides an outage as 503 only when an id is publicly readable (ids are unguessable). (8) Events carry the account id and the public id together, so any consumer learns the mapping.
+Why deferred: each is cheap for the temporary audience and costly to remove before SEARCH and Go-Live define their needs.
+Exit criteria: decide per item with PRO-003 and SEARCH (a snapshot-capable read model or accepted staleness; a stored or computed visibility reason; a detach timestamp; role-gated mutations; a degraded marker in the DTO; event consumer rules recorded in the AsyncAPI description).
+Target checkpoint: PRO-003 and SEARCH-001
+
+## DEBT-0109 — Provider public profile: the temporary web pages lose typed text on a refused save and share forms and formats with the Gig pages
+
+Status: OPEN
+Severity: LOW
+Introduced by: PRO-002
+Owner/domain: web
+Description: (1) A refused save redirects with closed words only, so the typed name and bio are lost (the page re-renders from the stored profile); (2) details, photo, remove and visibility are separate forms, so unsaved text is dropped when another form is submitted (a hint says to save first); (3) the upload notes show raw MIME types and truncate the size to whole MB, and the counters show the stored length with no unit; (4) the public price uses `Intl` digits (CLDR) rather than the platform's ISO 4217 `minor_unit_digits` (the Gig owner pages still print raw minor units); (5) tab titles are fixed English literals and the Gig card sums variants and add-ons into one "Options" number (separate labels need keys); (6) the owner page is one large component with inline helpers and borrowed `gig-*` class names; (7) the public page is `noindex` and states that booking is not open, but a final design for it does not exist.
+Why deferred: UI-BASE-001 retrofits every screen with a shared form model, money component and design system.
+Exit criteria: field-level server errors keep the typed values (client state), one money component reads the currency digits from the platform, shared FormField/StatusNote/FactList components exist, titles come from the registry.
+Target checkpoint: UI-BASE-001

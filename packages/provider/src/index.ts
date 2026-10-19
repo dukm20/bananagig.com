@@ -13,3 +13,8 @@ export * from './gig-sql';
 export * from './gig-options';
 export * from './gig-media-model';
 export * from './gig-media';
+export * from './profile-errors';
+export * from './profile-types';
+export * from './profile-service';
+export * from './image-sanitize';
+export * from './profile-photo';

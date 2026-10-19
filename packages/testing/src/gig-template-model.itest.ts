@@ -4193,12 +4193,12 @@ describe('A. schema shape: six new tables, nine functions and twelve triggers ad
         (
           await from.query(
             `SELECT (SELECT count(*)::int FROM identity.accounts) AS accounts, (SELECT count(*)::int FROM integration.outbox_events) AS outbox,
-                    (SELECT count(*)::int FROM configuration.parameters WHERE key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'provider.gig.%' AND key NOT LIKE 'trust.%') AS parameters,
-                    (SELECT count(*)::int FROM configuration.audit_events a WHERE NOT EXISTS (SELECT 1 FROM configuration.parameters p WHERE p.parameter_id = a.parameter_id AND (p.key LIKE 'provider.registration.%' OR p.key LIKE 'provider.gig.%' OR p.key LIKE 'trust.%'))) AS config_audit,
+                    (SELECT count(*)::int FROM configuration.parameters WHERE key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'provider.gig.%' AND key NOT LIKE 'provider.profile.%' AND key NOT LIKE 'trust.%') AS parameters,
+                    (SELECT count(*)::int FROM configuration.audit_events a WHERE NOT EXISTS (SELECT 1 FROM configuration.parameters p WHERE p.parameter_id = a.parameter_id AND (p.key LIKE 'provider.registration.%' OR p.key LIKE 'provider.gig.%' OR p.key LIKE 'provider.profile.%' OR p.key LIKE 'trust.%'))) AS config_audit,
                     (SELECT count(*)::int FROM geography.markets) AS markets, (SELECT count(*)::int FROM geography.audit_events) AS geo_audit,
                     (SELECT count(*)::int FROM identity.account_sections) AS sections, (SELECT count(*)::int FROM identity.roles) AS roles,
                     (SELECT count(*)::int FROM content.locales) AS locales,
-                    (SELECT count(*)::int FROM content.entries WHERE key NOT LIKE 'catalog.%' AND key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'provider.gig.%' AND key NOT LIKE 'trust.%') AS other_entries,
+                    (SELECT count(*)::int FROM content.entries WHERE key NOT LIKE 'catalog.%' AND key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'provider.gig.%' AND key NOT LIKE 'provider.profile.%' AND key NOT LIKE 'trust.%') AS other_entries,
                     (SELECT count(*)::int FROM catalog.categories) AS categories, (SELECT count(*)::int FROM catalog.service_types) AS service_types,
                     (SELECT count(*)::int FROM catalog.market_categories) AS market_categories, (SELECT count(*)::int FROM catalog.audit_events WHERE action NOT LIKE 'GIG\\_TEMPLATE\\_%') AS old_audit`,
           )
@@ -4208,9 +4208,9 @@ describe('A. schema shape: six new tables, nine functions and twelve triggers ad
         from
           .query(
             // the provider registration copy of 0018 (provider.registration.*, 56 entries) and the verification copy of 0019 (trust.*, 97 entries) are later migrations: only what 0016 added may differ
-            `SELECT (SELECT count(*)::int FROM content.entries WHERE key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'provider.gig.%' AND key NOT LIKE 'trust.%') AS entries,
-                    (SELECT count(*)::int FROM content.versions v JOIN content.entries e ON e.entry_id = v.entry_id WHERE e.key NOT LIKE 'provider.registration.%' AND e.key NOT LIKE 'provider.gig.%' AND e.key NOT LIKE 'trust.%') AS versions,
-                    (SELECT count(*)::int FROM content.audit_events a JOIN content.entries e ON e.entry_id = a.entry_id WHERE e.key NOT LIKE 'provider.registration.%' AND e.key NOT LIKE 'provider.gig.%' AND e.key NOT LIKE 'trust.%') AS audit`,
+            `SELECT (SELECT count(*)::int FROM content.entries WHERE key NOT LIKE 'provider.registration.%' AND key NOT LIKE 'provider.gig.%' AND key NOT LIKE 'provider.profile.%' AND key NOT LIKE 'trust.%') AS entries,
+                    (SELECT count(*)::int FROM content.versions v JOIN content.entries e ON e.entry_id = v.entry_id WHERE e.key NOT LIKE 'provider.registration.%' AND e.key NOT LIKE 'provider.gig.%' AND e.key NOT LIKE 'provider.profile.%' AND e.key NOT LIKE 'trust.%') AS versions,
+                    (SELECT count(*)::int FROM content.audit_events a JOIN content.entries e ON e.entry_id = a.entry_id WHERE e.key NOT LIKE 'provider.registration.%' AND e.key NOT LIKE 'provider.gig.%' AND e.key NOT LIKE 'provider.profile.%' AND e.key NOT LIKE 'trust.%') AS audit`,
           )
           .then((r) => r.rows[0] as { entries: number; versions: number; audit: number });
       const [x, y] = [await total(beforePool), await total(seedPool)];

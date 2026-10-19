@@ -398,6 +398,7 @@ const COLUMNS: Record<string, ColumnShape[]> = {
     ['updated_at', TS, false, true],
     ['objects_removed_at', TS, true, false], // 0022
     ['upload_key_removed_at', TS, true, false], // 0022
+    ['purpose', 'text', false, true], // 0024
   ],
   gig_version_media: [
     ['gig_version_media_id', 'uuid', false, true],
@@ -434,6 +435,7 @@ const CONSTRAINTS: Record<string, string[]> = {
     'ck_media_assets__object_key',
     'ck_media_assets__object_key_derived', // 0022
     'ck_media_assets__objects_removed', // 0022
+    'ck_media_assets__purpose', // 0024
     'ck_media_assets__scan_status',
     'ck_media_assets__sha256',
     'ck_media_assets__size',
@@ -623,6 +625,7 @@ describe('A. shape of the schema', () => {
     expect(await keysOf('guard_gig_version_media')).toEqual([
       'ASSET_NOT_USABLE',
       'ASSET_OWNER',
+      'ASSET_PURPOSE', // 0024
       'FIELD_NOT_IN_TEMPLATE_VERSION',
       'FIELD_TYPE_MISMATCH',
       'IMMUTABLE_IDENTITY',

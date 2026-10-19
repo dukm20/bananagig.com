@@ -20,7 +20,7 @@ import {
 import { ConfigurationService, ValkeyConfigCache } from '@bananagig/configuration';
 import { ContentService } from '@bananagig/content';
 import { CatalogService, GigTemplateService, createCatalogScopeReferenceValidator } from '@bananagig/catalog';
-import { ProviderGigService, ProviderRegistrationService } from '@bananagig/provider';
+import { ProviderGigService, ProviderProfileService, ProviderRegistrationService } from '@bananagig/provider';
 import { DisabledEvidenceScanner, DisabledVerificationProvider, FakeEvidenceScanner, FakeVerificationProvider, TrustService } from '@bananagig/trust';
 import { AccountAreaService, AccountService, ConsentService, EmailVerificationService, PhoneVerificationService, SecurityService } from '@bananagig/accounts';
 import {
@@ -37,6 +37,14 @@ import { createContentSmsRenderer, createPhoneCountryDirectory, createPhonePolic
 import { composeScopeReferenceValidators, createMarketGate } from './modules/catalog/wiring';
 import { createAccountPort, createCatalogPort, createConsentPort, createMarketPort, createProviderPolicyProvider } from './modules/provider/wiring';
 import { createGigMediaScanner, createGigPolicyProvider, createGigPrerequisites, createGigTemplatePort } from './modules/provider/gig-wiring';
+import {
+  createAccountNamePort,
+  createGigServiceNamePort,
+  createProfilePhotoService,
+  createProfilePolicyProvider,
+  createProfilePrerequisites,
+  createTrustSummaryPort,
+} from './modules/provider/profile-wiring';
 import { createProviderContextPort, createTrustPolicyProvider, createTrustPrerequisites } from './modules/trust/wiring';
 import { createConsentPolicyProvider, createDefaultLocaleResolver } from './modules/consent/wiring';
 import { createKeycloakSecurityIdentityProvider, createSecurityPolicyProvider, createUnavailableSecurityIdentityProvider } from './modules/security/wiring';
@@ -204,7 +212,7 @@ const accountArea = new AccountAreaService({ database });
 
 // The provider registration (PRO-001): the registration of an account that wants to become a provider. A provider is the SAME account; the contact, consent, market and catalogue
 // state it composes are read through ports over their owning services (no package imports another), the policy from the configuration registry, and its `verification` step is
-// answered by the verification domain (TRUST-001); subscription and profile report NOT_AVAILABLE until their checkpoints exist, and its `gigs` step is answered by the Gig domain (CAT-003). It shares the `database` of the account
+// answered by the verification domain (TRUST-001); subscription reports NOT_AVAILABLE until its checkpoint exists, its `gigs` step is answered by the Gig domain (CAT-003) and its `profile` step by the profile domain (PRO-002). It shares the `database` of the account
 // service, so the role request joins its transaction.
 const providerAccountPort = createAccountPort(accounts);
 const providerPolicy = createProviderPolicyProvider(configuration);
@@ -236,6 +244,29 @@ const providerGigs = new ProviderGigService({
   store: privateStore,
   scanner: createGigMediaScanner(evidenceScanner),
 });
+// The provider public profile (PRO-002): a presentation aggregate (display name, bio, photo, visibility). Everything else a customer sees is DERIVED on every read through ports over the
+// owning services: the account (status and roles, the fallback `First L.` from the identity names), the verification case (badge TYPES only), the Gig service names (one batched
+// read), the registration's market. The policy comes from the configuration registry (no code default). The marketplace eligibility port (PRO-003) does not exist yet: the configuration
+// flag that would consult it is seeded false and, if switched on before the port exists, the public read fails closed.
+const providerProfiles = new ProviderProfileService({
+  db: database,
+  accounts: providerAccountPort,
+  names: createAccountNamePort(accounts),
+  markets: createMarketPort(geography),
+  trust: createTrustSummaryPort(trust),
+  services: createGigServiceNamePort(database),
+  policy: createProfilePolicyProvider(configuration),
+  // the owner's limits report the photo types the platform's media policy allows
+  mediaPolicy: createGigPolicyProvider(configuration),
+});
+// The profile photo (PRO-002) reuses the Gig photo pipeline (same private bucket and scanner adapter) and is only ever served as sanitised bytes through the API.
+const profilePhotos = createProfilePhotoService({
+  database,
+  store: privateStore,
+  scanner: createGigMediaScanner(evidenceScanner),
+  configuration,
+  profiles: providerProfiles,
+});
 const providerRegistrations = (registrations.current = new ProviderRegistrationService({
   database,
   accounts: providerAccountPort,
@@ -243,7 +274,7 @@ const providerRegistrations = (registrations.current = new ProviderRegistrationS
   markets: createMarketPort(geography),
   catalog: createCatalogPort(catalog),
   policy: providerPolicy,
-  prerequisites: createTrustPrerequisites(trust, createGigPrerequisites(providerGigs)),
+  prerequisites: createTrustPrerequisites(trust, createGigPrerequisites(providerGigs, createProfilePrerequisites(providerProfiles))),
 }));
 
 const app = await buildApp({
@@ -263,6 +294,8 @@ const app = await buildApp({
   gigTemplates,
   providerRegistrations,
   providerGigs,
+  providerProfiles,
+  profilePhotos,
   trust,
   // Critical for serving requests: Postgres only. Valkey/NATS/OpenSearch/flagd outages must not take the API down.
   readiness: async () => ({ postgres: (await database.health()).ok ? 'up' : 'down' }),
