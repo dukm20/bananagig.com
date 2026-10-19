@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { fetch-depth: 0 } # governance checks diff against the PR base / previous push
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
         with: { version: 12.9.1 }
@@ -58,7 +58,7 @@ jobs:
     timeout-minutes: 45
     needs: verify
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: cp .env.example .env && echo 'COMPOSE_PROFILES=core,observability,search,devtools' >> .env
       - run: docker compose up -d --build   # no --wait: the one-shot seaweedfs-init exits, which --wait treats as failure; the smoke test retries until ready
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
