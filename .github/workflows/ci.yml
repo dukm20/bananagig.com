@@ -18,7 +18,7 @@ jobs:
         with: { fetch-depth: 0 } # governance checks diff against the PR base / previous push
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
         with: { version: 12.9.1 }
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with: { node-version: 24, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm format:check
@@ -63,7 +63,7 @@ jobs:
       - run: docker compose up -d --build   # no --wait: the one-shot seaweedfs-init exits, which --wait treats as failure; the smoke test retries until ready
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
         with: { version: 12.9.1 }
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with: { node-version: 24, cache: pnpm }
       - run: pnpm install --frozen-lockfile && pnpm migrate
         env: { DATABASE_URL_HOST: "postgres://bananagig:bananagig_dev_only@127.0.0.1:5433/bananagig" }
