@@ -371,41 +371,53 @@ describe('sanitizeImage: shared rules', () => {
 
 // ---------------------------------------------------------------- linear time and bounded memory
 describe('sanitizeImage: linear time', () => {
+  const LINEAR_TEST_TIMEOUT_MS = 60_000;
+  // CPU time consumed by this process (user + system), not elapsed time: a shared or throttled CI runner pauses the process without consuming CPU, which made wall-clock ratios flake
+  // (0.5 ms against 40 ms, 2 ms against 95 ms). A quadratic implementation still costs about 64x the CPU at 8x the input.
+  const cpuMs = (): number => {
+    const u = process.cpuUsage();
+    return (u.user + u.system) / 1000;
+  };
   const time = (fn: () => void): number => {
     let best = Infinity;
-    for (let k = 0; k < 9; k++) {
-      const t = performance.now();
+    for (let k = 0; k < 5; k++) {
+      const t = cpuMs();
       fn();
-      best = Math.min(best, performance.now() - t);
+      best = Math.min(best, cpuMs() - t);
     }
     return best;
   };
   /** Builds an input of a hostile shape at a given scale; sanitising 8x the input must not take anywhere near 64x (quadratic) the time. */
   function assertLinear(name: string, mime: string, make: (scale: number) => Buffer): void {
-    it(name, () => {
-      const small = make(1);
-      const large = make(8);
-      expect(sanitizeImage(mime, small).ok).toBe(true); // the shapes are valid inputs: the time is spent on real work
-      expect(sanitizeImage(mime, large).ok).toBe(true);
-      // A quadratic implementation is ~64x slower at 8x the input on EVERY attempt; a loaded machine (the whole workspace testing in parallel) can spike one attempt, so up to three attempts
-      // are allowed and the best ratio counts. The threshold itself is unchanged.
-      let bestRatio = Infinity;
-      let note = '';
-      let tLarge = Infinity;
-      for (let attempt = 0; attempt < 3 && bestRatio >= 40; attempt++) {
-        const tSmall = Math.max(
-          time(() => sanitizeImage(mime, small)),
-          0.5,
-        );
-        tLarge = time(() => sanitizeImage(mime, large));
-        if (tLarge / tSmall < bestRatio) {
-          bestRatio = tLarge / tSmall;
-          note = `${name}: ${tSmall.toFixed(2)}ms -> ${tLarge.toFixed(2)}ms`;
+    it(
+      name,
+      () => {
+        const small = make(1);
+        const large = make(8);
+        expect(sanitizeImage(mime, small).ok).toBe(true); // the shapes are valid inputs: the time is spent on real work
+        expect(sanitizeImage(mime, large).ok).toBe(true);
+        // A quadratic implementation is ~64x slower at 8x the input on EVERY attempt; a loaded machine (the whole workspace testing in parallel) can spike one attempt, so up to three attempts
+        // are allowed and the best ratio counts. The threshold itself is unchanged.
+        let bestRatio = Infinity;
+        let note = '';
+        let tLarge = Infinity;
+        for (let attempt = 0; attempt < 3 && bestRatio >= 40; attempt++) {
+          const tSmall = Math.max(
+            time(() => sanitizeImage(mime, small)),
+            0.5,
+          );
+          tLarge = time(() => sanitizeImage(mime, large));
+          if (tLarge / tSmall < bestRatio) {
+            bestRatio = tLarge / tSmall;
+            note = `${name}: ${tSmall.toFixed(2)}ms -> ${tLarge.toFixed(2)}ms`;
+          }
         }
-      }
-      expect(bestRatio, note).toBeLessThan(40);
-      expect(tLarge).toBeLessThan(4000);
-    });
+        expect(bestRatio, note).toBeLessThan(40);
+        expect(tLarge).toBeLessThan(4000);
+        // these inputs are deliberately large and are sampled several times: the harness budget is explicit (a slower, shared CI runner exceeded the 5 s default); the thresholds above are unchanged
+      },
+      LINEAR_TEST_TIMEOUT_MS,
+    );
   }
   const jpegHead = (w: number, h: number) =>
     cat([0xff, 0xd8], segment(0xc0, cat([8], u16be(h), u16be(w), [1, 1, 0x11, 0])), segment(0xda, Buffer.from([1, 1, 0, 0, 63, 0])));
@@ -444,14 +456,18 @@ describe('sanitizeImage: linear time', () => {
     riffList([rchunk('VP8 ', vp8Data(8, 8)), ...Array.from({ length: 10_000 * s }, (_, i) => rchunk(i % 2 ? 'EXIF' : 'ALPH', Buffer.from('abc')))]),
   );
 
-  it('a 24 MiB JPEG with a huge scan is sanitised without extra copies of the input beyond the bounded output', () => {
-    const big = cat(jpegHead(8, 8), Buffer.alloc(24 * 1024 * 1024, 0x11), [0xff, 0xd9]);
-    const t = performance.now();
-    const r = sanitizeImage('image/jpeg', big);
-    expect(r.ok).toBe(true);
-    if (r.ok) expect(r.bytes.length).toBe(big.length);
-    expect(performance.now() - t).toBeLessThan(4000);
-  });
+  it(
+    'a 24 MiB JPEG with a huge scan is sanitised without extra copies of the input beyond the bounded output',
+    () => {
+      const big = cat(jpegHead(8, 8), Buffer.alloc(24 * 1024 * 1024, 0x11), [0xff, 0xd9]);
+      const t = performance.now();
+      const r = sanitizeImage('image/jpeg', big);
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.bytes.length).toBe(big.length);
+      expect(performance.now() - t).toBeLessThan(4000);
+    },
+    LINEAR_TEST_TIMEOUT_MS,
+  );
 });
 
 // ---------------------------------------------------------------- kept parts are validated, not trusted by name (every case has a positive control: the input holds the secret)

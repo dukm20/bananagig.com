@@ -15,9 +15,23 @@ const scratch = [];
 
 // ------------------------------------------------------------------------------------------------------------------ helpers
 
+// The hooks resolve git option abbreviations from the INSTALLED git (`git <sub> -h`) and fall back to a built-in snapshot (git 2.54). The expectations below are written against that
+// snapshot, so the tests must not depend on the git version of the machine (a CI runner has another one): a `git` shim on PATH answers the usage query like a failure and passes every
+// other call to the real git.
+function realGit() {
+  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+    const candidate = path.join(dir, 'git');
+    if (dir && existsSync(candidate)) return candidate;
+  }
+  return 'git';
+}
+const SHIM_DIR = mkdtempSync(path.join(tmpdir(), 'bg-hooks-gitshim-'));
+writeFileSync(path.join(SHIM_DIR, 'git'), `#!/bin/sh\nif [ "$#" -eq 2 ] && [ "$2" = "-h" ]; then exit 1; fi\nexec "${realGit()}" "$@"\n`, { mode: 0o755 });
+
 function cleanEnv() {
   const env = { ...process.env };
   for (const k of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_PREFIX', 'CLAUDE_PROJECT_DIR']) delete env[k];
+  env.PATH = `${SHIM_DIR}${path.delimiter}${env.PATH ?? ''}`;
   return env;
 }
 function git(cwd, ...args) {
@@ -42,7 +56,7 @@ function makeRepo(files = {}, { commit = true } = {}) {
   }
   return root;
 }
-afterAll(() => scratch.forEach((d) => rmSync(d, { recursive: true, force: true })));
+afterAll(() => [...scratch, SHIM_DIR].forEach((d) => rmSync(d, { recursive: true, force: true })));
 
 /** Spawn a hook script, write `input` (object -> JSON, string -> raw) to stdin. */
 function run(hook, input, { root = '', cwd, env = {} } = {}) {
